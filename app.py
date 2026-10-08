@@ -289,6 +289,27 @@ def validate(d):
             add("pass" if lok else "fail", "Oil leakage test", f"{Pr['leak']['kpa']} kPa for {Pr['leak']['hrs']} h: {Pr['leak']['obs']}",
                 src=NAMES["pressure"], found=Pr["leak"]["obs"], exp="No leakage at any point",
                 fix=None if lok else "Leakage was recorded; the sample fails the oil leakage test.")
+    # 9. additional log sheets of other types: no known limits, so only completeness and identifiers
+    work_ids = (ids.get("work") or [None, None]) if isinstance(ids, dict) else [None, None]
+    ws_all = norm(str(work_ids[0] or (d.get("work") or {}).get("series") or ""))[-7:]
+    wm_all = norm(str(work_ids[1] or (d.get("work") or {}).get("sample") or ""))[-4:]
+    for o in (d.get("other") or {}).values():
+        with na("Additional log sheet", "Additional log sheet"):
+            t = str(o.get("title") or "Additional log sheet"); src = f"Additional log sheet: {t}"
+            vals = [f.get("value") for f in o.get("fields") or []] + [c for tb in o.get("tables") or [] for r in tb.get("rows") or [] for c in r]
+            empty = sum(v is None or (isinstance(v, str) and not v.strip()) for v in vals)
+            add("warn" if empty or not vals else "pass", f"Additional record: {t}",
+                f"{len(vals) - empty} of {len(vals)} values recorded" + (f"; {empty} NA" if empty else "") + ". No limits are known for this sheet, so values are reported as recorded.",
+                src=src, found=f"{len(vals) - empty} values recorded, {empty} NA", exp="Every value on the sheet recorded",
+                fix="Fill in the NA values on the sheet's page if they are on the scan, or leave them as NA." if empty else
+                    ("Add the sheet's values, or remove it." if not vals else None))
+            for f in o.get("fields") or []:
+                lab, v = str(f.get("label") or "").lower(), str(f.get("value") or "")
+                if not v.strip(): continue
+                want, got = (ws_all, norm(v)[-7:]) if "series" in lab else (wm_all, norm(v)[-4:]) if "sample" in lab else (None, None)
+                if want and got != want:
+                    add("warn", "Identifier consistency", f"{t}: {f.get('label')} written as '{v}' but the job's is ...{want}. Verify handwriting (4/6/H).",
+                        src=src, found=v, exp=f"...{want}", fix="Check the identifier on the scan and correct it on the sheet's page if it was misread.")
     return F, C
 
 def safe_validate(d):
@@ -395,7 +416,9 @@ def build_pdf(j, version=None, verify_url=None):
                    lambda: "no disruptive discharge", ("Dielectric",)),
               srow("Pressure / vacuum / oil leakage", ["pressure"],
                    lambda: (lambda Pr0: f"Leakage: {Pr0['leak']['obs']}; deflection {Pr0['type']['pressure']['max']} mm (pressure), {Pr0['type']['vacuum']['max']} mm (vacuum)")(d["pressure"]),
-                   lambda: "No leakage; deflection as logged", ("deflection", "leakage"))],
+                   lambda: "No leakage; deflection as logged", ("deflection", "leakage"))] +
+             [[f"Additional record: {o.get('title', 'Additional log sheet')}", "Values recorded (see detailed results)", "No limits defined", "RECORDED"]
+              for o in (d.get("other") or {}).values()],
              [48 * mm, 62 * mm, 45 * mm, 25 * mm])]
     E.append(Paragraph("3. Detailed results", h)); sub = iter(range(1, 20))
     def amb(x):
@@ -457,6 +480,13 @@ def build_pdf(j, version=None, verify_url=None):
                        ["Type pressure", f"{ty['pressure']['kpa']} kPa, {ty['pressure']['min']} min", f"Max deflection {ty['pressure']['max']} mm - {ty['pressure']['obs']}"],
                        ["Vacuum", f"{ty['vacuum']['mmhg']} mmHg, {ty['vacuum']['min']} min", f"Max deflection {ty['vacuum']['max']} mm - {ty['vacuum']['obs']}"],
                        ["Oil leakage", f"{Pr['leak']['kpa']} kPa (2 x {Pr['leak']['head_kpa']} kPa head), {Pr['leak']['hrs']} h ({Pr['leak']['date']})", Pr["leak"]["obs"]]])]
+    for o in (d.get("other") or {}).values():  # additional log sheets of types without known limits: reported as recorded
+        with part("Additional log sheet"):
+            E.append(num(f"Additional test record: {o.get('title', 'Additional log sheet')} (recorded values; no limits evaluated)"))
+            if o.get("fields"): E.append(kv([(f.get("label") or "-", f.get("value")) for f in o["fields"]]))
+            for t in o.get("tables") or []:
+                if t.get("title"): E.append(Paragraph(t["title"], n))
+                E.append(tbl([t.get("columns") or [""] * len(t["rows"][0])] + t.get("rows", [])))
     if missing:
         E.append(Paragraph("Source documents not provided (the related tests were not evaluated): " + ", ".join(missing) + ".", n))
     fails = [f for f in F if f["level"] == "fail"]; warns = [f for f in F if f["level"] == "warn"]
@@ -575,7 +605,7 @@ def imp(i):
     if isinstance(b.get("content"), dict): name, content, kind = str(b.get("filename") or "upload"), b["content"], "json"
     else:
         name, raw = upload(b); content, kind, notes = importers.load_test_data(name, raw, j["series"])
-    ok = set(NAMES) | {"ids"}
+    ok = set(NAMES) | {"ids", "other"}
     if not isinstance(content, dict) or not content or not set(content) <= ok:
         return jsonify(error=["Unrecognised file: expected sections " + ", ".join(NAMES)]), 400
     bad = [k for k, v in content.items() if not isinstance(v, dict)]
@@ -584,8 +614,10 @@ def imp(i):
     try:
         with db() as c: c.execute("INSERT INTO imports(job_id,source,kind,sha256,at) VALUES(?,?,?,?,?)", (i, name, kind, sha, now()))
     except sqlite3.IntegrityError: return jsonify(error=["Duplicate file - identical content already imported for this job"]), 409
+    if isinstance(content.get("other"), dict):  # additional log sheets: cleaned, added alongside any already on the job
+        content["other"] = {str(k): clean_other(v) for k, v in content["other"].items() if isinstance(v, dict)}
     d = j["data"]
-    for k, v in content.items(): d[k] = {**d.get(k, {}), **v} if k in ("ids", "request") else v
+    for k, v in content.items(): d[k] = {**d.get(k, {}), **v} if k in ("ids", "request", "other") else v
     label = {"json": "JSON", "csv": "CSV", "xlsx": "Excel", "sqlite": "database"}[kind]
     data_changed(j, d, f"Imported {label} file {name} ({', '.join(content)})" + (f" [{'; '.join(notes)}]" if notes else ""))
     return jsonify(ok=True, kind=kind, sections=list(content), notes=notes)
@@ -594,14 +626,51 @@ def imp(i):
 def section(i):
     """Save one section typed or corrected by hand (also used to accept an AI reading after review)."""
     j = getjob(i); b = body(); k = b.get("section")
+    if k == "other": return save_other(j, b)
     if k not in set(NAMES) | {"ids"} or not isinstance(b.get("data"), dict): return jsonify(error=["Choose a section and provide its fields"]), 400
     d = j["data"]; d[k] = b["data"]
     data_changed(j, d, f"{NAMES.get(k, 'Identifiers')} {'entered from AI reading of ' + str(b['source'])[:120] + ' after review' if b.get('source') else 'edited by hand'}")
     return jsonify(ok=True)
 
+def clean_other(o):
+    """An additional log sheet: title, labelled fields and tables, whatever their shape when they arrive."""
+    txt = lambda v: "" if v is None else str(v).strip()
+    val = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else (txt(v) or None)
+    fields = [dict(label=txt(f.get("label")), value=val(f.get("value"))) for f in o.get("fields") or [] if isinstance(f, dict)]
+    fields = [f for f in fields if f["label"] or f["value"] is not None]
+    tables = []
+    for t in o.get("tables") or []:
+        if not isinstance(t, dict): continue
+        cols = [txt(c) for c in t.get("columns") or []]
+        rows = [[val(c) for c in r] for r in t.get("rows") or [] if isinstance(r, list)]
+        rows = [r for r in rows if any(c is not None for c in r)]
+        width = max([len(cols)] + [len(r) for r in rows] or [0])
+        if not width: continue
+        cols += [""] * (width - len(cols)); rows = [r + [None] * (width - len(r)) for r in rows]
+        tables.append(dict(title=txt(t.get("title")), columns=cols, rows=rows))
+    return dict(title=txt(o.get("title")) or "Additional log sheet", fields=fields, tables=tables)
+
+def save_other(j, b):
+    if not isinstance(b.get("data"), dict): return jsonify(error=["Provide the sheet's fields"]), 400
+    d = j["data"]; others = d.setdefault("other", {})
+    key = str(b.get("key") or "")
+    if not re.fullmatch(r"x\d{1,4}", key):
+        n = 1
+        while f"x{n}" in others: n += 1
+        key = f"x{n}"
+    sheet = clean_other(b["data"]); others[key] = sheet
+    data_changed(j, d, f"Additional log sheet '{sheet['title']}' " + (f"entered from AI reading of {str(b['source'])[:120]} after review" if b.get("source") else "edited by hand"))
+    return jsonify(ok=True, key=key)
+
 @app.delete("/api/jobs/<int:i>/section/<k>")
 def remove_section(i, k):
     """Detach one document's data from the job; the checks and the report must be redone. The customer request stays."""
+    if k.startswith("other:"):
+        j = getjob(i); d = j["data"]; key = k[6:]
+        if key not in (d.get("other") or {}): return jsonify(error=["This log sheet is not part of the job"]), 404
+        title = d["other"].pop(key).get("title", "Additional log sheet")
+        if not d["other"]: del d["other"]
+        data_changed(j, d, f"Additional log sheet '{title}' removed from the job"); return jsonify(ok=True)
     if k not in set(NAMES) - {"request"} | {"ids"}: return jsonify(error=["This document cannot be removed"]), 400
     j = getjob(i); d = j["data"]
     if k not in d: return jsonify(error=["This document is not part of the job"]), 404
@@ -682,12 +751,12 @@ def del_source(sid):
 def extract(sid):
     """Ask Gemini for a proposal for one section. Nothing is saved until the engineer reviews it and posts it to /section."""
     r = source_row(sid); b = body(); k = b.get("section")
-    if k not in NAMES: return jsonify(error=["Choose which document this is"]), 400
-    example = load_demo().get(k, {})
+    if k not in NAMES and k != "other": return jsonify(error=["Choose which document this is"]), 400
+    example = vision.OTHER_LAYOUT if k == "other" else load_demo().get(k, {})
     with db() as c:
-        out = vision.extract(c, r["content"], r["mime"], k, NAMES[k], example, app.config.get("VISION_TRANSPORT"),
+        out = vision.extract(c, r["content"], r["mime"], k, NAMES.get(k, "Other laboratory log sheet"), example, app.config.get("VISION_TRANSPORT"),
                              sha=r["sha256"], cache_path=AI_CACHE, fresh=bool(b.get("fresh")))
-        log(c, r["job_id"], f"AI reading {'reused from cache' if out['cached'] else 'requested'} for {r['filename']} as {NAMES[k]} (proposal only, not saved)")
+        log(c, r["job_id"], f"AI reading {'reused from cache' if out['cached'] else 'requested'} for {r['filename']} as {NAMES.get(k, 'other log sheet')} (proposal only, not saved)")
     return jsonify(out)
 
 # ---- validate, generate, approve
@@ -788,7 +857,7 @@ def stats():
         kinds = {r[0] or "json": r[1] for r in c.execute("SELECT kind,COUNT(*) FROM imports GROUP BY kind")}
         ai = vision.status(c)
     return jsonify(total=sum(by), by_stage=by, stages=STAGES, avg_gen_ms=int(mean(ms)) if ms else None, imports=kinds,
-                   ai={k: ai[k] for k in ("configured", "model", "calls_today", "daily_limit")}, sections=NAMES)
+                   ai={k: ai[k] for k in ("configured", "model", "provider", "kind", "calls_today", "daily_limit")}, sections=NAMES)
 
 @app.post("/api/demo")
 def demo():

@@ -17,7 +17,7 @@ Tabular layout (CSV / Excel / database), one value per row:
 """
 import csv, io, json, os, re, sqlite3, tempfile
 
-SECTIONS = ["request", "proforma", "work", "losses", "resistance", "noload", "routine", "sc", "temp", "pressure", "ids"]
+SECTIONS = ["request", "proforma", "work", "losses", "resistance", "noload", "routine", "sc", "temp", "pressure", "ids", "other"]
 MAX_BYTES = 20 * 1024 * 1024
 
 

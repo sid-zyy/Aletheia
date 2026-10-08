@@ -5,7 +5,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 _tmp = tempfile.TemporaryDirectory()
 os.environ["ALETHEIA_DB"] = os.path.join(_tmp.name, "test.db")
-for _v in ("GEMINI_API_KEY", "GEMINI_MODEL", "AI_BASE_URL", "AI_MODEL", "AI_API_KEY"): os.environ.pop(_v, None)
+for _v in ("GEMINI_API_KEY", "GEMINI_MODEL", "AI_BASE_URL", "AI_MODEL", "AI_API_KEY", "AI_PROVIDER", "AI_NUM_CTX", "AI_IMAGE_PX"): os.environ.pop(_v, None)
 import app as aletheia, importers, vision  # noqa: E402
 
 SD = os.path.join(ROOT, "sample_data")
@@ -81,6 +81,37 @@ class ImportFormats(Base):
         self.assertTrue([x for x in f if x["check"] == "Total loss at 100% load (75 C)" and x["level"] == "pass"])  # other checks still run
         self.assertEqual(self.get(i)["stage"], 2)
         self.assertEqual(self.c.post(f"/api/jobs/{i}/generate").status_code, 200)
+
+    def test_ollama_reader_uses_native_api_with_json_and_context(self):
+        i = self.job(); sid = self.c.post(f"/api/jobs/{i}/sources", json=up("scan.png", PNG)).json["id"]
+        os.environ.update(AI_BASE_URL="http://localhost:11434/v1", AI_MODEL="qwen2.5vl:3b", AI_NUM_CTX="6000"); sent = []
+        try:
+            def fake(model, key, body):
+                sent.append(body); return {"message": {"content": json.dumps({"data": DEMO["work"], "uncertain": []})}}
+            aletheia.app.config["VISION_TRANSPORT"] = fake
+            r = self.c.post(f"/api/sources/{sid}/extract", json=dict(section="work")); self.assertEqual(r.status_code, 200, r.json)
+            self.assertEqual(r.json["data"], DEMO["work"])
+            b = sent[0]; self.assertEqual((b["format"], b["stream"], b["options"]["num_ctx"]), ("json", False, 6000))
+            self.assertEqual(len(b["messages"][0]["images"]), 1)
+        finally:
+            for v in ("AI_BASE_URL", "AI_MODEL", "AI_NUM_CTX"): os.environ.pop(v)
+
+    def test_other_log_sheet(self):
+        i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
+        sheet = {"title": "Noise level test", "fields": [{"label": "Test series no.", "value": "25T1656"}, {"label": "Ambient", "value": 31.2},
+                 {"label": "", "value": None}], "tables": [{"title": "Readings", "columns": ["Point", "dB(A)"], "rows": [[1, 52.1], [2], [None, None]]}]}
+        r = self.c.post(f"/api/jobs/{i}/section", json=dict(section="other", data=sheet)); self.assertEqual(r.status_code, 200); key = r.json["key"]
+        o = self.get(i)["data"]["other"][key]
+        self.assertEqual(len(o["fields"]), 2); self.assertEqual(o["tables"][0]["rows"], [[1, 52.1], [2, None]])  # empty rows dropped, short rows padded
+        f = self.c.post(f"/api/jobs/{i}/validate").json["findings"]
+        self.assertTrue([x for x in f if x["check"] == "Additional record: Noise level test" and x["level"] == "warn"])
+        self.assertTrue([x for x in f if x["check"] == "Identifier consistency" and "Noise level test" in x["detail"]])  # 25T1656 vs 25T1654
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/generate").status_code, 200)
+        j2 = self.job("CPRIBLRSCL25T1999")  # exported CSV, including the extra sheet, imports into another job unchanged
+        self.c.post(f"/api/jobs/{j2}/import", json=up("x.csv", self.c.get(f"/api/jobs/{i}/export/csv").data))
+        self.assertEqual(self.get(j2)["data"]["other"], self.get(i)["data"]["other"])
+        self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/other:{key}").status_code, 200); self.assertNotIn("other", self.get(i)["data"])
+        self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/other:{key}").status_code, 404)
 
     def test_remove_a_document(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
@@ -190,7 +221,7 @@ class ReportsAndSources(Base):
         for t in ("page one", "page two"): pdf.drawString(72, 720, t); pdf.showPage()
         pdf.save()
         i = self.job(); sid = self.c.post(f"/api/jobs/{i}/sources", json=up("sheet.pdf", buf.getvalue())).json["id"]
-        os.environ.update(AI_BASE_URL="http://localhost:11434/v1", AI_MODEL="qwen2.5vl:7b"); sent = []
+        os.environ.update(AI_BASE_URL="http://localhost:8000/v1", AI_MODEL="qwen2.5vl:7b"); sent = []
         try:
             def fake(model, key, body):
                 sent.append(body)
