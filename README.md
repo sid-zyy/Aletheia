@@ -57,15 +57,30 @@ a searchable record; invalid or duplicate rows are listed with the reason.
 
 ## Reading scans with AI (optional)
 
-    export GEMINI_API_KEY=...            # PowerShell: $env:GEMINI_API_KEY = "..."
-    export GEMINI_MODEL=gemini-3.8-flash # optional; use a model your key can access
-    export ALETHEIA_DAILY_CALL_LIMIT=15      # optional
+On a job, attach a scan, click **Read with AI**, say which document it is. The answer opens as an editable proposal
+with uncertain fields highlighted. Nothing is saved until you review and save it. Without a reader configured, the
+button explains that it is not set up; everything else works offline.
 
-On a job, attach a scan, click **Read with AI**, say which document it is. The page is sent to Google Gemini and the
-answer opens as an editable proposal with uncertain fields highlighted. Nothing is saved until you review and save it.
-Without a key the button explains that it is not set up; everything else works offline.
-**Not yet tried against a live Gemini key** - the request, limits and error handling are covered by tests with a stand-in.
-Check that sending lab records to Google is acceptable before using it on real data.
+Choose one reader (PowerShell shown; set the variables in the same window before `python app.py`):
+
+| Reader | Settings |
+|---|---|
+| Qwen on this computer (offline) via [Ollama](https://ollama.com) | `ollama pull qwen2.5vl:7b`, then `$env:AI_BASE_URL = "http://localhost:11434/v1"`, `$env:AI_MODEL = "qwen2.5vl:7b"` |
+| Hosted Qwen or any OpenAI-compatible service (e.g. OpenRouter) | `$env:AI_BASE_URL = "https://openrouter.ai/api/v1"`, `$env:AI_MODEL = "qwen/qwen2.5-vl-72b-instruct"`, `$env:AI_API_KEY = "..."` |
+| Google Gemini | `$env:GEMINI_API_KEY = "..."`, optionally `$env:GEMINI_MODEL` (default `gemini-3.8-flash`) |
+
+`AI_BASE_URL` takes priority over Gemini. Optional: `AI_TIMEOUT` (seconds per request, default 300; a local model on a
+laptop without a graphics card can take minutes per page), `ALETHEIA_DAILY_CALL_LIMIT` (default 15).
+PDFs are sent to Gemini as they are; for OpenAI-compatible readers each page (up to 4) is converted to an image first.
+Busy or rate-limited answers are retried automatically after 2, 5 and 10 seconds.
+
+**Saved readings.** Every successful reading is stored in `ai_cache.db` (next to the database, kept when the job
+database is deleted), keyed by the scan's SHA-256, the document type and the model. Reading the same scan again returns
+the saved reading instantly, without contacting the AI, and says so. Tick "Read again" in the dialog to force a new
+reading. For a demo, read each scan once beforehand; on stage the readings then work offline.
+
+**Tested with stand-ins only** - requests, retries, PDF conversion and the cache are covered by tests, but no live
+model has been run yet. Check that sending lab records to an outside service is acceptable before using it on real data.
 
 ## Report versions and verification
 
@@ -77,9 +92,9 @@ The QR link uses the address the app is opened with, so phones can only follow i
 
     python -m unittest discover -s tests -v
 
-14 tests: exact round trip of the tabular layout, CSV / Excel / database import against the JSON reference, full
+15 tests: exact round trip of the tabular layout, CSV / Excel / database import against the JSON reference, full
 CSV-to-approved-report run, bad-file rejection, per-job duplicates, incomplete data, register import, frozen versions and
-tamper detection, source documents and the AI reader (mocked).
+tamper detection, source documents, and the AI reader (mocked): Gemini and OpenAI-compatible requests, PDF-to-image conversion and saved readings.
 
 ## Files
 

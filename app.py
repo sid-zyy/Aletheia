@@ -15,6 +15,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.environ.get("ALETHEIA_DB") or os.path.join(HERE, "aletheia.db")
+AI_CACHE = os.path.join(os.path.dirname(os.path.abspath(DB)), "ai_cache.db")  # survives deleting the job database
 DEMO = os.path.join(HERE, "sample_data", "AP_Transformers_25T1654.json")
 
 def load_demo():
@@ -75,124 +76,270 @@ def save(jid, **kw):
 def validate(d):
     """Returns (findings, calc). Levels: pass / warn (needs reviewer attention) / fail (blocks)."""
     F, C = [], {}
-    add = lambda l, c, t: F.append(dict(level=l, check=c, detail=t))
+    def add(l, c, t, src=None, found=None, exp=None, fix=None, na=False):
+        """src: document(s) checked; found / exp: observed vs required value; fix: what the engineer should do."""
+        f = dict(level=l, check=c, detail=t, **({"na": True} if na else {}))
+        f.update({k: v for k, v in dict(source=src, found=found, expected=exp, action=fix).items() if v is not None})
+        for k in ("detail", "found", "expected"):  # an empty value formatted into the text reads NA, not Python's "None"
+            if isinstance(f.get(k), str): f[k] = re.sub(r"\bNone\b", "NA", f[k])
+        F.append(f)
+    def na(check, src=None):
+        """A blank (NA) or incomplete value skips only this check: it is reported as not evaluated instead of failing the run."""
+        @contextmanager
+        def guard():
+            try:
+                yield
+            except (TypeError, ValueError, KeyError, IndexError, AttributeError, ZeroDivisionError):
+                if check: add("warn", check, f"Not evaluated: values it needs in the {src or 'source document'} are NA (left empty) or incomplete.", src=src, found="NA",
+                              exp="All values this check needs", na=True,
+                              fix="Fill in the missing values if this test was performed; otherwise leave them as NA. The report lists it as not evaluated.")
+        return guard()
     miss = [v for k, v in NAMES.items() if k not in d]
-    add("fail" if miss else "pass", "Completeness vs tests required in proforma",
-        "Missing: " + ", ".join(miss) if miss else "All 10 source documents imported")
+    # Missing documents do not block the report: checks run on what is present, and the report says what was not evaluated.
+    add("warn" if miss else "pass", "Completeness of source documents",
+        f"Missing: {', '.join(miss)}. Checks that need them were skipped; the report marks those tests as not evaluated." if miss
+        else "All 10 source documents imported",
+        src="All source documents", found=f"{len(NAMES) - len(miss)} of {len(NAMES)} documents imported", exp=f"All {len(NAMES)} documents",
+        fix=("Import the missing documents if those tests were performed. If they were not requested, approve the report as it is; "
+             "the missing tests are listed as not evaluated.") if miss else None)
+    if "proforma" not in d and any(k in d for k in ("noload", "losses", "routine", "temp")):
+        add("warn", "Limits not available", "The proforma is missing, so loss, impedance, no-load current, ratio and temperature-rise "
+            "results could not be compared with their limits.", src=NAMES["proforma"], found="Proforma not imported",
+            exp="Proforma with rating, guaranteed losses, impedance and temperature-rise limits",
+            fix="Import the proforma to evaluate these results against their limits.")
     # 1. identifiers must agree across documents (handwriting: 4 can read as H or 6)
     norm = lambda s: s.upper().replace("H", "4")
     ids = d.get("ids", {})
-    if "work" in ids:
-        ws, wm = norm(ids["work"][0])[-7:], norm(ids["work"][1])[-4:]
-        bad = [(k, s, m) for k, (s, m) in ids.items() if norm(s)[-7:] != ws or norm(m)[-4:] != wm]
-        for k, s, m in bad:
-            add("warn", "Identifier consistency", f"{NAMES.get(k, k)}: transcribed '{s}' / '{m}' but work instruction = {ws} / {wm}. Verify handwriting (4/6/H).")
-        if not bad: add("pass", "Identifier consistency", f"Series {ws} / sample {wm} agree in all documents")
+    with na('Identifier consistency', "Identifiers on each sheet"):
+        if "work" in ids:
+            ws, wm = norm(ids["work"][0])[-7:], norm(ids["work"][1])[-4:]
+            bad = [(k, s, m) for k, (s, m) in ids.items() if norm(s)[-7:] != ws or norm(m)[-4:] != wm]
+            for k, s, m in bad:
+                add("warn", "Identifier consistency", f"{NAMES.get(k, k)}: transcribed '{s}' / '{m}' but work instruction = {ws} / {wm}. Verify handwriting (4/6/H).",
+                    src=NAMES.get(k, k), found=f"Series {s}, sample {m}", exp=f"Series ...{ws}, sample ...{wm} (as on the work instruction)",
+                    fix=f"Look at the IDs on the scanned {NAMES.get(k, k).lower()}; handwritten 4, 6 and H are easy to confuse. If it was mistyped, correct it under 'Identifiers on each sheet'.")
+            if not bad: add("pass", "Identifier consistency", f"Series {ws} / sample {wm} agree in all documents", src="All source documents")
     P = d.get("proforma", {})
     if P:
-        irat = P["kva"] * 1000 / (math.sqrt(3) * P["lv"]); C["irat"] = irat
+        with na(None):
+            irat = P["kva"] * 1000 / (math.sqrt(3) * P["lv"]); C["irat"] = irat
     # 2. resistance
     R = d.get("resistance")
     if R:
-        worst = 0
-        for ph in list(R["hv"].values()) + [R["lv"]]:
-            for row in ph: worst = max(worst, (max(row) - min(row)) / mean(row) * 100)
-        add("pass" if worst <= 2 else "fail", "Winding resistance phase imbalance", f"Max imbalance {worst:.2f}% (limit 2%)")
+        with na('Winding resistance phase imbalance', NAMES["resistance"]):
+            worst = 0
+            for ph in list(R["hv"].values()) + [R["lv"]]:
+                for row in ph: worst = max(worst, (max(row) - min(row)) / mean(row) * 100)
+            add("pass" if worst <= 2 else "fail", "Winding resistance phase imbalance", f"Max imbalance {worst:.2f}% (limit 2%)",
+                src=NAMES["resistance"], found=f"{worst:.2f}% between phases", exp="2% or less",
+                fix="Re-check the three phase readings on the resistance log; a large imbalance can mean a winding fault or a misread value.")
         T = d.get("temp")
         if T:
-            ok = abs(R["lv"][1][1] - T["rlv_cold"]) < 1e-4 and abs(R["hv"]["L"][1][1] - T["rhv_cold"]) < 1e-4
-            add("pass" if ok else "warn", "Cold resistance cross-check", "Temp-rise cold R equals after-STC resistance at lowest tap" if ok else "Cold R in temp-rise log differs from resistance log")
+            with na('Cold resistance cross-check', NAMES["temp"]):
+                ok = abs(R["lv"][1][1] - T["rlv_cold"]) < 1e-4 and abs(R["hv"]["L"][1][1] - T["rhv_cold"]) < 1e-4
+                add("pass" if ok else "warn", "Cold resistance cross-check", "Temp-rise cold R equals after-STC resistance at lowest tap" if ok else "Cold R in temp-rise log differs from resistance log",
+                    src=f"{NAMES['temp']} vs {NAMES['resistance']}", found=f"Cold R in temp-rise log: HV {T['rhv_cold']}, LV {T['rlv_cold']}",
+                    exp=f"Same as after-short-circuit resistance: HV {R['hv']['L'][1][1]}, LV {R['lv'][1][1]}",
+                    fix=None if ok else "Confirm which cold resistance was used; the winding temperature rise depends on it.")
     # 3. no-load
     N = d.get("noload")
     if N and P:
-        for lb, V, Va, I, Ia, W, Wa, f, Pc in N["rows"]:
-            if abs(mean(I) - Ia) > .005: add("fail", "No-load current average", f"{lb}: mean of {I} = {mean(I):.3f}, logged {Ia}")
-            if abs(sum(W) - Wa) > .1: add("warn", "No-load watts sum", f"{lb}: W1+W2+W3 = {sum(W):.2f} but logged average/sum {Wa} (check reading)")
-        i100, i112 = N["rows"][0][4], N["rows"][2][4]
-        for nm, i, lim in (("100%", i100, 2), ("112.5%", i112, 5)):
-            pc = i / C["irat"] * 100
-            add("pass" if pc <= lim else "fail", f"No-load current at {nm} voltage", f"{i} A = {pc:.2f}% of rated {C['irat']:.1f} A (limit {lim}%)")
+        with na('No-load readings (averages and sums)', NAMES["noload"]):
+            for lb, V, Va, I, Ia, W, Wa, f, Pc in N["rows"]:
+                if abs(mean(I) - Ia) > .005: add("fail", "No-load current average", f"{lb}: mean of {I} = {mean(I):.3f}, logged {Ia}",
+                    src=NAMES["noload"], found=f"{lb}: logged average {Ia} A", exp=f"Mean of I1, I2, I3 = {mean(I):.3f} A",
+                    fix="Recalculate the average on the log sheet, or correct the phase current that was misread.")
+                if abs(sum(W) - Wa) > .1: add("warn", "No-load watts sum", f"{lb}: W1+W2+W3 = {sum(W):.2f} but logged average/sum {Wa} (check reading)",
+                    src=NAMES["noload"], found=f"{lb}: logged total {Wa} W", exp=f"W1 + W2 + W3 = {' + '.join(map(str, W))} = {sum(W):.2f} W",
+                    fix="Check the three wattmeter readings and the total on the scan; one of them was probably misread or mis-added.")
+        with na('No-load current limits', NAMES["noload"]):
+            i100, i112 = N["rows"][0][4], N["rows"][2][4]
+            for nm, i, lim in (("100%", i100, 2), ("112.5%", i112, 5)):
+                pc = i / C["irat"] * 100
+                add("pass" if pc <= lim else "fail", f"No-load current at {nm} voltage", f"{i} A = {pc:.2f}% of rated {C['irat']:.1f} A (limit {lim}%)",
+                    src=NAMES["noload"], found=f"{i} A ({pc:.2f}% of rated current)", exp=f"{lim}% of rated {C['irat']:.1f} A or less",
+                    fix=None if pc <= lim else "The sample exceeds the no-load current limit; confirm the reading before reporting a failure.")
     # 4. losses / impedance (IS 1180 limits from proforma, +/-10% impedance)
     L = d.get("losses")
     if L and P:
-        rows = L["rows"]
-        t100 = max(r[13] for r in rows); t50 = max(r[12] for r in rows if r[12])
-        C["t100"], C["t50"] = t100, t50
-        add("pass" if t100 <= P["loss100"] else "fail", "Total loss at 100% load (75 C)", f"Max {t100} W vs limit {P['loss100']} W")
-        add("pass" if t50 <= P["loss50"] else "fail", "Total loss at 50% load", f"Max {t50} W vs limit {P['loss50']} W")
-        zs = [r[1] for r in rows]; lo, hi = P["z_pct"] * .9, P["z_pct"] * 1.1
-        add("pass" if all(lo <= z <= hi for z in zs) else "fail", "Impedance voltage (+/-10%)", f"%Z {min(zs)}-{max(zs)} vs declared {P['z_pct']} (band {lo:.2f}-{hi:.2f})")
-        xc = max(abs(r[3]) for r in rows if r[3] is not None)
-        add("pass" if xc <= 2 else "fail", "Reactance change before/after short circuit", f"Max {xc}% (limit 2%) - no winding displacement indicated")
+        with na('Total loss', NAMES["losses"]):
+            rows = L["rows"]
+            t100 = max(r[13] for r in rows); t50 = max(r[12] for r in rows if r[12])
+            C["t100"], C["t50"] = t100, t50
+            for pct, t, lim in (("100%", t100, P["loss100"]), ("50%", t50, P["loss50"])):
+                add("pass" if t <= lim else "fail", f"Total loss at {pct} load" + (" (75 C)" if pct == "100%" else ""), f"Max {t} W vs limit {lim} W",
+                    src=NAMES["losses"], found=f"{t} W (worst tap)", exp=f"{lim} W or less (guaranteed in proforma)",
+                    fix=None if t <= lim else "Losses exceed the guaranteed value; confirm the readings and the 75 C correction.")
+        with na('Impedance voltage (+/-10%)', NAMES["losses"]):
+            zs = [r[1] for r in rows]; lo, hi = P["z_pct"] * .9, P["z_pct"] * 1.1
+            zok = all(lo <= z <= hi for z in zs)
+            add("pass" if zok else "fail", "Impedance voltage (+/-10%)", f"%Z {min(zs)}-{max(zs)} vs declared {P['z_pct']} (band {lo:.2f}-{hi:.2f})",
+                src=NAMES["losses"], found=f"%Z {min(zs)} to {max(zs)}", exp=f"{lo:.2f} to {hi:.2f} (declared {P['z_pct']}% +/-10%)",
+                fix=None if zok else "Impedance is outside the tolerance band; check the readings for each tap.")
+        with na('Reactance change before/after short circuit', NAMES["losses"]):
+            xc = max(abs(r[3]) for r in rows if r[3] is not None)
+            add("pass" if xc <= 2 else "fail", "Reactance change before/after short circuit", f"Max {xc}% (limit 2%) - no winding displacement indicated",
+                src=NAMES["losses"], found=f"{xc}% change", exp="2% or less",
+                fix=None if xc <= 2 else "A reactance change above 2% suggests the windings moved during the short-circuit test.")
     # 5. voltage ratio, 7 taps +5% .. -10%
     Rt = d.get("routine")
     if Rt and P:
-        vph = P["lv"] / math.sqrt(3); dev = 0
-        for side in Rt["ratio"].values():
-            for i, row in enumerate(side):
-                th = P["hv"] * (1 + (5 - 2.5 * i) / 100) / vph
-                dev = max(dev, max(abs(x - th) / th * 100 for x in row))
-        C["ratio_dev"] = dev
-        add("pass" if dev <= .5 else "fail", "Voltage ratio, all taps", f"Max deviation from theoretical {dev:.2f}% (tolerance 0.5%)")
-        ok = all(Rt[k].get("obs", "").lower().startswith("no disruptive") for k in ("induced", "hvac", "lvac"))
-        add("pass" if ok else "fail", "Dielectric routine tests", "Induced over-voltage, HV (28 kV) and LV (3 kV) power-frequency: withstood")
+        with na('Voltage ratio, all taps', NAMES["routine"]):
+            vph = P["lv"] / math.sqrt(3); dev = 0
+            for side in Rt["ratio"].values():
+                for i, row in enumerate(side):
+                    th = P["hv"] * (1 + (5 - 2.5 * i) / 100) / vph
+                    dev = max(dev, max(abs(x - th) / th * 100 for x in row))
+            C["ratio_dev"] = dev
+            add("pass" if dev <= .5 else "fail", "Voltage ratio, all taps", f"Max deviation from theoretical {dev:.2f}% (tolerance 0.5%)",
+                src=NAMES["routine"], found=f"{dev:.2f}% worst deviation", exp="0.5% or less from the theoretical ratio",
+                fix=None if dev <= .5 else "Check the ratio readings for each tap on the routine test log.")
+        with na('Dielectric routine tests', NAMES["routine"]):
+            ok = all(Rt[k].get("obs", "").lower().startswith("no disruptive") for k in ("induced", "hvac", "lvac"))
+            add("pass" if ok else "fail", "Dielectric routine tests", "Induced over-voltage, HV (28 kV) and LV (3 kV) power-frequency: withstood",
+                src=NAMES["routine"], exp="No disruptive discharge in any test",
+                fix=None if ok else "A dielectric test did not record 'no disruptive discharge'; check the observations on the log.")
     # 6. short circuit
     S = d.get("sc")
     if S:
-        for s in S["shots"]:
-            if abs(mean(s[4:7]) - s[7]) > .01: add("warn", "SC RMS average", f"{s[0]}: mean {mean(s[4:7]):.3f} vs logged {s[7]}")
-        C["sc"] = {}
-        for tap, (ir, ip) in S["required"].items():
-            sh = [s for s in S["shots"] if s[1] == tap and s[9] == ""]
-            mi, mp = mean(s[7] for s in sh), mean(s[3] for s in sh)
-            C["sc"][tap] = (round(mi, 2), round(mp, 2))
-            e = (mi - ir) / ir * 100
-            add("pass" if abs(e) <= 10 else "fail", f"SC current at {tap} tap", f"{len(sh)} shots: mean {mi:.2f} kA rms (req {ir}, {e:+.1f}%), peak {mp:.2f} kA (req {ip})")
-        th = [s for s in S["shots"] if s[9] == "thermal"]
-        if th: add("pass" if th[0][8] >= 2 else "fail", "Thermal ability of SC", f"Duration {th[0][8]} s (min 2 s)")
-        add("pass" if "no" in S["after"].lower() else "fail", "Post-test inspection", S["inspection"])
+        with na('SC RMS averages', NAMES["sc"]):
+            for s in S["shots"]:
+                if abs(mean(s[4:7]) - s[7]) > .01: add("warn", "SC RMS average", f"{s[0]}: mean {mean(s[4:7]):.3f} vs logged {s[7]}",
+                    src=NAMES["sc"], found=f"Shot {s[0]}: logged average {s[7]} kA", exp=f"Mean of the three phases = {mean(s[4:7]):.3f} kA",
+                    fix="Recalculate the average for this shot on the short-circuit log.")
+        with na('SC current', NAMES["sc"]):
+            C["sc"] = {}
+            for tap, (ir, ip) in S["required"].items():
+                sh = [s for s in S["shots"] if s[1] == tap and not s[9]]  # blank or NA note = normal shot
+                mi, mp = mean(s[7] for s in sh), mean(s[3] for s in sh)
+                C["sc"][tap] = (round(mi, 2), round(mp, 2))
+                e = (mi - ir) / ir * 100
+                add("pass" if abs(e) <= 10 else "fail", f"SC current at {tap} tap", f"{len(sh)} shots: mean {mi:.2f} kA rms (req {ir}, {e:+.1f}%), peak {mp:.2f} kA (req {ip})",
+                    src=NAMES["sc"], found=f"{mi:.2f} kA rms ({e:+.1f}%), peak {mp:.2f} kA over {len(sh)} shots", exp=f"{ir} kA rms +/-10%, peak {ip} kA",
+                    fix=None if abs(e) <= 10 else "The applied current was outside +/-10% of the required value; the test may need repeating.")
+        with na('Thermal ability of SC', NAMES["sc"]):
+            th = [s for s in S["shots"] if s[9] == "thermal"]
+            if th: add("pass" if th[0][8] >= 2 else "fail", "Thermal ability of SC", f"Duration {th[0][8]} s (min 2 s)",
+                       src=NAMES["sc"], found=f"{th[0][8]} s", exp="2 s or more",
+                       fix=None if th[0][8] >= 2 else "The thermal short-circuit shot was shorter than 2 s.")
+        with na('Post-test inspection', NAMES["sc"]):
+            iok = "no" in S["after"].lower()
+            add("pass" if iok else "fail", "Post-test inspection", S["inspection"], src=NAMES["sc"], found=S["after"], exp="No abnormalities",
+                fix=None if iok else "Abnormalities were recorded after the short-circuit test; review the untanking notes.")
     # 7. temperature rise
     T = d.get("temp")
+    temp_ok = wdg_ok = False  # oil rise (hourly readings) and winding rise (resistances) are computed independently
     if T and P:
-        k, ca, cf = T["material_k"], T["amb_cold"], T["corr"]
-        hv = T["rhv_hot"] / T["rhv_cold"] * (k + ca) - k - T["amb_sd"] + cf
-        lv = T["rlv_hot"] / T["rlv_cold"] * (k + ca) - k - T["amb_sd"] + cf
-        rises = [h[1] - mean(h[3:6]) for h in T["hours"]]
-        C.update(hv_rise=hv, lv_rise=lv, oil_rise=rises[-1])
-        add("pass" if rises[-1] <= P["limits"]["oil"] else "fail", "Top-oil temperature rise", f"{rises[-1]:.2f} K (limit {P['limits']['oil']} K)")
-        w = P["limits"]["wdg"]
-        for nm, v in (("HV", hv), ("LV", lv)):
-            add("fail" if v > w else "warn" if w - v < 1 else "pass", f"{nm} winding temperature rise", f"{v:.1f} K (limit {w} K, margin {w - v:.1f} K)")
-        dd = [abs(rises[i + 1] - rises[i]) for i in range(len(rises) - 5, len(rises) - 1)]
-        add("pass" if max(dd) <= 1 else "warn", "Steady-state criterion (<=1 K/h)", f"Last-4-hour change in oil rise: max {max(dd):.2f} K")
-        if abs(T["oil_rise_reported"] - rises[-1]) > .1: add("warn", "Reported vs computed oil rise", f"Logsheet reports {T['oil_rise_reported']} K, last-hour computed {rises[-1]:.2f} K")
-        if abs(T["corr_written"] - cf) > 1e-6: add("warn", "Correction factor", f"Written as {T['corr_written']} at top of page 2 but {cf} used in the formula - confirm")
-        add("pass" if abs(T["total"] - T["nll"] - T["fll"]) < .05 else "warn", "Injected loss = NLL + FLL", f"{T['nll']} + {T['fll']} = {T['nll'] + T['fll']:.2f} W vs {T['total']} W")
+        with na('Top-oil temperature rise', NAMES["temp"]):
+            rises = [h[1] - mean(h[3:6]) for h in T["hours"]]
+            C.update(oil_rise=rises[-1]); temp_ok = True
+        with na('Winding temperature rise', NAMES["temp"]):
+            k, ca, cf = T["material_k"], T["amb_cold"], T["corr"]
+            hv = T["rhv_hot"] / T["rhv_cold"] * (k + ca) - k - T["amb_sd"] + cf
+            lv = T["rlv_hot"] / T["rlv_cold"] * (k + ca) - k - T["amb_sd"] + cf
+            C.update(hv_rise=hv, lv_rise=lv); wdg_ok = True
+        if temp_ok:
+            with na('Top-oil temperature rise', NAMES["temp"]):
+                oil = P["limits"]["oil"]
+                add("pass" if rises[-1] <= oil else "fail", "Top-oil temperature rise", f"{rises[-1]:.2f} K (limit {oil} K)",
+                    src=NAMES["temp"], found=f"{rises[-1]:.2f} K at the last hour", exp=f"{oil} K or less",
+                    fix=None if rises[-1] <= oil else "Top-oil rise exceeds the limit; the sample fails this test unless a reading is wrong.")
+        if wdg_ok:
+            with na('Winding temperature rise', NAMES["temp"]):
+                w = P["limits"]["wdg"]
+                for nm, v in (("HV", hv), ("LV", lv)):
+                    add("fail" if v > w else "warn" if w - v < 1 else "pass", f"{nm} winding temperature rise", f"{v:.1f} K (limit {w} K, margin {w - v:.1f} K)",
+                        src=NAMES["temp"], found=f"{v:.1f} K (margin {w - v:.1f} K)", exp=f"{w} K or less",
+                        fix="Exceeds the limit; check the hot and cold resistance readings." if v > w else
+                            "Passes, but by less than 1 K, so a small reading error could change the verdict. Double-check the hot resistance and the correction factor." if w - v < 1 else None)
+        if temp_ok:
+            with na('Steady-state criterion (<=1 K/h)', NAMES["temp"]):
+                dd = [abs(rises[i + 1] - rises[i]) for i in range(len(rises) - 5, len(rises) - 1)]
+                add("pass" if max(dd) <= 1 else "warn", "Steady-state criterion (<=1 K/h)", f"Last-4-hour change in oil rise: max {max(dd):.2f} K",
+                    src=NAMES["temp"], found=f"{max(dd):.2f} K per hour over the last 4 hours", exp="1 K per hour or less",
+                    fix=None if max(dd) <= 1 else "The oil temperature had not settled; the test may have ended too early.")
+        if temp_ok:
+            with na('Reported vs computed oil rise', NAMES["temp"]):
+                if abs(T["oil_rise_reported"] - rises[-1]) > .1: add("warn", "Reported vs computed oil rise", f"Logsheet reports {T['oil_rise_reported']} K, last-hour computed {rises[-1]:.2f} K",
+                    src=NAMES["temp"], found=f"{T['oil_rise_reported']} K written on the log sheet", exp=f"{rises[-1]:.2f} K (top oil minus mean ambient, last hour)",
+                    fix="Check which hour's readings the written figure was taken from. The report uses the computed value.")
+        if wdg_ok:
+            with na('Correction factor', NAMES["temp"]):
+                if abs(T["corr_written"] - cf) > 1e-6: add("warn", "Correction factor", f"Written as {T['corr_written']} at top of page 2 but {cf} used in the formula - confirm",
+                    src=NAMES["temp"], found=f"{T['corr_written']} written at the top of page 2", exp=f"{cf}, the value used in the winding-rise formula",
+                    fix="Confirm the correct factor from the scan. It changes the winding temperature rise directly.")
+        if temp_ok:
+            with na('Injected loss = NLL + FLL', NAMES["temp"]):
+                iok = abs(T["total"] - T["nll"] - T["fll"]) < .05
+                add("pass" if iok else "warn", "Injected loss = NLL + FLL", f"{T['nll']} + {T['fll']} = {T['nll'] + T['fll']:.2f} W vs {T['total']} W",
+                    src=NAMES["temp"], found=f"{T['total']} W injected", exp=f"No-load + full-load loss = {T['nll'] + T['fll']:.2f} W",
+                    fix=None if iok else "The injected loss does not equal the sum of losses; check the figures on the log sheet.")
     # 8. pressure / vacuum / leakage
     Pr = d.get("pressure")
     if Pr:
-        for nm in ("pressure", "vacuum"):
-            x = Pr["type"][nm]; m = max(abs(b - a) for a, b in x["pts"])
-            add("pass" if abs(m - x["max"]) < .01 else "warn", f"{nm.title()} test deflection", f"Max permanent deflection {m:.2f} mm (logged {x['max']}); {x['obs']}")
-        add("pass" if "no" in Pr["leak"]["obs"].lower() else "fail", "Oil leakage test", f"{Pr['leak']['kpa']} kPa for {Pr['leak']['hrs']} h: {Pr['leak']['obs']}")
+        with na('Pressure and vacuum deflection', NAMES["pressure"]):
+            for nm in ("pressure", "vacuum"):
+                x = Pr["type"][nm]; m = max(abs(b - a) for a, b in x["pts"])
+                dok = abs(m - x["max"]) < .01
+                add("pass" if dok else "warn", f"{nm.title()} test deflection", f"Max permanent deflection {m:.2f} mm (logged {x['max']}); {x['obs']}",
+                    src=NAMES["pressure"], found=f"{x['max']} mm logged as maximum", exp=f"{m:.2f} mm, the largest before/after difference",
+                    fix=None if dok else "Re-check the deflection readings and the maximum written on the log.")
+        with na('Oil leakage test', NAMES["pressure"]):
+            lok = "no" in Pr["leak"]["obs"].lower()
+            add("pass" if lok else "fail", "Oil leakage test", f"{Pr['leak']['kpa']} kPa for {Pr['leak']['hrs']} h: {Pr['leak']['obs']}",
+                src=NAMES["pressure"], found=Pr["leak"]["obs"], exp="No leakage at any point",
+                fix=None if lok else "Leakage was recorded; the sample fails the oil leakage test.")
     return F, C
 
 def safe_validate(d):
-    """validate() for data that may be incomplete or mis-shaped (hand-edited spreadsheets): never raises."""
+    """validate() for data that may be incomplete or mis-shaped (hand-edited spreadsheets): never raises.
+    If one document's layout breaks the checks, it is named in a blocking finding and the other documents are still checked."""
     try:
         return validate(d)
     except Exception as e:  # noqa: BLE001 - any shape problem becomes a blocking finding the user can act on
-        what = f"missing field {e}" if isinstance(e, KeyError) else f"{type(e).__name__}: {e}"
-        return [dict(level="fail", check="Data structure", detail=f"Imported data is incomplete or not in the expected layout ({what}). "
+        err = e
+    culprits = []
+    for k in [k for k in d if k != "request"]:
+        try: validate({x: v for x, v in d.items() if x != k})
+        except Exception: continue  # noqa: BLE001 - still failing without k, so k alone is not the cause
+        culprits.append(k)
+    what = lambda x: f"missing field {x}" if isinstance(x, KeyError) else f"{type(x).__name__}: {x}"
+    if not culprits:
+        return [dict(level="fail", check="Data structure", detail=f"Imported data is incomplete or not in the expected layout ({what(err)}). "
                      "Compare with a downloaded template, correct the file and import it again.")], {}
+    try: F, C = validate({x: v for x, v in d.items() if x not in culprits})
+    except Exception: F, C = [], {}  # noqa: BLE001
+    F = [f for f in F if not (f["check"] == "Completeness of source documents")]
+    for k in culprits:
+        name = NAMES.get(k, "Identifiers on each sheet")
+        F.insert(0, dict(level="fail", check=f"Data structure: {name}", source=name,
+                         detail=f"The {name.lower()} is not in the expected layout ({what(err)}), so it could not be checked.",
+                         found="Fields or table shape differ from the standard layout", expected="Same layout as the downloadable template",
+                         action=f"Open the {name.lower()} (Edit under Sources) and correct it, re-import it from a corrected file, "
+                                "or remove it from this job (Remove under Sources) if it should not be part of the report."))
+    return F, C
 
 class Soft(dict):
-    """Header fields that may be absent on hand-entered requests print as '-' instead of breaking the report."""
-    def __missing__(self, k): return "-"
+    """Header fields that may be absent on hand-entered requests print as NA instead of breaking the report."""
+    def __missing__(self, k): return "NA"
 
 # ------------------------------------------------------------------ report
+def shown(v):
+    """Copy of the data for printing: empty values (None or blank text) appear as NA."""
+    if isinstance(v, dict): return {k: shown(x) for k, x in v.items()}
+    if isinstance(v, list): return [shown(x) for x in v]
+    return "NA" if v is None or (isinstance(v, str) and not v.strip()) else v
+
+def fmt(v, spec=".1f"):
+    """Number for the report, or NA when it could not be computed."""
+    try: return format(v, spec)
+    except (TypeError, ValueError): return "NA"
+
 def build_pdf(j, version=None, verify_url=None):
-    d = j["data"]; F, C = validate(d); P, W, Rq = Soft(d["proforma"]), Soft(d["work"]), Soft(d["request"])
+    F, C = validate(j["data"]); d = shown(j["data"]); P, W, Rq = Soft(d.get("proforma", {})), Soft(d.get("work", {})), Soft(d.get("request", {}))
+    Lim = Soft(P["limits"] if isinstance(P["limits"], dict) else {})
+    has = lambda *ks: all(k in d for k in ks)
+    missing = [v for k, v in NAMES.items() if k not in d]
     st = getSampleStyleSheet(); h = st["Heading3"]; n = st["BodyText"]; n.fontSize = 8.5
     cell = lambda s: Paragraph(str(s), ParagraphStyle_small)
     buf = io.BytesIO()
@@ -205,18 +352,24 @@ def build_pdf(j, version=None, verify_url=None):
         t.setStyle(TableStyle(sty)); return t
     kv = lambda pairs: tbl([[a, b] for a, b in pairs], [55 * mm, 125 * mm], head=False)
     verdict = lambda lv: {"pass": "PASS", "warn": "REVIEWED*" if j.get("approver") else "REVIEW*", "fail": "FAIL"}[lv]
-    Rt0, Pr0 = d["routine"], d["pressure"]
-    diel = "; ".join(dict.fromkeys(str(Rt0[k].get("obs", "-")) for k in ("induced", "hvac", "lvac")))
-    mech = f"Leakage: {Pr0['leak']['obs']}; deflection {Pr0['type']['pressure']['max']} mm (pressure), {Pr0['type']['vacuum']['max']} mm (vacuum)"
+    NOT = "NOT EVALUATED"
+    def srow(name, needs, result, requirement, keys):
+        """One summary line; tests whose documents were not provided are listed as not evaluated instead of failing."""
+        if not has(*needs): return [name, "Data not provided (" + ", ".join(NAMES[k] for k in needs if k not in d) + ")", "-", NOT]
+        try: got = result()
+        except Exception: got = "NA"  # noqa: BLE001 - a summary cell must never break the report
+        return [name, got, requirement(), res(*keys)]
     rank = {"pass": 0, "warn": 1, "fail": 2}
     def res(*keys):
-        ls = [f["level"] for f in F if any(k in f["check"] for k in keys)]
+        fs = [f for f in F if any(k in f["check"] for k in keys)]
+        if fs and all(f.get("na") for f in fs): return NOT
+        ls = [f["level"] for f in fs if not f.get("na")]
         return verdict(max(ls, key=rank.get)) if ls else "-"
     E = [Paragraph("CENTRAL POWER RESEARCH INSTITUTE, BENGALURU", st["Title"]),
          Paragraph("Short Circuit Laboratory - TEST REPORT", st["Heading2"]),
          kv([("Test report / series no.", j["series"]), ("Sample code no.", j["sample"]), ("Customer", f"{Rq['customer']}, {Rq['address']}"),
              ("Date(s) of test", f"{W['start']} to {W['completed']}"), ("Reference standard", W["standard"]),
-             ("Tests performed", Rq["tests"] + " (" + "; ".join(P["tests"]) + "), plus routine tests"),
+             ("Tests performed", Rq["tests"] + (" (" + "; ".join(P["tests"]) + "), plus routine tests" if isinstance(P["tests"], list) else "")),
              ("Witness", Rq["witness"]), ("Report prepared by", W["engineer"] + " (Test Engineer)"),
              ("Decision rule", Rq["conformity"]),
              ("Report generated", now() + " by Aletheia" + (f" - version {version}" if version else ""))]),
@@ -228,51 +381,90 @@ def build_pdf(j, version=None, verify_url=None):
              ("Construction", P["construction"])]),
          Paragraph("2. Summary of results", h),
          tbl([["Test", "Result obtained", "Requirement", "Verdict"],
-              ["Short-circuit withstand (dynamic + thermal)", "; ".join(f"{t}: {a} kA rms / {b} kA pk" for t, (a, b) in C.get("sc", {}).items()), "Within +/-10% of required; no abnormality", res("SC", "Thermal", "Post-test", "Reactance")],
-              ["Temperature rise", f"Top oil {C.get('oil_rise', 0):.1f} K; HV wdg {C.get('hv_rise', 0):.1f} K; LV wdg {C.get('lv_rise', 0):.1f} K", f"Oil {P['limits']['oil']} K; winding {P['limits']['wdg']} K", res("rise", "Steady")],
-              ["Total loss (75 C)", f"{C.get('t100')} W (100%); {C.get('t50')} W (50%)", f"{P['loss100']} W; {P['loss50']} W", res("Total loss")],
-              ["Impedance", "see section 3.2", f"{P['z_pct']} % +/-10%", res("Impedance")],
-              ["No-load current at 100% / 112.5%", f"{d['noload']['rows'][0][4]} A / {d['noload']['rows'][2][4]} A", "<=2% / <=5% of rated", res("No-load current")],
-              ["Voltage ratio (7 taps)", f"max dev. {C.get('ratio_dev', 0):.2f}%", "+/-0.5%", res("Voltage ratio")],
-              ["Dielectric routine tests", diel, "no disruptive discharge", res("Dielectric")],
-              ["Pressure / vacuum / oil leakage", mech, "No leakage; deflection as logged", res("deflection", "leakage")]],
+              srow("Short-circuit withstand (dynamic + thermal)", ["sc"], lambda: "; ".join(f"{t}: {a} kA rms / {b} kA pk" for t, (a, b) in C.get("sc", {}).items()),
+                   lambda: "Within +/-10% of required; no abnormality", ("SC", "Thermal", "Post-test", "Reactance")),
+              srow("Temperature rise", ["temp", "proforma"], lambda: f"Top oil {fmt(C.get('oil_rise'))} K; HV wdg {fmt(C.get('hv_rise'))} K; LV wdg {fmt(C.get('lv_rise'))} K",
+                   lambda: f"Oil {Lim['oil']} K; winding {Lim['wdg']} K", ("rise", "Steady")),
+              srow("Total loss (75 C)", ["losses", "proforma"], lambda: f"{C.get('t100')} W (100%); {C.get('t50')} W (50%)",
+                   lambda: f"{P['loss100']} W; {P['loss50']} W", ("Total loss",)),
+              srow("Impedance", ["losses", "proforma"], lambda: "see detailed results", lambda: f"{P['z_pct']} % +/-10%", ("Impedance",)),
+              srow("No-load current at 100% / 112.5%", ["noload", "proforma"], lambda: f"{d['noload']['rows'][0][4]} A / {d['noload']['rows'][2][4]} A",
+                   lambda: "<=2% / <=5% of rated", ("No-load current",)),
+              srow("Voltage ratio (all taps)", ["routine", "proforma"], lambda: f"max dev. {fmt(C.get('ratio_dev'), '.2f')}%", lambda: "+/-0.5%", ("Voltage ratio",)),
+              srow("Dielectric routine tests", ["routine"], lambda: "; ".join(dict.fromkeys(str(d["routine"][k].get("obs", "-")) for k in ("induced", "hvac", "lvac"))),
+                   lambda: "no disruptive discharge", ("Dielectric",)),
+              srow("Pressure / vacuum / oil leakage", ["pressure"],
+                   lambda: (lambda Pr0: f"Leakage: {Pr0['leak']['obs']}; deflection {Pr0['type']['pressure']['max']} mm (pressure), {Pr0['type']['vacuum']['max']} mm (vacuum)")(d["pressure"]),
+                   lambda: "No leakage; deflection as logged", ("deflection", "leakage"))],
              [48 * mm, 62 * mm, 45 * mm, 25 * mm])]
-    L = d["losses"]
-    E += [Paragraph("3. Detailed results", h), Paragraph("3.1 Winding resistance (HV ohm / LV milli-ohm), before / after short circuit", n)]
-    R = d["resistance"]
-    E.append(tbl([["Tap/winding", "Before: R1, R2, R3", "After: R1, R2, R3"]] + [[f"HV tap {t}", ", ".join(map(str, r[0])), ", ".join(map(str, r[1]))] for t, r in R["hv"].items()] + [["LV", ", ".join(map(str, R["lv"][0])), ", ".join(map(str, R["lv"][1]))]]))
-    E += [Paragraph("3.2 Losses and impedance (reference temperature 75 C)", n),
-          tbl([["Tap", "%Z", "%X", "%X chg", "Load loss W", "Stray W", "Total 100% W", "Total 50% W", "Isc rms/pk kA"]] +
-              [[r[0], r[1], r[2], r[3] if r[3] is not None else "-", r[6], r[10], r[13], r[12] or "-", f"{r[9]}/{r[8]}" if r[9] else "-"] for r in L["rows"]]),
-          Paragraph(f"No-load loss: {L['nll_bt']} W (before), {L['nll_at']} W (after).", n),
-          Paragraph("3.3 No-load current / loss", n),
-          tbl([["Condition", "Avg V", "I1, I2, I3 (A)", "Avg I", "Watts", "f Hz"]] + [[r[0], r[2], ", ".join(map(str, r[3])), r[4], r[6], r[7]] for r in d["noload"]["rows"]]),
-          Paragraph("3.4 Routine tests (before / after short circuit)", n)]
-    Rt = d["routine"]
-    E.append(tbl([["Test", "Before", "After"]] + [[f"IR {k} (Gohm)", a, b] for k, (a, b) in Rt["ir"].items()] +
-                 [["Induced over-voltage", f"{Rt['induced']['v']} V, {Rt['induced']['f']} Hz, {Rt['induced']['t']} s, {Rt['induced']['i'][0]} A", f"{Rt['induced']['i'][1]} A - {Rt['induced']['obs']}"],
-                  ["HV / LV power-frequency", f"{Rt['hvac']['kv']} kV / {Rt['lvac']['kv']} kV for 60 s", Rt["hvac"]["obs"]],
-                  ["Ambient / RH", f"{Rt['amb'][0]} C / {Rt['rh'][0]}%", f"{Rt['amb'][1]} C / {Rt['rh'][1]}%"]] +
-                 [[f"Voltage ratio tap {i + 1}", ", ".join(map(str, Rt["ratio"]["BT"][i])), ", ".join(map(str, Rt["ratio"]["AT"][i]))] for i in range(7)]))
-    S = d["sc"]
-    E += [Paragraph(f"3.5 Short-circuit test ({S['date']}; {S['condition']})", n),
-          tbl([["Osc", "Tap", "Peak kA", "RMS U", "RMS V", "RMS W", "Avg", "Dur s", "Note"]] + [[s[0], s[1], s[3] or "-", s[4], s[5], s[6], s[7], s[8], s[9]] for s in S["shots"]]),
-          Paragraph(f"During / after test: {S['during']} / {S['after']}. Untanking: {S['inspection']}.", n)]
-    T = d["temp"]
-    E += [Paragraph(f"3.6 Temperature rise ({T['dates']}; short-circuit method, {T['tap']} tap, {T['current']} A, injected {T['total']} W)", n),
-          tbl([["Hour", "Top oil C", "Bottom oil C", "Mean ambient C", "Oil rise K"]] + [[x[0], x[1], x[2], f"{mean(x[3:6]):.2f}", f"{x[1] - mean(x[3:6]):.2f}"] for x in T["hours"]]),
-          Paragraph(f"Winding rise = (R2/R1)(235+{T['amb_cold']}) - 235 - {T['amb_sd']} + {T['corr']}: HV {C['hv_rise']:.1f} K, LV {C['lv_rise']:.1f} K.", n)]
-    Pr = d["pressure"]; ty = Pr["type"]
-    E += [Paragraph("3.7 Pressure, vacuum and oil-leakage tests", n),
-          tbl([["Test", "Condition", "Result"], ["Routine pressure", f"{Pr['routine']['kpa']} kPa, {Pr['routine']['min']} min ({Pr['routine']['date']})", Pr["routine"]["obs"]],
-               ["Type pressure", f"{ty['pressure']['kpa']} kPa, {ty['pressure']['min']} min", f"Max deflection {ty['pressure']['max']} mm - {ty['pressure']['obs']}"],
-               ["Vacuum", f"{ty['vacuum']['mmhg']} mmHg, {ty['vacuum']['min']} min", f"Max deflection {ty['vacuum']['max']} mm - {ty['vacuum']['obs']}"],
-               ["Oil leakage", f"{Pr['leak']['kpa']} kPa (2 x {Pr['leak']['head_kpa']} kPa head), {Pr['leak']['hrs']} h ({Pr['leak']['date']})", Pr["leak"]["obs"]]])]
+    E.append(Paragraph("3. Detailed results", h)); sub = iter(range(1, 20))
+    def amb(x):
+        try: return mean(x[3:6])
+        except (TypeError, ValueError): return None
+    def rise(x):
+        try: return x[1] - amb(x)
+        except TypeError: return None
+    @contextmanager
+    def part(name):
+        """One detailed section; if its data is too incomplete to lay out, say so instead of failing the whole report."""
+        try: yield
+        except Exception:  # noqa: BLE001
+            E.append(Paragraph(f"{name}: data incomplete (NA values); see the source document.", n))
+    num = lambda title: Paragraph(f"3.{next(sub)} {title}", n)
+    if has("resistance"):
+        with part(NAMES['resistance']):
+            R = d["resistance"]
+            E += [num("Winding resistance (HV ohm / LV milli-ohm), before / after short circuit"),
+                  tbl([["Tap/winding", "Before: R1, R2, R3", "After: R1, R2, R3"]] + [[f"HV tap {t}", ", ".join(map(str, r[0])), ", ".join(map(str, r[1]))] for t, r in R["hv"].items()] + [["LV", ", ".join(map(str, R["lv"][0])), ", ".join(map(str, R["lv"][1]))]])]
+    if has("losses"):
+        with part(NAMES['losses']):
+            L = d["losses"]
+            E += [num("Losses and impedance (reference temperature 75 C)"),
+                  tbl([["Tap", "%Z", "%X", "%X chg", "Load loss W", "Stray W", "Total 100% W", "Total 50% W", "Isc rms/pk kA"]] +
+                      [[r[0], r[1], r[2], r[3] if r[3] is not None else "-", r[6], r[10], r[13], r[12] or "-", f"{r[9]}/{r[8]}" if r[9] else "-"] for r in L["rows"]]),
+                  Paragraph(f"No-load loss: {L['nll_bt']} W (before), {L['nll_at']} W (after).", n)]
+    if has("noload"):
+        with part(NAMES['noload']):
+            E += [num("No-load current / loss"),
+                  tbl([["Condition", "Avg V", "I1, I2, I3 (A)", "Avg I", "Watts", "f Hz"]] + [[r[0], r[2], ", ".join(map(str, r[3])), r[4], r[6], r[7]] for r in d["noload"]["rows"]])]
+    if has("routine"):
+        with part(NAMES['routine']):
+            Rt = d["routine"]
+            E += [num("Routine tests (before / after short circuit)"),
+                  tbl([["Test", "Before", "After"]] + [[f"IR {k} (Gohm)", a, b] for k, (a, b) in Rt["ir"].items()] +
+                      [["Induced over-voltage", f"{Rt['induced']['v']} V, {Rt['induced']['f']} Hz, {Rt['induced']['t']} s, {Rt['induced']['i'][0]} A", f"{Rt['induced']['i'][1]} A - {Rt['induced']['obs']}"],
+                       ["HV / LV power-frequency", f"{Rt['hvac']['kv']} kV / {Rt['lvac']['kv']} kV for 60 s", Rt["hvac"]["obs"]],
+                       ["Ambient / RH", f"{Rt['amb'][0]} C / {Rt['rh'][0]}%", f"{Rt['amb'][1]} C / {Rt['rh'][1]}%"]] +
+                      [[f"Voltage ratio tap {i + 1}", ", ".join(map(str, a)), ", ".join(map(str, b))] for i, (a, b) in enumerate(zip(Rt["ratio"]["BT"], Rt["ratio"]["AT"]))])]
+    if has("sc"):
+        with part(NAMES['sc']):
+            S = d["sc"]
+            E += [num(f"Short-circuit test ({S['date']}; {S['condition']})"),
+                  tbl([["Osc", "Tap", "Peak kA", "RMS U", "RMS V", "RMS W", "Avg", "Dur s", "Note"]] + [[s[0], s[1], s[3] or "-", s[4], s[5], s[6], s[7], s[8], s[9]] for s in S["shots"]]),
+                  Paragraph(f"During / after test: {S['during']} / {S['after']}. Untanking: {S['inspection']}.", n)]
+    if has("temp"):
+        with part(NAMES['temp']):
+            T = d["temp"]
+            E += [num(f"Temperature rise ({T['dates']}; short-circuit method, {T['tap']} tap, {T['current']} A, injected {T['total']} W)"),
+                  tbl([["Hour", "Top oil C", "Bottom oil C", "Mean ambient C", "Oil rise K"]] + [[x[0], x[1], x[2], fmt(amb(x), ".2f"), fmt(rise(x), ".2f")] for x in T["hours"]])]
+            if "hv_rise" in C:
+                E.append(Paragraph(f"Winding rise = (R2/R1)(235+{T['amb_cold']}) - 235 - {T['amb_sd']} + {T['corr']}: HV {C['hv_rise']:.1f} K, LV {C['lv_rise']:.1f} K.", n))
+    if has("pressure"):
+        with part(NAMES['pressure']):
+            Pr = d["pressure"]; ty = Pr["type"]
+            E += [num("Pressure, vacuum and oil-leakage tests"),
+                  tbl([["Test", "Condition", "Result"], ["Routine pressure", f"{Pr['routine']['kpa']} kPa, {Pr['routine']['min']} min ({Pr['routine']['date']})", Pr["routine"]["obs"]],
+                       ["Type pressure", f"{ty['pressure']['kpa']} kPa, {ty['pressure']['min']} min", f"Max deflection {ty['pressure']['max']} mm - {ty['pressure']['obs']}"],
+                       ["Vacuum", f"{ty['vacuum']['mmhg']} mmHg, {ty['vacuum']['min']} min", f"Max deflection {ty['vacuum']['max']} mm - {ty['vacuum']['obs']}"],
+                       ["Oil leakage", f"{Pr['leak']['kpa']} kPa (2 x {Pr['leak']['head_kpa']} kPa head), {Pr['leak']['hrs']} h ({Pr['leak']['date']})", Pr["leak"]["obs"]]])]
+    if missing:
+        E.append(Paragraph("Source documents not provided (the related tests were not evaluated): " + ", ".join(missing) + ".", n))
     fails = [f for f in F if f["level"] == "fail"]; warns = [f for f in F if f["level"] == "warn"]
     E += [Paragraph("4. Statement of conformity", h),
           Paragraph(f"Decision rule requested by the customer: {Rq['conformity']}. <b>" +
                     ("The sample does NOT comply: " + "; ".join(f["check"] for f in fails) if fails else
-                     f"The sample complied with all {sum(f['level'] == 'pass' for f in F)} automatically evaluated requirements ({W['standard']}).") + "</b>", n)]
+                     f"The sample complied with all {sum(f['level'] == 'pass' for f in F)} automatically evaluated requirements ({W['standard']})"
+                     + (f". This statement covers only the tests whose data was provided; not evaluated: {', '.join(missing)}." if missing else ".")) + "</b>", n)]
     if warns:
         E += [Paragraph("* Items flagged by automated validation and accepted by the reviewer at approval:" if j.get("approver") else
                         "* Items flagged by automated validation - to be confirmed by the reviewer before approval:", n), tbl([["Check", "Detail"]] + [[f["check"], f["detail"]] for f in warns])]
@@ -314,17 +506,27 @@ def upload(b):
     return str(b.get("filename") or "upload")[:200], raw
 
 def check_ids(b):
+    """Only the series number is required (it identifies the record). Other fields may be left empty and are stored as NA;
+    a sample code that is given must still have the CPRI format."""
     err = []
-    if not re.fullmatch(SERIES_RE, str(b.get("series", ""))): err.append("Series must look like CPRIBLRSCL25T1654")
-    if not re.fullmatch(SAMPLE_RE, str(b.get("sample", ""))): err.append("Sample code must look like HVD25S0847")
-    for f in ("customer", "rating"):
-        if not str(b.get(f, "")).strip(): err.append(f"{f} is required")
+    if not str(b.get("series") or "").strip(): err.append("Test series number is required (it identifies the record)")
+    elif not re.fullmatch(SERIES_RE, str(b["series"]).strip()): err.append("Series must look like CPRIBLRSCL25T1654")
+    sample = str(b.get("sample") or "").strip()
+    if sample and sample.upper() != "NA" and not re.fullmatch(SAMPLE_RE, sample): err.append("Sample code must look like HVD25S0847, or be left empty")
+    if not err:
+        b["series"] = str(b["series"]).strip()
+        for f in ("sample", "customer", "rating"): b[f] = str(b.get(f) or "").strip() or "NA"
     return err
 
 def data_changed(j, d, event):
     """Any change to test data sends the job back to 'Data Imported': checks and the report must be redone."""
     stale = j["stage"] >= 3
-    save(j["id"], data=d, stage=max(min(j["stage"], 1), 1), findings=[], approver=None)
+    # record details left as NA are filled from the imported documents (request form, work instruction)
+    rq, wk = d.get("request") or {}, d.get("work") or {}
+    found = dict(customer=rq.get("customer") or wk.get("customer"), rating=rq.get("rating"), sample=wk.get("sample"))
+    fill = {k: str(v).strip() for k, v in found.items() if j.get(k) in (None, "", "NA") and v and str(v).strip()
+            and (k != "sample" or re.fullmatch(SAMPLE_RE, str(v).strip()))}
+    save(j["id"], data=d, stage=max(min(j["stage"], 1), 1), findings=[], approver=None, **fill)
     with db() as c: log(c, j["id"], event + (" - earlier report is now out of date" if stale else ""))
 
 def freeze(j):
@@ -397,6 +599,16 @@ def section(i):
     data_changed(j, d, f"{NAMES.get(k, 'Identifiers')} {'entered from AI reading of ' + str(b['source'])[:120] + ' after review' if b.get('source') else 'edited by hand'}")
     return jsonify(ok=True)
 
+@app.delete("/api/jobs/<int:i>/section/<k>")
+def remove_section(i, k):
+    """Detach one document's data from the job; the checks and the report must be redone. The customer request stays."""
+    if k not in set(NAMES) - {"request"} | {"ids"}: return jsonify(error=["This document cannot be removed"]), 400
+    j = getjob(i); d = j["data"]
+    if k not in d: return jsonify(error=["This document is not part of the job"]), 404
+    del d[k]
+    data_changed(j, d, f"{NAMES.get(k, 'Identifiers on each sheet')} removed from the job")
+    return jsonify(ok=True)
+
 @app.get("/api/jobs/<int:i>/export/<fmt>")
 def export(i, fmt):
     j = getjob(i, False); return send_export(j["data"], fmt, j["series"])
@@ -418,7 +630,7 @@ def register():
     name, raw = upload(body()); recs, table = importers.load_register(name, raw); made, skipped = [], []
     for n, r in enumerate(recs, 1):
         r["series"], r["sample"] = r["series"].upper(), r["sample"].upper()
-        r["rating"] = r["rating"] or "Not recorded"; err = check_ids(r)
+        err = check_ids(r)
         if err: skipped.append(dict(row=n, series=r["series"], reason="; ".join(err))); continue
         r["request"] = {k: r[k] for k in REQ_KEYS if r.get(k)}
         try:
@@ -469,12 +681,13 @@ def del_source(sid):
 @app.post("/api/sources/<int:sid>/extract")
 def extract(sid):
     """Ask Gemini for a proposal for one section. Nothing is saved until the engineer reviews it and posts it to /section."""
-    r = source_row(sid); k = body().get("section")
+    r = source_row(sid); b = body(); k = b.get("section")
     if k not in NAMES: return jsonify(error=["Choose which document this is"]), 400
     example = load_demo().get(k, {})
     with db() as c:
-        out = vision.extract(c, r["content"], r["mime"], k, NAMES[k], example, app.config.get("VISION_TRANSPORT"))
-        log(c, r["job_id"], f"AI reading requested for {r['filename']} as {NAMES[k]} (proposal only, not saved)")
+        out = vision.extract(c, r["content"], r["mime"], k, NAMES[k], example, app.config.get("VISION_TRANSPORT"),
+                             sha=r["sha256"], cache_path=AI_CACHE, fresh=bool(b.get("fresh")))
+        log(c, r["job_id"], f"AI reading {'reused from cache' if out['cached'] else 'requested'} for {r['filename']} as {NAMES[k]} (proposal only, not saved)")
     return jsonify(out)
 
 # ---- validate, generate, approve
