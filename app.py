@@ -595,6 +595,40 @@ def create():
         with db() as c: return jsonify(id=insert_job(c, b, "Customer request captured")), 201
     except sqlite3.IntegrityError: return jsonify(error=["Series number already exists"]), 409
 
+@app.post("/api/jobs/from-file")
+def create_from_file():
+    """New request from a data file: the series number and request details come from the file (or the form, if typed)."""
+    b = body(); name, raw = upload(b)
+    typed = str(b.get("series") or "").strip().upper() or None
+    content, kind, notes = importers.load_test_data(name, raw, typed)
+    if not isinstance(content, dict) or not content: return jsonify(error=["No test data found in this file"]), 400
+    rq, wk = content.get("request") or {}, content.get("work") or {}
+    ids = (content.get("ids") or {}).get("work") or [None, None]
+    series = typed or str(wk.get("series") or ids[0] or "").strip().upper()
+    new = dict(series=series, sample=str(wk.get("sample") or ids[1] or "").strip().upper(), customer=rq.get("customer") or wk.get("customer"),
+               rating=rq.get("rating"), request={k: rq[k] for k in REQ_KEYS if rq.get(k)})
+    if not series: return jsonify(error=["This file has no test series number. Type it in the form, then drop the file again."]), 400
+    if new["sample"] and not re.fullmatch(SAMPLE_RE, new["sample"]): new["sample"] = ""  # a misread sample code must not block the job
+    err = check_ids(new)
+    if err: return jsonify(error=err + ["Type the correct test series number in the form and drop the file again."]), 400
+    try:
+        with db() as c: i = insert_job(c, new, f"Customer request created from {name}")
+    except sqlite3.IntegrityError: return jsonify(error=[f"Series {series} already exists. Open that job, or type a different series number."]), 409
+    r = apply_import(getjob(i), i, name, content, kind, notes)
+    if isinstance(r, tuple): return jsonify(id=i, warning=r[0].get_json().get("error")), 201  # job exists; import problem shown on its page
+    return jsonify(id=i, **r.get_json()), 201
+
+@app.post("/api/read-scan")
+def read_scan():
+    """AI reading of a customer request form or work instruction before the job exists (pre-fills the New request form)."""
+    b = body(); k = b.get("section") if b.get("section") in ("request", "work") else "request"
+    name, raw = upload(b)
+    if len(raw) > importers.MAX_BYTES: raise importers.ImportError_("File is too large (20 MB maximum)")
+    with db() as c:
+        out = vision.extract(c, raw, sniff(raw), k, NAMES[k], load_demo().get(k, {}), app.config.get("VISION_TRANSPORT"),
+                             sha=hashlib.sha256(raw).hexdigest(), cache_path=AI_CACHE, fresh=bool(b.get("fresh")))
+    return jsonify(out)
+
 @app.get("/api/jobs/<int:i>")
 def one(i): return jsonify(getjob(i))
 
@@ -605,6 +639,10 @@ def imp(i):
     if isinstance(b.get("content"), dict): name, content, kind = str(b.get("filename") or "upload"), b["content"], "json"
     else:
         name, raw = upload(b); content, kind, notes = importers.load_test_data(name, raw, j["series"])
+    return apply_import(j, i, name, content, kind, notes)
+
+def apply_import(j, i, name, content, kind, notes):
+    """Merge imported sections into a job (also used when a job is created from a file)."""
     ok = set(NAMES) | {"ids", "other"}
     if not isinstance(content, dict) or not content or not set(content) <= ok:
         return jsonify(error=["Unrecognised file: expected sections " + ", ".join(NAMES)]), 400
@@ -755,7 +793,8 @@ def extract(sid):
     example = vision.OTHER_LAYOUT if k == "other" else load_demo().get(k, {})
     with db() as c:
         out = vision.extract(c, r["content"], r["mime"], k, NAMES.get(k, "Other laboratory log sheet"), example, app.config.get("VISION_TRANSPORT"),
-                             sha=r["sha256"], cache_path=AI_CACHE, fresh=bool(b.get("fresh")))
+                             sha=r["sha256"], cache_path=AI_CACHE, fresh=bool(b.get("fresh")),
+                             part=b.get("part") if isinstance(b.get("part"), int) else None)
         log(c, r["job_id"], f"AI reading {'reused from cache' if out['cached'] else 'requested'} for {r['filename']} as {NAMES.get(k, 'other log sheet')} (proposal only, not saved)")
     return jsonify(out)
 
@@ -763,14 +802,30 @@ def extract(sid):
 @app.post("/api/jobs/<int:i>/validate")
 def val(i):
     j = getjob(i); F, _ = safe_validate(j["data"]); fails = sum(f["level"] == "fail" for f in F)
+    done = {(f["check"], f["detail"]) for f in j["findings"] if f.get("reviewed")}  # unchanged items keep their review
+    for f in F:
+        if f["level"] == "warn" and (f["check"], f["detail"]) in done: f["reviewed"] = True
     save(i, findings=F, stage=max(j["stage"], 2) if not fails else min(j["stage"], 1))
     with db() as c: log(c, i, f"Validation run: {sum(f['level'] == 'pass' for f in F)} pass, {sum(f['level'] == 'warn' for f in F)} warn, {fails} fail")
+    return jsonify(findings=F)
+
+@app.post("/api/jobs/<int:i>/review")
+def review(i):
+    """Mark one flagged check as reviewed by the engineer (failed checks cannot be: they must be fixed)."""
+    j = getjob(i); b = body(); F = j["findings"]; n = b.get("index")
+    if not isinstance(n, int) or not 0 <= n < len(F): return jsonify(error=["No such check"]), 400
+    if F[n]["level"] == "fail": return jsonify(error=["A failed check cannot be marked as reviewed: correct the data and run the checks again"]), 409
+    if F[n]["level"] != "warn": return jsonify(error=["Only flagged items need review"]), 400
+    F[n]["reviewed"] = bool(b.get("reviewed", True)); save(i, findings=F)
+    with db() as c: log(c, i, f"{'Reviewed' if F[n]['reviewed'] else 'Review withdrawn'}: {F[n]['check']} - {F[n]['detail'][:90]}")
     return jsonify(findings=F)
 
 @app.post("/api/jobs/<int:i>/generate")
 def gen(i):
     j = getjob(i)
     if j["stage"] < 2: return jsonify(error=["Validate data (no failures) before generating"]), 409
+    left = [f["check"] for f in j["findings"] if f["level"] == "warn" and not f.get("reviewed")]
+    if left: return jsonify(error=[f"Review every flagged item before the report is built ({len(left)} left)"]), 409
     t = dt.datetime.now()
     try: v, sha = freeze(j)
     except Exception as e:  # noqa: BLE001

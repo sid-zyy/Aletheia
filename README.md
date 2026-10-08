@@ -37,7 +37,7 @@ Dashboard: pipeline counts, quality gate, charts against limits, search by serie
 | Excel (`.xlsx`) | one sheet with `section, field, value`, or one sheet per section with `field, value` |
 | Existing database (SQLite `.db`) | any table with `section, field, value`, or one table per section with `field, value`. Opened read-only. |
 | JSON | one object per section (the original format) |
-| Scan or photo (`.pdf`, `.png`, `.jpg`, `.webp`) | stored with a SHA-256 fingerprint; type the values, or use "Read with AI" |
+| Scan or photo (`.pdf`, `.png`, `.jpg`, `.webp`) | stored with a SHA-256 fingerprint; type the values, or use "Scan" |
 
 `section` is one of `request, proforma, work, losses, resistance, noload, routine, sc, temp, pressure, ids`.
 `field` is a path: `kva`, `limits.oil`, `hours[0][1]` (dots for names, `[n]` for list positions, counting from 0).
@@ -57,7 +57,7 @@ a searchable record; invalid or duplicate rows are listed with the reason.
 
 ## Reading scans with AI (optional)
 
-On a job, attach a scan, click **Read with AI**, say which document it is. The answer opens as an editable proposal
+On a job, attach a scan, click **Scan**, say which document it is. The answer opens as an editable proposal
 with uncertain fields highlighted. Nothing is saved until you review and save it. Without a reader configured, the
 button explains that it is not set up; everything else works offline.
 

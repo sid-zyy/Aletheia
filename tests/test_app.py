@@ -21,6 +21,12 @@ class Base(unittest.TestCase):
             for t in ("jobs", "imports", "audit", "sources", "reports", "vision_calls"): c.execute(f"DELETE FROM {t}")
         self.c = aletheia.app.test_client(); aletheia.app.config.pop("VISION_TRANSPORT", None)
 
+    def gen(self, i):
+        """Review every flagged item one by one, as the engineer does, then build the report."""
+        for n, f in enumerate(self.get(i)["findings"]):
+            if f["level"] == "warn" and not f.get("reviewed"): self.c.post(f"/api/jobs/{i}/review", json=dict(index=n))
+        return self.c.post(f"/api/jobs/{i}/generate")
+
     def job(self, series="CPRIBLRSCL25T1654"):
         r = self.c.post("/api/jobs", json=dict(series=series, sample="HVD25S0847", customer="A.P. Transformers", rating="250 kVA", request=DEMO["request"]))
         self.assertEqual(r.status_code, 201, r.json); return r.json["id"]
@@ -46,7 +52,7 @@ class ImportFormats(Base):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("lab.csv", raw("AP_Transformers_25T1654.csv")))
         f = self.c.post(f"/api/jobs/{i}/validate").json["findings"]
         self.assertFalse([x for x in f if x["level"] == "fail"]); self.assertEqual(len(f), 30)
-        g = self.c.post(f"/api/jobs/{i}/generate").json; self.assertEqual(g["version"], 1)
+        g = self.gen(i).json; self.assertEqual(g["version"], 1)
         self.assertEqual(self.c.post(f"/api/jobs/{i}/approve", json=dict(name="Reviewer")).json["version"], 2)
         pdf = self.c.get(f"/api/jobs/{i}/report.pdf"); self.assertTrue(pdf.data.startswith(b"%PDF"))
         j = self.get(i); self.assertEqual(j["stage"], 4); self.assertEqual(j["imports"][0]["kind"], "csv")
@@ -80,7 +86,7 @@ class ImportFormats(Base):
         self.assertIn("Top-oil temperature rise", na); self.assertIn("No-load current limits", na)
         self.assertTrue([x for x in f if x["check"] == "Total loss at 100% load (75 C)" and x["level"] == "pass"])  # other checks still run
         self.assertEqual(self.get(i)["stage"], 2)
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/generate").status_code, 200)
+        self.assertEqual(self.gen(i).status_code, 200)
 
     def test_ollama_reader_uses_native_api_with_json_and_context(self):
         i = self.job(); sid = self.c.post(f"/api/jobs/{i}/sources", json=up("scan.png", PNG)).json["id"]
@@ -91,7 +97,8 @@ class ImportFormats(Base):
             aletheia.app.config["VISION_TRANSPORT"] = fake
             r = self.c.post(f"/api/sources/{sid}/extract", json=dict(section="work")); self.assertEqual(r.status_code, 200, r.json)
             self.assertEqual(r.json["data"], DEMO["work"])
-            b = sent[0]; self.assertEqual((b["format"], b["stream"], b["options"]["num_ctx"]), ("json", False, 6000))
+            b = sent[0]; self.assertEqual((b["stream"], b["options"]["num_ctx"]), (False, 6000))
+            self.assertEqual(b["format"]["properties"]["data"]["required"], list(DEMO["work"]))  # answer constrained to the layout
             self.assertEqual(len(b["messages"][0]["images"]), 1)
         finally:
             for v in ("AI_BASE_URL", "AI_MODEL", "AI_NUM_CTX"): os.environ.pop(v)
@@ -106,16 +113,53 @@ class ImportFormats(Base):
         f = self.c.post(f"/api/jobs/{i}/validate").json["findings"]
         self.assertTrue([x for x in f if x["check"] == "Additional record: Noise level test" and x["level"] == "warn"])
         self.assertTrue([x for x in f if x["check"] == "Identifier consistency" and "Noise level test" in x["detail"]])  # 25T1656 vs 25T1654
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/generate").status_code, 200)
+        self.assertEqual(self.gen(i).status_code, 200)
         j2 = self.job("CPRIBLRSCL25T1999")  # exported CSV, including the extra sheet, imports into another job unchanged
         self.c.post(f"/api/jobs/{j2}/import", json=up("x.csv", self.c.get(f"/api/jobs/{i}/export/csv").data))
         self.assertEqual(self.get(j2)["data"]["other"], self.get(i)["data"]["other"])
         self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/other:{key}").status_code, 200); self.assertNotIn("other", self.get(i)["data"])
         self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/other:{key}").status_code, 404)
 
+    def test_new_request_from_a_data_file(self):
+        csv = raw("AP_Transformers_25T1654.csv")
+        r = self.c.post("/api/jobs/from-file", json=up("job.csv", csv)); self.assertEqual(r.status_code, 201, r.json)
+        j = self.get(r.json["id"])
+        self.assertEqual((j["series"], j["sample"], j["customer"]), ("CPRIBLRSCL25T1654", "HVD25S0847", "A.P. Transformers"))
+        self.assertEqual(len([k for k in j["data"] if k != "ids"]), 10)
+        self.assertEqual(self.c.post("/api/jobs/from-file", json=up("job.csv", csv)).status_code, 409)  # same series again
+        r = self.c.post("/api/jobs/from-file", json=dict(series="CPRIBLRSCL25T2001", **up("job.csv", csv)))  # typed series wins
+        self.assertEqual(r.status_code, 201); self.assertEqual(self.get(r.json["id"])["series"], "CPRIBLRSCL25T2001")
+        no_series = b"section,field,value" + bytes([10]) + b"proforma,kva,250" + bytes([10])
+        self.assertEqual(self.c.post("/api/jobs/from-file", json=up("x.csv", no_series)).status_code, 400)  # no series
+
+    def test_read_a_request_scan_before_the_job_exists(self):
+        os.environ.update(GEMINI_API_KEY="test")
+        try:
+            aletheia.app.config["VISION_TRANSPORT"] = lambda *a: {"candidates": [{"content": {"parts": [{"text": json.dumps({"data": DEMO["request"], "uncertain": []})}]}}]}
+            r = self.c.post("/api/read-scan", json=dict(section="request", **up("Customer request form.png", PNG))); self.assertEqual(r.status_code, 200, r.json)
+            self.assertEqual(r.json["data"]["customer"], "A.P. Transformers")
+        finally:
+            os.environ.pop("GEMINI_API_KEY")
+
+    def test_review_one_by_one_before_the_report(self):
+        i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
+        F = self.c.post(f"/api/jobs/{i}/validate").json["findings"]; warns = [n for n, f in enumerate(F) if f["level"] == "warn"]
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/generate").status_code, 409)  # nothing reviewed yet
+        self.c.post(f"/api/jobs/{i}/review", json=dict(index=warns[0]))
+        self.assertIn(f"{len(warns) - 1} left", self.c.post(f"/api/jobs/{i}/generate").json["error"][0])
+        F = self.c.post(f"/api/jobs/{i}/validate").json["findings"]  # unchanged items keep their review
+        self.assertTrue(F[warns[0]].get("reviewed"))
+        passed = [n for n, f in enumerate(F) if f["level"] == "pass"][0]
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/review", json=dict(index=passed)).status_code, 400)
+        self.assertEqual(self.gen(i).status_code, 200)
+        d = json.loads(json.dumps(DEMO)); d["temp"]["hours"][-1][1] = 65.2  # top-oil rise over the limit: a failed check
+        j = self.job("CPRIBLRSCL25T1998"); self.c.post(f"/api/jobs/{j}/import", json=up("f.json", json.dumps(d).encode()))
+        F = self.c.post(f"/api/jobs/{j}/validate").json["findings"]; fail = [n for n, f in enumerate(F) if f["level"] == "fail"][0]
+        self.assertEqual(self.c.post(f"/api/jobs/{j}/review", json=dict(index=fail)).status_code, 409)
+
     def test_remove_a_document(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
-        self.c.post(f"/api/jobs/{i}/validate"); self.c.post(f"/api/jobs/{i}/generate")
+        self.c.post(f"/api/jobs/{i}/validate"); self.gen(i)
         self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/temp").status_code, 200)
         j = self.get(i); self.assertNotIn("temp", j["data"]); self.assertEqual(j["stage"], 1)  # report withdrawn, checks to redo
         self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/temp").status_code, 404)
@@ -130,7 +174,7 @@ class ImportFormats(Base):
         self.assertEqual(self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1998", sample="bad")).status_code, 400)
         i = r.json["id"]; self.c.post(f"/api/jobs/{i}/section", json=dict(section="sc", data=DEMO["sc"]))
         self.assertEqual(self.c.post(f"/api/jobs/{i}/validate").status_code, 200)
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/generate").status_code, 200)
+        self.assertEqual(self.gen(i).status_code, 200)
 
     def test_export_reimports(self):
         i = self.c.post("/api/demo").json["id"]
@@ -161,7 +205,7 @@ class Register(Base):
 
 class ReportsAndSources(Base):
     def ready(self):
-        i = self.c.post("/api/demo").json["id"]; self.c.post(f"/api/jobs/{i}/validate"); self.c.post(f"/api/jobs/{i}/generate"); return i
+        i = self.c.post("/api/demo").json["id"]; self.c.post(f"/api/jobs/{i}/validate"); self.gen(i); return i
 
     def test_versions_are_frozen_and_verifiable(self):
         i = self.ready(); v1 = self.get(i)["reports"][0]
@@ -185,7 +229,7 @@ class ReportsAndSources(Base):
     def test_report_for_hand_entered_request_without_optional_fields(self):
         i = self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1654", sample="HVD25S0847", customer="X", rating="250 kVA")).json["id"]
         self.c.post(f"/api/jobs/{i}/import", json=dict(filename="d.json", content={k: v for k, v in DEMO.items() if k != "request"}))
-        self.c.post(f"/api/jobs/{i}/validate"); self.assertEqual(self.c.post(f"/api/jobs/{i}/generate").status_code, 200)
+        self.c.post(f"/api/jobs/{i}/validate"); self.assertEqual(self.gen(i).status_code, 200)
 
     def test_sources_and_ai_reading(self):
         i = self.job(); r = self.c.post(f"/api/jobs/{i}/sources", json=up("scan.png", PNG)); self.assertEqual(r.status_code, 201); sid = r.json["id"]
