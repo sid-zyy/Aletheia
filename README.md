@@ -79,6 +79,18 @@ active one and activate it; versions that read stored data are kept. See `xltemp
 
 The original flat layout (`section, field, value` in CSV, Excel, SQLite or JSON) is still read; any job can be downloaded in it.
 
+## The test report
+
+The PDF follows the lab's **Transformer Test report format**: CPRI header, report number and date, the ULR / laboratory footer
+with *Sheet n of N* and the test engineer's signature line on every sheet. Sheets: cover (with the documents constituting the
+report, in words), description of the sample, summary of tests conducted (IS 1180 clause and sheet of each test), list of
+drawings, routine test results, short-circuit withstand, reactance / inspection / oil leakage / routine pressure, temperature
+rise, type pressure / vacuum and no-load current at 112.5 %, with the conclusion; the last sheet carries the notes, the
+accreditation mark, the verification QR code and the traceability annex. A full job gives 11 sheets; sheets without data are
+left out and the sheet references follow. Values are printed as logged. Laboratory details, clause numbers and notes are in
+`report_template.json`. Energy efficiency, coil, core and winding details (proforma) and the atmospheric pressure (pressure
+logsheet) are optional template fields; when a logsheet does not carry them the report prints NA or the construction text.
+
 ## Integrity
 
 - One database row per test section, with revisions: concurrent uploads to different tests never overwrite each other, and an
@@ -100,7 +112,7 @@ Environment variables, read when the app starts. Same-day cut-off and email are 
 |---|---|---|
 | `ALETHEIA_DB` | `aletheia.db` next to `app.py` | Records database (`ai_cache.db`, `.aletheia_secret` and `backups/` go in the same folder) |
 | `PORT` | `5000` | Port of the web app |
-| `ALETHEIA_TEMPLATE` | `report_template.json` | Report wording file |
+| `ALETHEIA_TEMPLATE` | `report_template.json` | Report wording and laboratory details (ULR prefix, address, clause numbers, notes) |
 | `ALETHEIA_BACKUP_DIR`, `ALETHEIA_BACKUP_KEEP` | `backups/`, `30` | Backup folder; how many daily backups to keep (the first of each month is always kept) |
 | `ALETHEIA_AUTO_BACKUP`, `ALETHEIA_WORKER` | `1`, `1` | Daily backup; email outbox and cut-off warnings (`0` turns off) |
 | `ALETHEIA_SMTP_PASSWORD` | unset | SMTP password (server, port, sender, user are set in the app) |
@@ -152,7 +164,8 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 
 | Path | Contents |
 |---|---|
-| `app.py` | API, database, the checks (`validate`), report (`build_pdf`), workflow routes, release and amendment |
+| `app.py` | API, database, the checks (`validate`), workflow routes, release and amendment |
+| `report.py` | the test report PDF in the lab's *Transformer Test report format* (and the customer's partial report) |
 | `auth.py` | accounts, sessions, CSRF, roles and the permission gate |
 | `integrity.py` | sections and history, files, numbering, audit hash chain, database triggers, migrations |
 | `workflow.py` | intake rules (PIN-code table), ownership, progress, sign-off readiness |
@@ -168,6 +181,8 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 ## Limits to know about
 
 - No engineering threshold has been confirmed by the lab or checked against the text of IS 1180 / IS 2026 (see Validity).
+- The report's "Limit as per the standard" column for temperature rise (35 / 40 C) and the clause numbers come from
+  `report_template.json` and are to be confirmed by the lab; the checks themselves use the limits on the proforma.
 - The version-1 logsheet templates are Aletheia's own layouts; the lab's real sheets (Q8 in NEXT_STEPS) become new template
   versions when they arrive. The intake field list (Q14) is an assumption to confirm.
 - Demo values were typed from handwritten scans; the validator flags the doubtful ones.

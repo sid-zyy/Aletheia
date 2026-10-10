@@ -24,6 +24,8 @@ SPECS = {
         ("taps", "Tapping range", TXT), ("loss50", "Guaranteed total loss, 50% load (W)", NUM), ("loss100", "Guaranteed total loss, 100% load (W)", NUM),
         ("oil_l", "Oil quantity (l)", TXT), ("mfg", "Month / year of manufacture", TXT), ("construction", "Construction", TXT),
         ("limits.oil", "Top-oil rise limit (K)", NUM), ("limits.wdg", "Winding rise limit (K)", NUM),
+        ("efficiency", "Energy efficiency level", TXT), ("coil", "Coil", TXT), ("core", "Core material", TXT),
+        ("lv_winding", "LV winding details", TXT), ("hv_winding", "HV winding details", TXT),
         dict(table="tests", caption="Tests to be carried out", rows_as="values", rows=10, columns=[dict(label="Test", type=TXT)])], None),
     "losses": ("Losses datasheet", "LS", [
         ("nll_bt", "No-load loss before SC (W)", NUM), ("nll_at", "No-load loss after SC (W)", NUM),
@@ -78,7 +80,7 @@ SPECS = {
             dict(label="Hour"), dict(label="Top oil (C)"), dict(label="Bottom oil (C)"), dict(label="Ambient 1 (C)"), dict(label="Ambient 2 (C)"), dict(label="Ambient 3 (C)")])],
         ("@ids.temp[0]", "@ids.temp[1]")),
     "pressure": ("Pressure / oil-leakage logsheet", "PR", [
-        ("amb", "Ambient (C)", NUM), ("plate_m", "Plate / tank height (m)", NUM), ("routine.kpa", "Routine pressure (kPa)", NUM),
+        ("amb", "Ambient (C)", NUM), ("atm_kpa", "Atmospheric pressure (kPa)", NUM), ("plate_m", "Plate / tank height (m)", NUM), ("routine.kpa", "Routine pressure (kPa)", NUM),
         ("routine.min", "Routine pressure duration (min)", NUM), ("routine.date", "Routine pressure date", DATE), ("routine.obs", "Routine pressure observation", TXT),
         ("type.date", "Type tests date(s)", TXT), ("type.pressure.kpa", "Type pressure (kPa)", NUM), ("type.pressure.min", "Type pressure duration (min)", NUM),
         ("type.pressure.max", "Pressure: max deflection, as logged (mm)", NUM), ("type.pressure.obs", "Pressure test observation", TXT),
@@ -90,7 +92,9 @@ SPECS = {
         ("@ids.pressure[0]", "@ids.pressure[1]")),
 }
 # Optional values the lab may not log on every sheet (Q11: logged winding rises)
-OPTIONAL_OK = {"temp": {"hv_rise", "lv_rise", "oil_rise_reported", "corr_written"}}
+OPTIONAL_OK = {"temp": {"hv_rise", "lv_rise", "oil_rise_reported", "corr_written"},
+               "proforma": {"efficiency", "coil", "core", "lv_winding", "hv_winding"},  # printed on the description sheet when given
+               "pressure": {"atm_kpa"}}
 
 
 def slug(path): return re.sub(r"[^A-Za-z0-9]+", "_", path).strip("_").upper()

@@ -53,7 +53,8 @@ previous one by hash.
 
 | Module | Responsibility |
 |---|---|
-| `app.py` | REST API, job lifecycle, checks (`validate`), report (`build_pdf`, normal and partial), workflow routes (verify, sign-off, intake), approval and amendment, search, statistics |
+| `report.py` | The report PDF in the lab's format (sheets, sheet references, ULR footer), normal and partial |
+| `app.py` | REST API, job lifecycle, checks (`validate`), report (`build_pdf`, which calls `report.py`), workflow routes (verify, sign-off, intake), approval and amendment, search, statistics |
 | `auth.py` | Users and customer organisations, password hashing, sessions (idle/absolute timeout, lock-out), CSRF, `PERMS` and the `before_request` gate that refuses any route without a rule |
 | `integrity.py` | Section rows with revisions (optimistic locking), section history, files, series/sample allocation, audit hash chain, database triggers, numbered migrations with backup |
 | `workflow.py` | Intake validation (required fields, formats, PIN-code table; also the customer's own online request), test plan, ownership and certification, progress, sign-off readiness |

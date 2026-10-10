@@ -308,9 +308,11 @@ class ImportFormats(Base):
         j = self.job(); self.c.post(f"/api/jobs/{j}/import", json=up("f.json", json.dumps(d).encode()))
         self.c.post(f"/api/jobs/{j}/validate"); self.assertEqual(self.gen(j).status_code, 200)
         text = pdf_text(self.c.get(f"/api/jobs/{j}/report.pdf").data)
-        self.assertNotIn("None", text)
-        self.assertIn("NOT FULLY", text)  # short circuit and no-load: some checks passed, one could not run
-        self.assertIn("checks with NA values", text); self.assertIn("SC current", text.split("Statement of conformity")[1])
+        # "None" is the format's own wording for two cover lines; anything else would be a Python None leaking into the report
+        self.assertNotIn("None", text.replace("representative : None", "").replace("laboratory : None", ""))
+        concl = text.split("Conclusion:")[1]  # short circuit and no-load: some checks passed, one could not run
+        self.assertIn("covers only what could be evaluated", concl); self.assertIn("checks with NA values", concl); self.assertIn("SC current", concl)
+        self.assertIn("NA", text.split("At 112.5 percent rated voltage")[1][:200])  # the missing 112.5% current prints as NA, the table stays
         self.assertEqual(self.get(j)["verdict"], "Complies (partly evaluated)")
 
     def test_remove_an_imported_file(self):
@@ -446,7 +448,21 @@ class ReportsAndSources(Base):
         finally:
             aletheia.TEMPLATE_FILE = old
         self.assertIn("HIGH POWER LAB - CERTIFICATE <draft>", text); self.assertIn("2. Results at a glance", text)
-        self.assertIn("4. Statement of conformity", text)  # keys left out keep the default wording
+        self.assertIn("DESCRIPTION OF SAMPLE TESTED", text)  # keys left out keep the default wording
+        self.assertIn("Sheet 1 of", text); self.assertIn("ULR-TC5452250SCLT1654F", text)  # the format's footer on every sheet
+
+    def test_report_follows_the_lab_format(self):
+        # "Transformer Test report format": 11 sheets for a full job, cross-referenced by sheet number, values as logged
+        text = pdf_text(aletheia.build_pdf(self.get(self.ready())).getvalue())
+        for s in ("DESCRIPTION OF SAMPLE TESTED", "SUMMARY OF TESTS CONDUCTED", "LIST OF DRAWINGS", "ROUTINE TESTS", "SPECIAL TEST",
+                  "TYPE TEST", "OIL LEAKAGE TEST", "No load current at 112.5 percent voltage", "NOTE", "End of Test Report"):
+            self.assertIn(s, text)
+        self.assertIn("Sheet 11 of 11", text); self.assertNotIn("Sheet 12", text)
+        self.assertIn("Number of Sheet(s) : Eleven", text); self.assertIn("Refer Sheet 2 of 11", text)
+        self.assertIn("Short-circuit withstand", text); self.assertIn("21.4 b) 7 of 11 & 8 of 11", text)  # clause and sheets of the SC test
+        self.assertIn("CPRIBLRSCL25T1654S011", text); self.assertNotIn("CPRIBLRSCL25T1654S001", text)  # calibration shot not reported
+        self.assertIn("- average 7.101 7.504 6.346 7.098 7.502 6.343", text)  # HV at 75 C as logged: principal / highest / lowest, before / after
+        self.assertIn("26.01 (as logged)", text)
 
     def test_editing_data_withdraws_report(self):
         i = self.ready(); t = dict(DEMO["temp"]); t["rhv_hot"] = t["rhv_hot"] * 1.01
