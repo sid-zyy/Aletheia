@@ -1,4 +1,4 @@
-/* Notifications (bell + page), lab settings (email), and the customer's portal additions: partial report and
+/* Notifications (bell + page) and the customer's portal additions: partial report and
    approved values (their test requests: request.js). */
 (()=>{const s=document.createElement('style');s.textContent=`
 .bell{position:relative;border:1px solid var(--ln);background:var(--cd);border-radius:12px;padding:7px 10px;cursor:pointer;display:inline-flex;align-items:center}
@@ -39,17 +39,7 @@ async function notificationsPage(){const r=await api('/api/notifications?limit=2
  `<div class="tabs">${[['unread','Unread'],['action','Needs action'],['all','All']].map(([k,l])=>`<button class="tab ${NF==k?'on':''}" onclick="NF='${k}';notificationsPage()">${l}<i>${cnt(k)}</i></button>`).join('')}</div>
  ${act.length?`<div class="card"><h2>Needs your action</h2>${byDay(act)}</div>`:''}
  ${info.length?`<div class="card nfo"><h2>${act.length?'For information':NF=='all'?'All notifications':'Unread'}</h2>${byDay(info)}</div>`:''}
- ${items.length?'':`<div class="card empty">${NF=='unread'?'Nothing unread.':NF=='action'?'Nothing needs your action.':'No notifications yet.'}</div>`}
- <div class="card"><h2>Email</h2><label style="display:flex;gap:10px;align-items:center;font-weight:500"><input type="checkbox" id="optout" ${r.email_opt_out?'checked':''} onchange="api('/api/me/preferences',{email_opt_out:this.checked}).then(()=>toast('Saved'))"> Only email me about important notices (returned work and released reports)</label><p class="note">Notifications always appear here; this only changes which ones are also sent by email.</p></div>`;bellCount()}
-
-/* ---------------------------------------------------------------- Admin: settings and the email outbox */
-async function settingsPage(){const [s,o]=await Promise.all([api('/api/settings'),api('/api/outbox')]),f=(k,l,t='text',ph='')=>`<div><label for="st_${k}">${l}</label><input class="in" id="st_${k}" type="${t}" value="${esc(s[k]||'')}" placeholder="${ph}"></div>`;
- $('#app').innerHTML=head('Settings','Email notifications. In-app notifications always work; email is optional and never blocks work.','')+
- `<div class="card"><h2>Email (optional)</h2><div class="frm"><div class="row2">${f('smtp_host','SMTP server','text','leave empty for in-app only')}${f('smtp_port','Port','number')}</div><div class="row2">${f('smtp_sender','Sender address','email')}${f('smtp_user','SMTP user (password: ALETHEIA_SMTP_PASSWORD on the server)')}</div><div class="row2">${f('portal_url','Address customers use to open Aletheia','text','http://lab-pc:5000')}<div><label for="st_smtp_tls">STARTTLS</label><select id="st_smtp_tls"><option value="1" ${s.smtp_tls=='1'?'selected':''}>Yes</option><option value="0" ${s.smtp_tls!='1'?'selected':''}>No</option></select></div></div></div>
- <p class="note">SMTP password ${s.smtp_password_set?'is set on the server':'is not set (set ALETHEIA_SMTP_PASSWORD if the server needs one)'}. Emails contain the job number, what changed and a link; never results or attachments.</p>
- <div style="display:flex;justify-content:flex-end;gap:10px"><button class="btn" onclick="saveSettings()">Save settings</button></div></div>
- <div class="card"><div class="wh"><h2 style="margin:0">Email outbox</h2><button class="btn g s" onclick="api('/api/outbox/send',{}).then(r=>{toast(r.sent+' sent');settingsPage()}).catch(e=>toast(e,1))">Send now</button></div><div class="scroll"><table class="ut"><thead><tr><th>To</th><th>Subject</th><th>Status</th><th>Created</th></tr></thead><tbody>${o.map(m=>`<tr><td>${esc(m.to_addr)}</td><td>${esc(m.subject)}</td><td>${m.sent_at?'<span class="st-ok">sent</span>':m.attempts>=5?`<span class="st-type">failed</span>`:m.attempts?`retrying (${m.attempts})`:'queued'}${m.last_error?`<div class="note" style="margin:0">${esc(m.last_error)}</div>`:''}</td><td>${esc(m.created_at.replace('T',' ').slice(0,16))}</td></tr>`).join('')||'<tr><td colspan="4">Nothing queued.</td></tr>'}</tbody></table></div></div>`}
-async function saveSettings(){const b={};['smtp_host','smtp_port','smtp_sender','smtp_user','portal_url','smtp_tls'].forEach(k=>b[k]=$('#st_'+k).value);try{await api('/api/settings',b);toast('Settings saved')}catch(e){toast(e,1)}}
+ ${items.length?'':`<div class="card empty">${NF=='unread'?'Nothing unread.':NF=='action'?'Nothing needs your action.':'No notifications yet.'}</div>`}`;bellCount()}
 
 /* ---------------------------------------------------------------- customer: approved values, partial report, request forms */
 async function custExtras(id,j){const [vals,ps]=await Promise.all([api(`/api/jobs/${id}/approved-values`),api(`/api/jobs/${id}/partials`)]),el=document.createElement('div');

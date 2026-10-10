@@ -1739,10 +1739,9 @@ auth.setup(app, db, log, os.path.dirname(os.path.abspath(DB)))
 init()
 excel_routes.install(sys.modules[__name__])  # template registry and Excel routes (they use this module's helpers)
 retention.install(sys.modules[__name__])     # backups, audit tip, export packages
-notify.install(sys.modules[__name__])        # notifications, settings, email outbox
+notify.install(sys.modules[__name__])        # in-app notifications
 portal.install(sys.modules[__name__])        # partial reports, approved values, customers' request forms
 tickets.install(sys.modules[__name__])       # customers' tickets to the administrators
 if __name__ == "__main__":
     retention.schedule()                     # one backup a day while the server runs
-    notify.worker()                          # email outbox
     app.run(debug=False, port=int(os.environ.get("PORT", 5000)))

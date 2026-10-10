@@ -38,7 +38,7 @@ the account switched to still applies. The switch is off as soon as `ALETHEIA_PA
 
 | Role | Does | Cannot |
 |---|---|---|
-| **Admin** | **approves** a job once every test is verified or not applicable, **generates** the report and **signs it off** (releases it, re-entering the password); with a second administrator, amends a released report; receives customer requests like a test engineer; assigns tests (or a whole job); answers customer tickets; users, customer organisations, Excel templates, settings, backups, audit log | enter, check or verify data |
+| **Admin** | **approves** a job once every test is verified or not applicable, **generates** the report and **signs it off** (releases it, re-entering the password); with a second administrator, amends a released report; receives customer requests like a test engineer; assigns tests (or a whole job); answers customer tickets; users, customer organisations, Excel templates, backups, audit log | enter, check or verify data |
 | **Tester** (test engineer) | intake: receives a customer's request (records sheet 3 of the form, the test plan; series and sample numbers are assigned) or returns it with the reason; takes unassigned tests, uploads the logsheets of their tests, corrects returned tests; **runs the checks**, marks flagged items reviewed; **verifies** tests (their own or colleagues'): verify, return (with reason), reopen, not applicable | raise or change a customer's request, take a test assigned to someone else, approve, generate or sign off |
 | **Customer** | the only one who raises a test request: fills in the Customer Request Form (CPRI/QAF/01A, sheets 1-2) online and corrects it when returned; raises **tickets** to the laboratory (questions or problems, optionally about a job); sees their organisation's jobs: progress, approved values, partial report, released reports | see other customers' jobs, values of tests not yet approved, staff names |
 
@@ -77,7 +77,7 @@ is recorded in the audit log.
 Pages for staff: **Dashboard** (each person's tasks: for testers what to verify, test or take; for Admin what is ready to
 approve, ready for sign-off, not assigned, and the customer tickets to answer), **My work** (what waits on you, oldest first), **Customer requests**
 (test engineers and the admin: the intake inbox), **Report Workflow**, **Records & Search** (with Excel export of many jobs), **Report
-Preview**; for Admin also **Users & customers**, **Templates**, **Audit log**, **Customer tickets**, **Backups**, **Settings**.
+Preview**; for Admin also **Users & customers**, **Templates**, **Audit log**, **Customer tickets**, **Backups**.
 The job page has one list, **Tests and verification**: every test the job needs (its plan, and anything uploaded), then the sample identification record and the supplementary records. Each row carries its files (*Blank sheet*, *Upload*, *Enter* or *Edit*, *Remove*) under the name, and its state and workflow actions (take, assign, verify, not applicable) on the right.
 Every file is uploaded from the row of the test it belongs to (*Upload* on that row): a data file only fills that test,
 a scan is attached to that test. Nothing is assigned to a test by itself (no general drop area, no workbook routed to several jobs).
@@ -101,8 +101,8 @@ clicked. The **Notifications** page shows *Needs your action* (a test assigned o
 request to accept, a job to approve, a report to sign off) above *For information*, grouped by day, with the tabs Unread
 (default), Needs action and All. The bell shows the latest five unread. Repeats of one kind for one job within 30 minutes
 become one row ("3 updates"). **Customers** hear only: request received, request returned for correction, and the final
-report released (once per released version, with a link to it); nothing while the tests are in progress. *Only email me
-about important notices* on the Notifications page limits email to returned work and released reports.
+report released (once per released version, with a link to it); nothing while the tests are in progress. Aletheia sends no
+email: every notice is in the portal.
 
 ## Test names
 
@@ -175,9 +175,9 @@ logsheet) are optional template fields; when a logsheet does not carry them the 
   released job holds every version, its manifest, source files, history and audit, with checksums.
 - Checks take values **as logged** (faculty note F5): see [docs/VALIDITY.md](docs/VALIDITY.md).
 
-## Settings
+## Configuration
 
-Environment variables, read when the app starts. Email is set in the app (Admin -> Settings).
+Environment variables, read when the app starts.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -185,8 +185,7 @@ Environment variables, read when the app starts. Email is set in the app (Admin 
 | `PORT` | `5000` | Port of the web app |
 | `ALETHEIA_TEMPLATE` | `report_template.json` | Report wording and laboratory details (ULR prefix, address, clause numbers, notes) |
 | `ALETHEIA_BACKUP_DIR`, `ALETHEIA_BACKUP_KEEP` | `backups/`, `30` | Backup folder; how many daily backups to keep (the first of each month is always kept) |
-| `ALETHEIA_AUTO_BACKUP`, `ALETHEIA_WORKER` | `1`, `1` | Daily backup; email outbox (`0` turns off) |
-| `ALETHEIA_SMTP_PASSWORD` | unset | SMTP password (server, port, sender, user are set in the app) |
+| `ALETHEIA_AUTO_BACKUP` | `1` | Daily backup (`0` turns off) |
 | `ALETHEIA_PASSWORDS` | `0` | `1` turns passwords on (off while testing: sign in with the username) |
 | `ALETHEIA_DEMO` | `0` | `1` enables `/api/demo` (loads the demo job; used by the tests). A real job always starts from a customer's request |
 | `ALETHEIA_FEATURE_SCAN` | `0` | `1` turns on the optional AI reading of scanned sheets (below) |
@@ -216,7 +215,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | Tickets | `/api/tickets[?status=]`, `/api/tickets/<id>`, `/api/tickets/<id>/messages|close|reopen` |
 | Customer | `/api/jobs/<id>/approved-values`, `/api/jobs/<id>/partials`, `/api/jobs/<id>/partial.pdf`, `/api/customer/request-forms` |
 | Excel | `/api/templates[...]`, `/api/logsheets/<test|all>.xlsx`, `/api/request-form.xlsx`, `/api/jobs/<id>/logsheets.xlsx`, `/api/records.xlsx` |
-| Operations | `/api/my-work`, `/api/notifications`, `/api/settings`, `/api/outbox`, `/api/audit[/verify|/tip]`, `/api/admin/backups[...]`, `/api/jobs/<id>/package.zip` |
+| Operations | `/api/my-work`, `/api/notifications`, `/api/audit[/verify|/tip]`, `/api/admin/backups[...]`, `/api/jobs/<id>/package.zip` |
 
 ## Tests
 
@@ -231,7 +230,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `test_workflow.py` | request form and sheet 3 rules, verify / return / reopen, ownership, sign-off, assignment notifications, My work |
 | `test_excel.py` | template round trips, preview, layout drift, formulas, refused files, several jobs per workbook, template versions |
 | `test_amend.py` | manifest, amendments, record packages, backups and tamper detection |
-| `test_portal.py` | approved values only, partial reports, notifications and email, customer-only requests, return and correction, no same-day board |
+| `test_portal.py` | approved values only, partial reports, notifications (in-app only, no email), customer-only requests, return and correction, no same-day board |
 | `test_tickets.py` | customers raise tickets, administrators answer and close them; who sees what |
 | `test_load.py` | eight people at once on one database |
 
@@ -247,7 +246,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `xltemplates.py`, `seed_templates.py`, `paper_templates.py`, `excel_routes.py` | Excel template engine, version-1 templates, version-2 templates (the paper logsheets), template registry and Excel routes |
 | `retention.py` | backups, backup check, audit tip, record packages |
 | `tickets.py` | customer tickets to the administrators: thread, status, notifications |
-| `notify.py`, `portal.py` | notifications, email outbox, settings; partial reports, approved values, customers' test requests |
+| `notify.py`, `portal.py` | in-app notifications; partial reports, approved values, customers' test requests |
 | `rules.py` | every engineering threshold with its source and status |
 | `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
 | `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `tickets.js`, `assistant.js` |

@@ -12,12 +12,9 @@ class Portal(Base):
     def setUp(self):
         super().setUp()
         with aletheia.db() as c:  # the customer (ap.portal, A.P. Transformers) comes from test_app
-            c.execute("UPDATE users SET email=? WHERE username='s.iyer'", ("s.iyer@lab.example",))
-            c.execute("UPDATE users SET email_opt_out=0")
-            c.execute("DELETE FROM notifications"); c.execute("DELETE FROM outbox"); c.execute("DELETE FROM settings")
+            c.execute("DELETE FROM notifications")
             from test_app import integrity; integrity.drop_triggers(c); c.execute("DELETE FROM partials"); integrity.install_triggers(c)
         self.v = signed_in("s.iyer")
-        aletheia.app.config.pop("MAIL_TRANSPORT", None)
 
     def job_for_customer(self):
         i = self.receive()
@@ -97,33 +94,13 @@ class Notifications(Portal):
         self.c.post(f"/api/jobs/{i}/section", json=dict(section="temp", data=dict(DEMO["temp"], tap="X"), revision=self.get(i)["meta"]["temp"]["revision"]))
         after = self.notes("s.iyer", "uploaded"); self.assertEqual(len(after), len(before)); self.assertEqual(after[-1]["count"], 2)
 
-    def test_email_outbox_sends_retries_and_never_blocks(self):
-        self.admin.post("/api/settings", json=dict(smtp_host="mail.lab.local", smtp_sender="aletheia@lab.local"))
-        sent, fail = [], {"on": True}
-        def transport(msg):
-            if fail["on"]: raise OSError("connection refused")
-            sent.append(msg)
-        aletheia.app.config["MAIL_TRANSPORT"] = transport
-        i = self.job_for_customer()  # the upload works although every email fails
-        notify.send_pending()
-        with aletheia.db() as c: row = c.execute("SELECT * FROM outbox WHERE to_addr='buyer@ap.example'").fetchone()
-        self.assertEqual(row["attempts"], 1); self.assertIn("connection refused", row["last_error"]); self.assertGreater(row["next_try"], aletheia.now())
-        fail["on"] = False
-        with aletheia.db() as c: c.execute("UPDATE outbox SET next_try=?", (aletheia.now(),))
-        self.assertGreaterEqual(notify.send_pending(), 2)
-        to_customer = [m for m in sent if m["To"] == "buyer@ap.example"]; self.assertTrue(to_customer)
-        body = to_customer[0].get_content()
-        self.assertIn(self.get(i)["series"], to_customer[0]["Subject"]); self.assertIn("does not contain test results", body)
-        for v in ("433.06", "26.01", "2930"): self.assertNotIn(v, body)
-        self.assertFalse(to_customer[0].is_multipart())  # no attachments
-        self.assertEqual(self.admin.get("/api/outbox").status_code, 200); self.assertEqual(self.c.get("/api/outbox").status_code, 403)
-
-    def test_customer_can_opt_out_of_non_critical_email(self):
-        self.admin.post("/api/settings", json=dict(smtp_host="mail.lab.local"))
-        self.cust.post("/api/me/preferences", json=dict(email_opt_out=True))
-        i = self.job_for_customer()
-        with aletheia.db() as c: self.assertFalse(c.execute("SELECT 1 FROM outbox WHERE to_addr='buyer@ap.example'").fetchone())
-        self.assertEqual(self.notes("ap.portal", "progress")[0]["email_status"], "none")  # still told in the portal
+    def test_no_email_and_no_settings_page(self):
+        # notices are in-app only: no email is queued or sent, and the settings and outbox pages are gone
+        for m, path in (("GET", "/api/settings"), ("POST", "/api/settings"), ("GET", "/api/outbox"), ("POST", "/api/outbox/send"), ("POST", "/api/me/preferences")):
+            self.assertEqual(self.admin.open(path, method=m, json={}).status_code, 404, path)
+        self.job_for_customer()
+        n = self.c.get("/api/notifications").json; self.assertNotIn("email_opt_out", n)
+        self.assertFalse([x for x in n["items"] if "email_status" in x])
 
 
 class NoSameDayBoard(Portal):
@@ -132,7 +109,6 @@ class NoSameDayBoard(Portal):
         self.assertEqual(self.c.get("/api/today").status_code, 404)
         i = self.c.post("/api/demo").json["id"]
         self.assertEqual(self.c.post(f"/api/jobs/{i}/carry-over", json=dict(reason="SC bay down")).status_code, 404)
-        self.assertNotIn("cutoff_time", self.admin.get("/api/settings").json)
         self.c.post(f"/api/jobs/{i}/validate"); self.gen(i); self.approve(i)
         j = self.get(i); self.assertIsNotNone(j["completed_at"]); self.assertNotIn("same_day", j)
 

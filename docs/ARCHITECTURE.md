@@ -29,7 +29,7 @@ flowchart LR
         E2[Report: report.py in the lab's format, manifest, QR]
     end
     subgraph Ops["notify.py, portal.py, tickets.py, retention.py"]
-        O1[Notifications + email outbox]
+        O1[In-app notifications]
         O2[Partial reports, approved values]
         O3[Backups, audit tip, record packages]
         O4[Customer tickets to the admins]
@@ -63,14 +63,14 @@ previous one by hash.
 | `seed_templates.py` | Version 1 of the logsheet templates and of an Excel request form kept in the registry (seeds it once) |
 | `paper_templates.py` | Version 2 of the logsheet templates: each sheet laid out as its scanned paper logsheet (header, readings, remarks, signatures), with locked printed text, calculated cells, dropdowns and limits; made active once per database, version 1 retired but still importable |
 | `excel_routes.py` | Template registry (draft / active / retired), upload preview and import, several jobs per workbook, Excel downloads |
-| `notify.py` | In-app notifications, email outbox and worker, settings |
+| `notify.py` | In-app notifications (no email) |
 | `tickets.py` | Customer tickets to the administrators: thread (append-only), status open / answered / closed, notifications |
 | `portal.py` | Partial reports, approved values with logsheet labels, customers' test requests (send, check, correct, the laboratory's inbox) |
 | `retention.py` | Backups with checksums, backup check, audit tip, record packages, server clock |
 | `importers.py` | Flat-layout readers and exporters (CSV, Excel, SQLite, JSON), legacy registers |
 | `vision.py` | Optional AI reading of scanned sheets (off unless `ALETHEIA_FEATURE_SCAN=1`) |
 | `rules.py` | Engineering thresholds with source and status |
-| `static/` | Single-page UI: `index.html` (pages, job page, report), `auth.js` (sign-in, roles, Admin and customer pages), `workflow.js` (verification card, intake, My work, amendments), `excel.js` (upload preview, templates), `portal.js` (notifications, Settings, customer additions), `request.js` (Customer Request Form laid out as the printed form, customer requests, intake inbox and receiving a request), `tickets.js` (tickets for customers and administrators), `ui.js` (user menu, dashboard tasks, take / assign tests, dashboard emblem) |
+| `static/` | Single-page UI: `index.html` (pages, job page, report), `auth.js` (sign-in, roles, Admin and customer pages), `workflow.js` (verification card, intake, My work, amendments), `excel.js` (upload preview, templates), `portal.js` (notifications, customer additions), `request.js` (Customer Request Form laid out as the printed form, customer requests, intake inbox and receiving a request), `tickets.js` (tickets for customers and administrators), `ui.js` (user menu, dashboard tasks, take / assign tests, dashboard emblem) |
 
 ## Data model (`aletheia.db`, schema version 2)
 
@@ -88,7 +88,7 @@ previous one by hash.
 | `partials` | Every partial report version shown to the customer, with its hash |
 | `templates` | Template versions with mapping, status, sample sheet |
 | `assignments`, `bays`, `counters` | Test-to-engineer assignments with the bay, test bays, series/sample counters |
-| `notifications`, `outbox`, `settings`, `customer_forms` | Notices, queued emails, lab settings, customers' requests as sent (status received / returned with reason / used / replaced) |
+| `notifications`, `customer_forms` | In-app notices (the `outbox` and `settings` tables of earlier versions are no longer used), customers' requests as sent (status received / returned with reason / used / replaced) |
 | `tickets`, `ticket_messages` | Customer tickets and their messages (messages cannot be changed or removed) |
 | `audit` | Every action: who, role, workstation, kind, text, previous hash, own hash |
 | `schema_version` | Migrations applied |

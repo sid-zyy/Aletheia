@@ -59,7 +59,7 @@ Status 2026-10-10 (evening). Ticked items are implemented and covered by tests (
 - [x] Progress shown as approved vs pending
 - [x] Partial report built from approved sections only, watermarked, regenerated on each approval
 - [x] Pending sections show status only, no values
-- [x] Notification on upload, verification and release (in-app first, optional email)
+- [x] Notification on upload, verification and release (in-app only; email removed 2026-10-11)
 - [x] Customers raise tickets; the administrators answer and close them
 - [x] No same-day target (removed by decision D7)
 
