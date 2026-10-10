@@ -215,19 +215,12 @@ class Registry(Base):
 
 
 class RequestForm(Base):
-    def test_customer_fills_the_excel_form_and_intake_reads_it(self):
-        b = self.c.get("/api/request-form.xlsx"); self.assertEqual(b.status_code, 200)
-        wb = load_workbook(io.BytesIO(b.data)); ws = wb.active
-        vals = dict(customer="A.P. Transformers", pin=600058, city="Chennai", email="qa@ap.example", witness="No")
-        for row in ws.iter_rows(min_row=1, max_row=40):
-            lab = X.norm(row[0].value)
-            for k, label in S.REQUEST_FIELDS:
-                if lab == X.norm(label) and k in vals: row[1].value = vals[k]
-        ws.insert_rows(3, 2)  # the customer added rows: names would break in openpyxl, labels still work
-        out = io.BytesIO(); wb.save(out)
-        r = self.c.post("/api/intake/from-excel", json=up("filled form.xlsx", out.getvalue())).json
-        self.assertEqual(r["values"]["customer"], "A.P. Transformers"); self.assertEqual(r["values"]["pin"], "600058")  # text, not 600058.0
-        self.assertEqual(r["values"]["witness"], "No")
+    def test_request_form_is_filled_in_online_only(self):
+        # the Excel request form stays in the template registry, but a request is raised by the customer online: staff cannot
+        # read one in, and customers cannot upload one instead of filling in the form
+        self.assertEqual(self.c.get("/api/request-form.xlsx").status_code, 200)
+        self.assertEqual(self.c.post("/api/intake/from-excel", json=up("filled form.xlsx", b"PK")).status_code, 404)
+        self.assertIn(self.cust.post("/api/customer/request-forms", json=up("filled form.xlsx", b"PK")).status_code, (404, 405))
 
 
 if __name__ == "__main__":

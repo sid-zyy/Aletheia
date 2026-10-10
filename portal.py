@@ -4,8 +4,9 @@
   sees a figure that may still be corrected.
 * The partial report is rebuilt whenever the set of approved tests changes; every version is stored with its hash, so what a
   customer saw at a given time can be reproduced. It is watermarked, unsigned and carries no verdict.
-* Customers can send their filled request form (Excel) into the laboratory's intake inbox; the receiving engineer reads it,
-  checks it against the original and creates the job.
+* Only a customer raises a test request: they fill in the Customer Request Form (CPRI/QAF/01A, sheets 1 and 2) online. It
+  waits in the laboratory's intake inbox; the receiving engineer records sheet 3 and creates the job, or returns the request
+  with the reason, and the customer corrects it and sends it again.
 """
 import hashlib, io, json, sqlite3, threading
 from flask import jsonify, request, send_file, abort
@@ -21,7 +22,7 @@ def init_db(c):
     CREATE TABLE IF NOT EXISTS customer_forms(id INTEGER PRIMARY KEY, org_id INT NOT NULL, user_id INT NOT NULL, filename TEXT, sha256 TEXT, content BLOB,
         at TEXT, status TEXT DEFAULT 'received', job_id INT);""")
     have = {r[1] for r in c.execute("PRAGMA table_info(customer_forms)")}
-    for col, ddl in (("kind", "TEXT DEFAULT 'excel'"), ("data", "TEXT"), ("plan", "TEXT")):
+    for col, ddl in (("kind", "TEXT DEFAULT 'excel'"), ("data", "TEXT"), ("plan", "TEXT"), ("note", "TEXT")):
         if col not in have: c.execute(f"ALTER TABLE customer_forms ADD COLUMN {col} {ddl}")
     for name, body in (("partials_no_update", "BEFORE UPDATE ON partials BEGIN SELECT RAISE(ABORT, 'a partial report version cannot be changed'); END"),
                        ("partials_no_delete", f"BEFORE DELETE ON partials WHEN {integrity.EVER.format(j='OLD.job_id')} BEGIN SELECT RAISE(ABORT, 'partial reports of a released job are kept'); END")):
@@ -134,41 +135,31 @@ def install(app_module):
         j = A.getjob(i, False)
         with A.db() as c: return jsonify([dict(key=k, name=A.NAMES.get(k, k), items=labelled(c, j, k)) for k in approved_keys(j) if k in A.NAMES])
 
-    # ---- request forms sent in by customers
-    @app.post("/api/customer/request-forms")
-    @auth.require("jobs.view")
-    def customer_form_upload():
-        u = auth.current()
-        if not auth.is_customer(): return jsonify(error=["This is for customers; staff record the intake directly"]), 403
-        name, raw = A.upload(A.body())
-        if len(raw) > 5 * 1024 * 1024: return jsonify(error=["The form is too large (5 MB maximum)"]), 400
-        try: X.Book(raw, name)
-        except X.TemplateError as e: return jsonify(error=[str(e)]), 400
-        with A.db() as c:
-            fid = c.execute("INSERT INTO customer_forms(org_id,user_id,filename,sha256,content,at) VALUES(?,?,?,?,?,?)",
-                            (u["org_id"], u["id"], name[:200], hashlib.sha256(raw).hexdigest(), raw, A.now())).lastrowid
-            org = c.execute("SELECT name FROM orgs WHERE id=?", (u["org_id"],)).fetchone()
-            A.log(c, None, f"Request form {name} received from customer {org[0] if org else ''}", kind="job")
-            A.notify.notify(c, A.notify.users_with(c, "tester"), None, "form", f"New customer request form from {org[0] if org else 'a customer'}: {name}")
-        return jsonify(id=fid), 201
-
+    # ---- the customer's own test request (Customer Request Form CPRI/QAF/01A, sheets 1 and 2)
     def customer_request(check_only):
         u = auth.current()
-        if not auth.is_customer(): return jsonify(error=["This is for customers; staff record the intake directly"]), 403
-        b = A.body(); errs, warns, clean = A.workflow.check_intake(b, lab=False)
+        if not auth.is_customer(): return jsonify(error=["Only a customer can raise a test request"]), 403
+        b = A.body(); errs, warns, clean = A.workflow.check_request(b)
         plan = [k for k in (b.get("plan") or []) if k in A.NAMES and k != "request"]
         if not plan: errs.append("Tests requested: tick at least one test")
         if check_only: return jsonify(errors=errs, warnings=warns, ok=not errs)
         if errs: return jsonify(error=errs, warnings=warns), 400
-        body = integrity.canon(dict(values=clean, plan=plan, warnings=warns)).encode()
         with A.db() as c:
+            old = None
+            if b.get("replaces"):  # a request the laboratory returned, corrected and sent again
+                old = c.execute("SELECT id, status FROM customer_forms WHERE id=? AND org_id=?", (b["replaces"], u["org_id"])).fetchone()
+                if not old or old["status"] not in ("returned", "received"): return jsonify(error=["That request can no longer be changed"]), 409
+            clean["signed_at"] = A.now()
+            raw = integrity.canon(dict(form=A.workflow.FORM["format_no"], values=clean, plan=plan, warnings=warns, sent_by=u["full_name"])).encode()
             fid = c.execute("INSERT INTO customer_forms(org_id,user_id,filename,sha256,content,at,kind,data,plan) VALUES(?,?,?,?,?,?,?,?,?)",
-                            (u["org_id"], u["id"], "Online request form", hashlib.sha256(body).hexdigest(), body, A.now(), "web",
+                            (u["org_id"], u["id"], "Customer Request Form " + A.workflow.FORM["format_no"], hashlib.sha256(raw).hexdigest(), raw, A.now(), "web",
                              json.dumps(clean), json.dumps(plan))).lastrowid
+            if old: c.execute("UPDATE customer_forms SET status='replaced', note=COALESCE(note,'') || ? WHERE id=?", (f" (replaced by request {fid})", old["id"]))
             org = c.execute("SELECT name FROM orgs WHERE id=?", (u["org_id"],)).fetchone()
-            A.log(c, None, f"Online test request received from customer {org[0] if org else ''} ({len(plan)} tests)", kind="job")
+            A.log(c, None, f"Test request {fid} received from customer {org[0] if org else ''} ({len(plan)} tests)" +
+                  (f", replacing request {old['id']}" if old else ""), kind="job")
             A.notify.notify(c, A.notify.users_with(c, "tester") + A.notify.users_with(c, "admin"), None, "form",
-                            f"New test request from {org[0] if org else 'a customer'} (filled online)")
+                            f"New test request from {org[0] if org else 'a customer'}" + (" (corrected)" if old else ""))
         return jsonify(id=fid), 201
 
     @app.post("/api/customer/requests/check")
@@ -180,8 +171,19 @@ def install(app_module):
     @app.post("/api/customer/requests")
     @auth.require("jobs.view")
     def customer_request_send():
-        """The customer fills in the request themselves; it waits in the laboratory's intake inbox until the product arrives."""
+        """The customer raises the request; it waits in the laboratory's intake inbox until the product is received."""
         return customer_request(False)
+
+    @app.get("/api/customer/requests/<int:fid>")
+    @auth.require("jobs.view")
+    def customer_request_get(fid):
+        """One of the customer's own requests, as sent (to correct and send again when it was returned)."""
+        u = auth.current()
+        if not auth.is_customer(): abort(404)
+        with A.db() as c:
+            r = c.execute("SELECT id, at, status, note, data, plan FROM customer_forms WHERE id=? AND org_id=? AND kind='web'", (fid, u["org_id"])).fetchone()
+        if not r: abort(404)
+        return jsonify(id=r["id"], at=r["at"], status=r["status"], note=r["note"], values=json.loads(r["data"] or "{}"), plan=json.loads(r["plan"] or "[]"))
 
     @app.get("/api/customer/request-forms")
     @auth.require("jobs.view")
@@ -189,38 +191,34 @@ def install(app_module):
         u = auth.current()
         if not auth.is_customer(): return jsonify([])
         with A.db() as c:
-            return jsonify([dict(r) for r in c.execute("SELECT f.id, f.filename, f.at, f.status, f.kind, j.series FROM customer_forms f LEFT JOIN jobs j ON j.id=f.job_id "
+            return jsonify([dict(r) for r in c.execute("SELECT f.id, f.filename, f.at, f.status, f.kind, f.note, j.series FROM customer_forms f LEFT JOIN jobs j ON j.id=f.job_id "
                                                        "WHERE f.org_id=? ORDER BY f.id DESC", (u["org_id"],))])
 
     @app.get("/api/request-forms")
-    @auth.require("job.create")
+    @auth.require("request.receive")
     def forms_inbox():
         with A.db() as c:
-            return jsonify([dict(r) for r in c.execute("SELECT f.id, f.filename, f.at, f.status, f.org_id, f.kind, o.name AS org, u.full_name AS sent_by, j.series "
+            return jsonify([dict(r) for r in c.execute("SELECT f.id, f.filename, f.at, f.status, f.org_id, f.kind, f.note, o.name AS org, u.full_name AS sent_by, j.series, "
+                                                       "json_extract(f.data,'$.sample') AS sample, json_extract(f.data,'$.rating') AS rating "
                                                        "FROM customer_forms f LEFT JOIN orgs o ON o.id=f.org_id LEFT JOIN users u ON u.id=f.user_id "
                                                        "LEFT JOIN jobs j ON j.id=f.job_id ORDER BY (f.status='received') DESC, f.id DESC LIMIT 100")])
 
     @app.get("/api/request-forms/<int:fid>/file")
-    @auth.require("job.create")
+    @auth.require("request.receive")
     def form_file(fid):
         with A.db() as c: r = c.execute("SELECT * FROM customer_forms WHERE id=?", (fid,)).fetchone()
         if not r: abort(404)
         web = r["kind"] == "web"
-        return send_file(io.BytesIO(r["content"]), as_attachment=True, download_name="online_request.json" if web else r["filename"],
+        return send_file(io.BytesIO(r["content"]), as_attachment=True, download_name=f"customer_request_{fid}.json" if web else r["filename"],
                          mimetype="application/json" if web else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     @app.post("/api/request-forms/<int:fid>/read")
-    @auth.require("job.create")
+    @auth.require("request.receive")
     def form_read(fid):
-        """Values of a customer's form for the intake page (still validated and read back by the receiving engineer)."""
-        with A.db() as c:
-            r = c.execute("SELECT * FROM customer_forms WHERE id=?", (fid,)).fetchone()
-            if not r: abort(404)
-            ts = A.excel_routes.active(c, "request_form")
-        if r["kind"] == "web":  # filled in online: already validated, read as it was sent
-            return jsonify(values=json.loads(r["data"]), plan=json.loads(r["plan"] or "[]"), org_id=r["org_id"], fields=[], warnings=[])
-        if not ts: return jsonify(error=["No active request form template"]), 409
-        bk = X.Book(r["content"], r["filename"]); m = ts[0]["mapping"]
-        hits = [ws for ws in bk.sheets() if X.matches(X.Sheet(bk, ws), m.get("fingerprint"))]
-        res = X.extract(bk, m, hits[0] if hits else None)
-        return jsonify(values={k: v for k, v in res["data"].items() if v not in (None, "")}, org_id=r["org_id"], fields=res["fields"], warnings=res["warnings"])
+        """A customer's request as they sent it, for the intake page (the laboratory does not change the customer's answers)."""
+        with A.db() as c: r = c.execute("SELECT * FROM customer_forms WHERE id=?", (fid,)).fetchone()
+        if not r: abort(404)
+        if r["kind"] != "web": return jsonify(error=["This request was not filled in online: ask the customer to send it through the portal"]), 409
+        errs, warns, _ = A.workflow.check_request(json.loads(r["data"] or "{}"))
+        return jsonify(values=json.loads(r["data"]), plan=json.loads(r["plan"] or "[]"), org_id=r["org_id"], status=r["status"], note=r["note"],
+                       at=r["at"], problems=errs, warnings=warns)

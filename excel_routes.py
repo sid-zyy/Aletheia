@@ -327,20 +327,6 @@ def install(app_module):
         return send_file(io.BytesIO(X.workbook([(ts[0]["mapping"], None, None)])), mimetype=XLSX, as_attachment=True,
                          download_name=f"CPRI_SCL_customer_request_form_v{ts[0]['version']}.xlsx")
 
-    @app.post("/api/intake/from-excel")
-    @auth.require("job.create")
-    def intake_from_excel():
-        """Read the customer's filled request form; the values pre-fill the intake page (still validated and read back)."""
-        name, raw = file_arg(A.body())
-        with db() as c: ts = active(c, "request_form")
-        if not ts: return jsonify(error=["No active request form template"]), 409
-        bk = book(name, raw); m = ts[0]["mapping"]
-        hits = [ws for ws in bk.sheets() if X.matches(X.Sheet(bk, ws), m.get("fingerprint"))]
-        r = X.extract(bk, m, hits[0] if hits else None)
-        return jsonify(values={k: v for k, v in r["data"].items() if v not in (None, "")}, fields=r["fields"], warnings=r["warnings"] +
-                       ([] if hits else ["This does not look like the current request form; values were read by their labels"]),
-                       template={k: ts[0][k] for k in ("id", "key", "version")})
-
     # ---------------------------------------------------------------- upload with preview (one job)
     @app.post("/api/jobs/<int:i>/excel/preview")
     @auth.require("data.write")

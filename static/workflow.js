@@ -19,10 +19,10 @@ const secName=k=>SECN[k]||k;
 .qi{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-top:1px solid var(--ln);font-size:14px;cursor:pointer}.qi:first-of-type{border:0}.qi:hover{color:var(--ac)}
 body.no-data-write [onclick^="pick(ACC"],body.no-data-write #dz,body.no-data-write [onclick^="editSec"],body.no-data-write [onclick^="rmSec"],body.no-data-write [onclick^="rmImp"],body.no-data-write [onclick^="delSrc"],body.no-data-write [onclick^="readAI"],
 body.no-job-delete [onclick^="delJob"],body.no-job-edit [onclick^="editJob"],body.no-data-check [onclick^="runChecks"],body.no-data-check [onclick^="act('validate'"],
-body.no-report-generate [onclick^="act('generate'"],body.no-report-approve [onclick^="discard"],body.no-job-create [href="#/new"],body.no-job-create [href="#/intake"],body.no-job-create [onclick^="demo()"]{display:none!important}
+body.no-report-generate [onclick^="act('generate'"],body.no-report-approve [onclick^="discard"],body.no-job-create [href="#/new"],body.no-request-receive [href="#/intake"],body.no-job-create [onclick^="demo()"]{display:none!important}
 `;document.head.append(s)})();
 /* hide what the role cannot use: one class per missing permission (the server refuses these calls anyway) */
-function roleClasses(){for(const p of['data.write','job.delete','job.edit','data.check','report.generate','report.approve','job.create'])document.body.classList.toggle('no-'+p.replace('.','-'),!!ME&&!can(p))}
+function roleClasses(){for(const p of['data.write','job.delete','job.edit','data.check','report.generate','report.approve','job.create','request.receive'])document.body.classList.toggle('no-'+p.replace('.','-'),!!ME&&!can(p))}
 const bay=()=>{try{return +localStorage.getItem('aletheia.bay')||null}catch(e){return null}};
 const setBay=v=>{try{v?localStorage.setItem('aletheia.bay',v):localStorage.removeItem('aletheia.bay')}catch(e){}};
 
@@ -86,35 +86,10 @@ async function wfHistory(id){const h=await api(`/api/jobs/${id}/history`);
  modal(`<h2>Section history</h2><p class="note">Every revision of every test's data, oldest first. Nothing here can be changed or deleted.</p><div style="max-height:60vh;overflow:auto"><table class="ut"><thead><tr><th>When</th><th>Test</th><th>Rev</th><th>State</th><th>Who / what</th></tr></thead><tbody>${h.map(x=>`<tr><td style="white-space:nowrap">${esc(x.at.replace('T',' '))}</td><td>${esc(secName(x.key))}</td><td>${x.revision}</td><td>${esc(x.state)}</td><td>${esc(x.by||'-')}<div class="note" style="margin:0">${esc(x.event||'')}${x.data_sha256?` &middot; data ${esc(x.data_sha256.slice(0,10))}&hellip;`:''}</div></td></tr>`).join('')}</tbody></table></div><div style="text-align:right;margin-top:14px"><button class="btn" onclick="closeModal()">Close</button></div>`);const m=$('#ov .md');if(m)m.style.maxWidth='1000px'}
 
 /* ---------------------------------------------------------------- intake: nothing missing, nothing wrong */
-async function intakePage(id){id=+id||null;const [F,orgs,testers,j]=await Promise.all([api('/api/intake/fields'),api('/api/orgs'),api('/api/testers'),id?api('/api/jobs/'+id):null]);
- const rq=j?j.data.request||{}:{},it=j?j.intake||{}:{},plan=j?j.plan:[],pad=n=>String(n).padStart(2,'0'),d=new Date(),nowL=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
- const naOf=k=>/^Not applicable: /.test(rq[k]||'')?rq[k].slice(16):'',val=k=>naOf(k)?'':(rq[k]??'');
- const fld=f=>f.kind=='state'?`<select id="i_${f.key}"><option value="">Choose...</option>${F.states.map(s=>`<option ${val(f.key)==s?'selected':''}>${esc(s)}</option>`).join('')}</select>`
-  :f.kind=='yesno'?`<select id="i_${f.key}"><option value="">Choose...</option><option ${/^y/i.test(val(f.key))?'selected':''}>Yes</option><option ${/^n/i.test(val(f.key))?'selected':''}>No</option></select>`
-  :`<input class="in" id="i_${f.key}" value="${esc(val(f.key))}" ${f.kind=='pin'?'inputmode="numeric" maxlength="6"':f.kind=='email'?'type="email"':f.kind=='phone'?'type="tel"':''}>`;
- $('#app').innerHTML=`<button class="back" onclick="${id?`go('job/${id}')`:'history.back()'}">&larr; ${id?esc(j.series):'Back'}</button>`+head(id?'Intake details':'Receive a product (intake)',id?`Complete or correct the customer request for ${esc(j.series)}. The report is a legal document: every required value must be present and in the right format.`:'Record the filled customer request form. The series and sample numbers are allocated only when nothing is missing or wrong.',`<button class="btn g" onclick="intakeFromExcel()">Fill from the customer's Excel form</button><a class="btn g" href="/api/request-form.xlsx">Blank request form</a>`+(id?'':`<a class="btn g" href="#/new">Start from a data file instead</a>`))+
- (id?'':'<div id="formInbox"></div>')+`
- <div class="card"><h2>Customer request</h2><div class="ifm">${F.fields.map(f=>`<div class="${f.key=='address'||f.key=='conformity'||f.key=='tests'?'w':''}"><label for="i_${f.key}">${esc(f.label)}${f.na_ok?` <span class="nab">&middot; <input type="checkbox" id="n_${f.key}" ${naOf(f.key)?'checked':''} onchange="$('#nr_${f.key}').style.display=this.checked?'':'none'"> not applicable</span>`:''}</label>${fld(f)}${f.na_ok?`<input class="in" id="nr_${f.key}" placeholder="Reason it does not apply" style="margin-top:6px;${naOf(f.key)?'':'display:none'}" value="${esc(naOf(f.key))}">`:''}</div>`).join('')}</div></div>
- <div class="card"><h2>Test plan</h2><p class="note">The tests this product needs. Each must be uploaded and verified (or marked not applicable with a reason) before the report is built.${id?'':' Tick the tests you will do yourself; the administrator assigns the others, or colleagues take them.'}</p>
-  <div class="scroll"><table class="wt">${Object.entries(F.tests).map(([k,l])=>`<tr><td><label style="display:flex;gap:8px;align-items:center;margin:0;font-weight:500"><input type="checkbox" name="pl" value="${k}" ${(plan.length?plan.includes(k):true)?'checked':''}> ${esc(l)}</label></td>${id?'':`<td style="text-align:right"><label style="display:inline-flex;gap:6px;align-items:center;margin:0;font-weight:500"><input type="checkbox" id="as_${k}"> I will do this test</label></td>`}</tr>`).join('')}</table></div></div>
- <div id="iv"></div><div class="card" style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap"><button class="btn g" id="ick">Check for problems</button><button class="btn lg" id="isv">${id?'Save intake details':'Allocate numbers and create the job'}</button></div>`;
- const collect=async()=>{const b={na:{},plan:[...document.querySelectorAll('[name=pl]:checked')].map(x=>x.value),...(id?{arrived_at:it.arrived_at,opened_by:it.opened_by,org_id:j.org_id}:{})};  /* arrival is recorded when the intake is saved */
-  F.fields.forEach(f=>{b[f.key]=$('#i_'+f.key).value;const n=$('#n_'+f.key);if(n&&n.checked)b.na[f.key]=$('#nr_'+f.key).value});
-  if(!id){if(FORM_ID)b.customer_form_id=FORM_ID;b.assign={};b.plan.forEach(k=>{if($('#as_'+k).checked)b.assign[k]=ME.id});}
-  if($('#icw')&&$('#icw').checked)b.confirm_warnings=true;return b};
- FORM_ID=null;if(!id)formInbox();
- const show=r=>{const w=r.warnings||[],e=(r.errors||r.error||[]).filter(x=>!/^Confirm: /.test(x));
-  $('#iv').innerHTML=(e.length?`<div class="errs" role="alert"><b>${e.length} problem${e.length==1?'':'s'} to fix</b><ul>${e.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:'')+
-   (w.length?`<div class="warns"><b>Please confirm</b><ul>${w.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-weight:600"><input type="checkbox" id="icw"> I have checked these against the customer's form</label></div>`:'')+
-   (!e.length&&!w.length?'<div class="okb">Nothing missing, nothing malformed.</div>':'')};
- $('#ick').onclick=async()=>{try{show(await api('/api/intake/check',await collect()))}catch(e){toast(e,1)}};
- $('#isv').onclick=async()=>{const b=await collect();try{const r=await api(id?`/api/jobs/${id}/intake`:'/api/intake',b);toast(id?'Intake details saved':`Job ${r.series} created (sample ${r.sample})`);go('job/'+(id||r.id))}
-  catch(e){try{show(await api('/api/intake/check',b))}catch(x){toast(e,1)}scrollTo(0,$('#iv').offsetTop-80)}}}
-
 /* ---------------------------------------------------------------- My work */
 async function myWork(){const w=await api('/api/my-work'),age=t=>t?dur((Date.now()-new Date(t))/36e5)+' ago':'';
  const L=(title,items,line,empty)=>items?`<div class="card"><h2>${title} <span class="note" style="font-weight:400">(${items.length}${items.length?', oldest first':''})</span></h2>${items.length?items.map(x=>`<div class="qi" onclick="go('job/${x.id}')"><span><b>${esc(x.series)}</b> &middot; ${line(x)}</span><span class="note" style="margin:0">${age(x.at)}</span></div>`).join(''):`<p class="note">${empty}</p>`}</div>`:'';
- $('#app').innerHTML=head('My work',`What is waiting on you, ${esc(ME.full_name)}. Today's target: everything verified and released by this evening.`)+
+ $('#app').innerHTML=head('My work',`What is waiting on you, ${esc(ME.full_name)}, oldest first.`)+
   L('Returned to you for correction',w.returned,x=>`${esc(x.name)}: <span style="color:var(--er)">${esc(x.note||'')}</span>`,'Nothing returned.')+
   L('Sections waiting for verification',w.to_verify,x=>`${esc(x.name)} (uploaded by ${esc(x.by||'-')})`,'Nothing to verify.')+
   L('Jobs ready for your sign-off',w.to_signoff,()=>'every test verified','None ready.')+

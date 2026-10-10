@@ -65,7 +65,7 @@ class Load(Base):
         threads = [threading.Thread(target=tester, args=(n,)) for n in range(3)] + \
                   [threading.Thread(target=verifier, args=(u,)) for u in ("s.iyer", "load.v1")] + \
                   [threading.Thread(target=reader, args=(signed_in("admin"), "/api/audit", "admin")),
-                   threading.Thread(target=reader, args=(signed_in("t.rao"), "/api/today", "t.rao")),
+                   threading.Thread(target=reader, args=(signed_in("t.rao"), "/api/my-work", "t.rao")),
                    threading.Thread(target=reader, args=(signed_in("r.viewer"), "/api/jobs", "approver"))]
         t0 = time.time()
         for t in threads: t.start()

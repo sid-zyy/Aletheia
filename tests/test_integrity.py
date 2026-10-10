@@ -46,14 +46,14 @@ class Concurrency(Base):
         self.assertEqual(self.get(i)["meta"]["temp"]["revision"], rev + 1)
 
     def test_parallel_job_creation_gets_distinct_numbers(self):
-        self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL26T0041"))  # a number typed in earlier: allocation continues after it
-        cs = [signed_in("t.rao") for _ in range(6)]
-        rs = together([lambda c=c: c.post("/api/jobs", json=dict(auto_ids=True, customer="X")) for c in cs])
+        self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL26T0041", customer_form_id=self.request()))  # typed earlier: allocation continues after it
+        cs = [(signed_in("t.rao"), self.request()) for _ in range(6)]
+        rs = together([lambda c=c, f=f: c.post("/api/jobs", json=dict(auto_ids=True, customer_form_id=f)) for c, f in cs])
         self.assertEqual([r.status_code for r in rs], [201] * 6)
         series = sorted(r.json["series"] for r in rs); samples = {r.json["sample"] for r in rs}
         self.assertEqual(series, [f"CPRIBLRSCL26T{n:04d}" for n in range(42, 48)])
         self.assertEqual(len(samples), 6)
-        self.assertEqual(self.c.post("/api/jobs", json=dict(auto_ids=True, sample="HVD26S0900")).json["sample"], "HVD26S0900")  # typed sample kept
+        self.assertEqual(self.c.post("/api/jobs", json=dict(auto_ids=True, sample="HVD26S0900", customer_form_id=self.request())).json["sample"], "HVD26S0900")  # typed sample kept
 
 
 class History(Base):

@@ -7,6 +7,8 @@ _tmp = tempfile.TemporaryDirectory()
 os.environ["ALETHEIA_DB"] = os.path.join(_tmp.name, "test.db")
 os.environ["ALETHEIA_FEATURE_SCAN"] = "1"  # the scanning tests below need the (optional) feature on
 os.environ["ALETHEIA_AUTO_BACKUP"] = "0"
+os.environ["ALETHEIA_PASSWORDS"] = "1"  # the password rules are tested; the app runs without them while testing
+os.environ["ALETHEIA_DEMO"] = "1"  # the demo loader is a test fixture; a real job starts from a customer's request
 for _v in ("GEMINI_API_KEY", "GEMINI_MODEL", "AI_BASE_URL", "AI_MODEL", "AI_API_KEY", "AI_PROVIDER", "AI_NUM_CTX", "AI_IMAGE_PX"): os.environ.pop(_v, None)
 import app as aletheia, importers, integrity, vision  # noqa: E402
 
@@ -40,6 +42,13 @@ def ensure_users():
             if not c.execute("SELECT 1 FROM users WHERE username=?", (un,)).fetchone():
                 c.execute("INSERT INTO users(username,full_name,employee_id,roles,password_hash,must_change_password,created_at) VALUES(?,?,?,?,?,0,'2026-01-01')",
                           (un, name, emp, role, _HASH))
+        if not c.execute("SELECT 1 FROM orgs WHERE name=?", (CUSTOMER[2],)).fetchone():
+            c.execute("INSERT INTO orgs(name,created_at) VALUES(?,'2026-01-01')", (CUSTOMER[2],))
+        org = c.execute("SELECT id FROM orgs WHERE name=?", (CUSTOMER[2],)).fetchone()[0]
+        if not c.execute("SELECT 1 FROM users WHERE username=?", (CUSTOMER[0],)).fetchone():
+            c.execute("INSERT INTO users(username,full_name,roles,org_id,email,password_hash,must_change_password,created_at) VALUES(?,?,?,?,?,?,0,'x')",
+                      (CUSTOMER[0], CUSTOMER[1], "customer", org, "buyer@ap.example", _HASH))
+    return org
 
 
 def signed_in(username, password=PW):
@@ -51,23 +60,41 @@ def signed_in(username, password=PW):
     return c
 
 
-# A complete, valid intake for the demo customer (Chennai PIN 600058, Tamil Nadu); see workflow.INTAKE_FIELDS.
-INTAKE = dict(DEMO["request"], city="Chennai", state="Tamil Nadu", pin="600058", contact="V. Krishna", phone="+91 9876543210",
-              email="qa@aptransformers.example", manufacturer="A.P. Transformers", witness="Yes", witness_name=DEMO["request"]["witness"],
-              rating="250 kVA / 11 kV / 433 V", arrived_at="2026-10-10T09:00", opened_by="Security desk (R. Kumar)")
+# The demo customer's request as they fill it in online (Customer Request Form CPRI/QAF/01A, sheets 1 and 2; Chennai PIN
+# 600058, Tamil Nadu), and the laboratory's part on receipt (sheet 3). See workflow.REQUEST_FIELDS and LAB_FIELDS.
+REQUEST = dict(customer="A.P. Transformers", address=DEMO["request"]["address"], city="Chennai", state="Tamil Nadu", pin="600058",
+               contact="V. Krishna", phone="+91 9876543210", email="qa@aptransformers.example", sample=DEMO["request"]["sample"],
+               rating="250 kVA / 11 kV / 433 V", description=DEMO["request"]["rating"], type=DEMO["request"]["type"], serial="1098",
+               manufacturer="A.P. Transformers", drawings=DEMO["request"]["drawings"], requirement="", criteria=DEMO["request"]["criteria"],
+               samples="1", take_back="Yes", scrap="No", tests="Type test", mounting="", witness=DEMO["request"]["witness"], witness_other="",
+               dispatch="Handed over to person", dispatch_mode="", additional_reports="Not required", msme="Not Applicable", conformity="Yes",
+               decision_rule="(i)", declare_drawings=True, declare_terms=True, signed_name="V. Krishna")
+LAB = dict(condition="Suitable for Testing", capability="Yes", external="", arrived_at="2026-10-10T09:00")
+CUSTOMER = ("ap.portal", "AP Portal", "A.P. Transformers")  # the demo customer's portal account
 
 
 class Base(unittest.TestCase):
     def setUp(self):
-        ensure_users()
+        self.org = ensure_users()
         with aletheia.db() as c:  # the integrity triggers forbid exactly this, so the wipe between tests lifts them briefly
             integrity.drop_triggers(c)
-            for t in ("jobs", "imports", "audit", "sources", "reports", "vision_calls", "sections", "section_history", "files", "counters", "assignments", "bays"):
+            for t in ("jobs", "imports", "audit", "sources", "reports", "vision_calls", "sections", "section_history", "files", "counters", "assignments", "bays",
+                      "customer_forms"):
                 c.execute(f"DELETE FROM {t}")
             c.execute("UPDATE users SET failed_attempts=0, locked_until=NULL")
             integrity.install_triggers(c)
         self.c = signed_in("t.rao"); aletheia.app.config.pop("VISION_TRANSPORT", None)
-        self.admin = signed_in("admin")
+        self.admin = signed_in("admin"); self.cust = signed_in(CUSTOMER[0])
+
+    def request(self, plan=("proforma", "temp", "sc"), **kw):
+        """The customer raises a test request online; returns its id (it waits in the laboratory's inbox)."""
+        r = self.cust.post("/api/customer/requests", json=dict(REQUEST, plan=list(plan), **kw)); self.assertEqual(r.status_code, 201, r.json)
+        return r.json["id"]
+
+    def receive(self, plan=("proforma", "temp", "sc"), **kw):
+        """The laboratory receives a fresh customer request (sheet 3 recorded, numbers allocated); returns the job id."""
+        r = self.c.post("/api/intake", json=dict(LAB, customer_form_id=self.request(plan), plan=list(plan), **kw)); self.assertEqual(r.status_code, 201, r.json)
+        return r.json["id"]
 
     def approve(self, i, who="r.viewer"):
         return signed_in(who).post(f"/api/jobs/{i}/approve", json=dict(password=PW))
@@ -80,8 +107,9 @@ class Base(unittest.TestCase):
         """Complete and check the intake (required before release), with the tests that have data as the test plan."""
         j = self.get(i)
         plan = [k for k in j["data"] if k in aletheia.NAMES and k != "request"] or ["proforma"]
-        org = self.admin.post("/api/orgs", json=dict(name=j["customer"] if j["customer"] != "NA" else "Test customer")).json["id"]
-        r = self.c.post(f"/api/jobs/{i}/intake", json=dict(INTAKE, customer=j["customer"] if j["customer"] != "NA" else "Test customer", org_id=org, plan=plan))
+        b = dict(LAB, plan=plan)
+        if not (j["data"].get("request") or {}).get("signed_name"): b["customer_form_id"] = self.request(plan)  # e.g. the demo job: no request yet
+        r = self.c.post(f"/api/jobs/{i}/intake", json=b)
         self.assertEqual(r.status_code, 200, r.json)
         self.assertEqual(self.c.post(f"/api/jobs/{i}/intake/checked").status_code, 200)
 
@@ -102,7 +130,7 @@ class Base(unittest.TestCase):
         return self.c.post(f"/api/jobs/{i}/generate")
 
     def job(self, series="CPRIBLRSCL25T1654"):
-        r = self.c.post("/api/jobs", json=dict(series=series, sample="HVD25S0847", customer="A.P. Transformers", rating="250 kVA", request=DEMO["request"]))
+        r = self.c.post("/api/jobs", json=dict(series=series, sample="HVD25S0847", customer_form_id=self.request()))
         self.assertEqual(r.status_code, 201, r.json); return r.json["id"]
 
     def get(self, i): return self.c.get(f"/api/jobs/{i}").json
@@ -115,11 +143,12 @@ class ImportFormats(Base):
         self.assertEqual(DEMO["request"]["serial"], "1098")  # text that looks like a number must stay text
 
     def test_csv_xlsx_and_database_give_same_data_as_json(self):
-        want = {k: v for k, v in DEMO.items()}
+        want = {k: v for k, v in DEMO.items() if k != "request"}  # the request is the customer's: a file never changes it
         for name in ("AP_Transformers_25T1654.csv", "AP_Transformers_25T1654.xlsx", "AP_Transformers_25T1654_lab.db"):
             i = self.job(); r = self.c.post(f"/api/jobs/{i}/import", json=up(name, raw(name)))
             self.assertEqual(r.status_code, 200, r.json)
-            self.assertEqual(self.get(i)["data"], want, name)
+            got = self.get(i)["data"]; self.assertEqual(got["request"]["signed_name"], REQUEST["signed_name"], name)
+            self.assertEqual({k: v for k, v in got.items() if k != "request"}, want, name)
             self.drop(i)
 
     def test_csv_import_runs_through_to_approved_report(self):
@@ -231,15 +260,16 @@ class ImportFormats(Base):
 
     def test_new_request_from_a_data_file(self):
         csv = raw("AP_Transformers_25T1654.csv")
-        r = self.c.post("/api/jobs/from-file", json=up("job.csv", csv)); self.assertEqual(r.status_code, 201, r.json)
+        self.assertEqual(self.c.post("/api/jobs/from-file", json=up("job.csv", csv)).status_code, 400)  # no customer request
+        r = self.c.post("/api/jobs/from-file", json=dict(customer_form_id=self.request(), **up("job.csv", csv))); self.assertEqual(r.status_code, 201, r.json)
         j = self.get(r.json["id"])
         self.assertEqual((j["series"], j["sample"], j["customer"]), ("CPRIBLRSCL25T1654", "HVD25S0847", "A.P. Transformers"))
         self.assertEqual(len([k for k in j["data"] if k != "ids"]), 10)
-        self.assertEqual(self.c.post("/api/jobs/from-file", json=up("job.csv", csv)).status_code, 409)  # same series again
-        r = self.c.post("/api/jobs/from-file", json=dict(series="CPRIBLRSCL25T2001", **up("job.csv", csv)))  # typed series wins
+        self.assertEqual(self.c.post("/api/jobs/from-file", json=dict(customer_form_id=self.request(), **up("job.csv", csv))).status_code, 409)  # same series again
+        r = self.c.post("/api/jobs/from-file", json=dict(series="CPRIBLRSCL25T2001", customer_form_id=self.request(), **up("job.csv", csv)))  # typed series wins
         self.assertEqual(r.status_code, 201); self.assertEqual(self.get(r.json["id"])["series"], "CPRIBLRSCL25T2001")
         no_series = b"section,field,value" + bytes([10]) + b"proforma,kva,250" + bytes([10])
-        self.assertEqual(self.c.post("/api/jobs/from-file", json=up("x.csv", no_series)).status_code, 400)  # no series
+        self.assertEqual(self.c.post("/api/jobs/from-file", json=dict(customer_form_id=self.request(), **up("x.csv", no_series))).status_code, 400)  # no series
 
     def test_read_a_request_scan_before_the_job_exists(self):
         os.environ.update(GEMINI_API_KEY="test")
@@ -308,9 +338,11 @@ class ImportFormats(Base):
         j = self.job(); self.c.post(f"/api/jobs/{j}/import", json=up("f.json", json.dumps(d).encode()))
         self.c.post(f"/api/jobs/{j}/validate"); self.assertEqual(self.gen(j).status_code, 200)
         text = pdf_text(self.c.get(f"/api/jobs/{j}/report.pdf").data)
-        self.assertNotIn("None", text)
-        self.assertIn("NOT FULLY", text)  # short circuit and no-load: some checks passed, one could not run
-        self.assertIn("checks with NA values", text); self.assertIn("SC current", text.split("Statement of conformity")[1])
+        # "None" is the format's own wording for two cover lines; anything else would be a Python None leaking into the report
+        self.assertNotIn("None", text.replace("representative : None", "").replace("laboratory : None", ""))
+        concl = text.split("Conclusion:")[1]  # short circuit and no-load: some checks passed, one could not run
+        self.assertIn("covers only what could be evaluated", concl); self.assertIn("checks with NA values", concl); self.assertIn("SC current", concl)
+        self.assertIn("NA", text.split("At 112.5 percent rated voltage")[1][:200])  # the missing 112.5% current prints as NA, the table stays
         self.assertEqual(self.get(j)["verdict"], "Complies (partly evaluated)")
 
     def test_remove_an_imported_file(self):
@@ -346,8 +378,9 @@ class ImportFormats(Base):
         self.assertIn("Temperature-rise logsheet", [x for x in f if x["check"] == "Completeness of source documents"][0]["detail"])
 
     def test_only_series_is_required(self):
-        r = self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1999")); self.assertEqual(r.status_code, 201, r.json)
-        j = self.get(r.json["id"]); self.assertEqual((j["sample"], j["customer"], j["rating"]), ("NA", "NA", "NA"))
+        self.assertEqual(self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1999")).status_code, 400)  # only for a customer's request
+        r = self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1999", customer_form_id=self.request())); self.assertEqual(r.status_code, 201, r.json)
+        j = self.get(r.json["id"]); self.assertEqual((j["sample"], j["customer"], j["rating"]), ("NA", "A.P. Transformers", REQUEST["rating"]))
         self.assertEqual(self.c.post("/api/jobs", json=dict(customer="X")).status_code, 400)
         self.assertEqual(self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1998", sample="bad")).status_code, 400)
         i = r.json["id"]; self.c.post(f"/api/jobs/{i}/section", json=dict(section="sc", data=DEMO["sc"]))
@@ -371,8 +404,17 @@ class ImportFormats(Base):
             if fmt == "sqlite":  # database rows carry their series, so they are refused for a different job
                 self.assertEqual(r.status_code, 400); self.assertIn("other series", r.json["error"][0])
             else:
-                self.assertEqual(r.status_code, 200, (fmt, r.json)); self.assertEqual(self.get(n)["data"], self.get(i)["data"])
+                self.assertEqual(r.status_code, 200, (fmt, r.json))
+                strip = lambda d: {k: v for k, v in d.items() if k != "request"}  # each job keeps its own customer's request
+                self.assertEqual(strip(self.get(n)["data"]), strip(self.get(i)["data"]))
             self.drop(n)
+
+
+class Caching(Base):
+    def test_browsers_never_keep_a_stale_page_or_api_answer(self):
+        self.assertEqual(self.c.get("/").headers["Cache-Control"], "no-cache")
+        self.assertEqual(self.c.get("/static/workflow.js").headers["Cache-Control"], "no-cache")
+        self.assertEqual(self.c.get("/api/me").headers["Cache-Control"], "no-store")
 
 
 class Register(Base):
@@ -446,7 +488,21 @@ class ReportsAndSources(Base):
         finally:
             aletheia.TEMPLATE_FILE = old
         self.assertIn("HIGH POWER LAB - CERTIFICATE <draft>", text); self.assertIn("2. Results at a glance", text)
-        self.assertIn("4. Statement of conformity", text)  # keys left out keep the default wording
+        self.assertIn("DESCRIPTION OF SAMPLE TESTED", text)  # keys left out keep the default wording
+        self.assertIn("Sheet 1 of", text); self.assertIn("ULR-TC5452250SCLT1654F", text)  # the format's footer on every sheet
+
+    def test_report_follows_the_lab_format(self):
+        # "Transformer Test report format": 11 sheets for a full job, cross-referenced by sheet number, values as logged
+        text = pdf_text(aletheia.build_pdf(self.get(self.ready())).getvalue())
+        for s in ("DESCRIPTION OF SAMPLE TESTED", "SUMMARY OF TESTS CONDUCTED", "LIST OF DRAWINGS", "ROUTINE TESTS", "SPECIAL TEST",
+                  "TYPE TEST", "OIL LEAKAGE TEST", "No load current at 112.5 percent voltage", "NOTE", "End of Test Report"):
+            self.assertIn(s, text)
+        self.assertIn("Sheet 11 of 11", text); self.assertNotIn("Sheet 12", text)
+        self.assertIn("Number of Sheet(s) : Eleven", text); self.assertIn("Refer Sheet 2 of 11", text)
+        self.assertIn("Short-circuit withstand", text); self.assertIn("21.4 b) 7 of 11 & 8 of 11", text)  # clause and sheets of the SC test
+        self.assertIn("CPRIBLRSCL25T1654S011", text); self.assertNotIn("CPRIBLRSCL25T1654S001", text)  # calibration shot not reported
+        self.assertIn("- average 7.101 7.504 6.346 7.098 7.502 6.343", text)  # HV at 75 C as logged: principal / highest / lowest, before / after
+        self.assertIn("26.01 (as logged)", text)
 
     def test_editing_data_withdraws_report(self):
         i = self.ready(); t = dict(DEMO["temp"]); t["rhv_hot"] = t["rhv_hot"] * 1.01
@@ -460,7 +516,8 @@ class ReportsAndSources(Base):
         self.assertTrue([x for x in f if x["level"] == "fail" and "HV winding" in x["check"]])  # 0.3 K margin is gone
 
     def test_report_for_hand_entered_request_without_optional_fields(self):
-        i = self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1654", sample="HVD25S0847", customer="X", rating="250 kVA")).json["id"]
+        i = self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1654", sample="HVD25S0847", customer_form_id=self.request(
+            requirement="", mounting="", witness="", witness_other="", dispatch_mode="", additional_reports=""))).json["id"]
         self.c.post(f"/api/jobs/{i}/import", json=dict(filename="d.json", content={k: v for k, v in DEMO.items() if k != "request"}))
         self.c.post(f"/api/jobs/{i}/validate"); self.assertEqual(self.gen(i).status_code, 200)
 

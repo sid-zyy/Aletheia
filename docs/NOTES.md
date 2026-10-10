@@ -7,23 +7,25 @@ the data model and the job lifecycle; `docs/VALIDITY.md` says what the checks do
 
 | File | What it does |
 |---|---|
-| `app.py` | Flask API, SQLite storage, audit log, the 30 checks (`validate`), PDF report (`build_pdf`), report versions + QR verification, release rules, search, dashboard statistics |
+| `app.py` | Flask API, SQLite storage, audit log, the 30 checks (`validate`), report versions + QR verification, release rules, search, dashboard statistics |
+| `report.py` | The PDF report in the lab's "Transformer Test report format" |
+| `workflow.py`, `portal.py`, `tickets.py` | Customer Request Form CPRI/QAF/01A and intake rules; customer portal; customer tickets |
 | `rules.py` | Every threshold with its source and status (none confirmed by the lab yet) |
 | `importers.py` | CSV / Excel / SQLite / JSON in and out, using rows of `section, field, value`; register import |
 | `vision.py` | Scan reader: Gemini, Ollama, or any OpenAI-compatible service; page clean-up, part-by-part reading, saved scans |
-| `static/index.html` | The whole web UI (single page) |
-| `static/assistant.js` | Rule-based chat assistant: new request, record search, status, how-to answers (keyword matching, no AI model) |
-| `tests/test_app.py`, `tests/test_validity.py` | 60 tests: `python -m unittest discover -s tests` |
-| `report_template.json` | Wording of the report (title, headings, labels, footer) |
+| `static/index.html` + `static/*.js` | The web UI (single page; see the README's file list) |
+| `static/assistant.js` | Rule-based chat assistant for staff: customer requests, record search, status, how-to answers (keyword matching, no AI model) |
+| `tests/` | 143 tests: `python -m unittest discover -s tests` (the README lists what each file covers) |
+| `report_template.json` | Wording and laboratory details of the report (headings, ULR, address, clauses, notes) |
 | `sample_data/` | The A.P. Transformers sample job in every format, its 9 scans, plus two legacy registers (the CSV one has test dates and results) |
 | `test-files/` | Three CSV jobs for demos: full (`...25T1654`), partial (`...25T1704`), failing (`...25T1714`); different series, so they load side by side |
 
 **Data:** each job stores one object per document: `request, proforma, work, losses, resistance, noload, routine, sc, temp, pressure`. It also stores `ids` (series and sample number as written on each sheet) and `other` (additional log sheets of any type, keyed `x1, x2…`).
 
-**Workflow:** Request → Import → Review → Report → Approve.
+**Workflow:** Customer request → Intake (sheet 3) → Import → Verify → Review → Sign-off → Report → Approve. The README has the full workflow; the notes below are about the checks and records.
 - **Checks** run on whatever documents are present. Missing documents and empty (NA) values come out as "not evaluated", never as blockers. In the report's summary a test reads PASS only if every check behind it ran; otherwise NOT EVALUATED or NOT FULLY EVALUATED, and the statement of conformity names what was left out.
 - **Review:** the engineer goes through the flagged items one by one. A *data error* (sheet arithmetic that doesn't add up, a broken layout) blocks the report until it's fixed. A *requirement not met* is confirmed by the engineer and the report says the sample does not comply. The report is only built once every flagged item is reviewed or confirmed.
-- **Release:** the test engineer named on the report can't approve it. A released report can't be deleted (the customer's QR code must keep working); it can be withdrawn.
+- **Release:** the test engineer named on the report can't approve it, nor can anyone who worked on the data. A released report can't be deleted or withdrawn (the customer's QR code must keep working); it is corrected by an amendment.
 - **Historical records:** register imports are archived records with a result and test date, kept out of the pipeline, work queue and turnaround. Importing test data into one makes it a live job.
 - **Dashboard turnaround** is request captured -> first approval, from the audit log. Open jobs show how long they have waited.
 - **Report wording** is in `report_template.json` (read on every report, no restart needed).

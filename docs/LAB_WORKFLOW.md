@@ -1,7 +1,7 @@
 # Working with Aletheia: recommendations for the Short Circuit Laboratory
 
 For the laboratory and faculty (faculty note F10). None of this needs software changes; each point says how Aletheia
-supports it. Purpose: same-day reports (D2) that are complete and correct (D4), with fewer manual steps.
+supports it. Purpose: reports that are complete and correct (D4), with fewer manual steps.
 
 ## 1. One job card per product
 Print the series and sample number once at intake (Aletheia allocates them only when the request form is complete) and
@@ -20,26 +20,28 @@ kept byte-for-byte with its fingerprint; the name helps people, the fingerprint 
 
 ## 4. Record the bay
 Choose the bay on the job page before uploading (the PC remembers it). *Aletheia:* every test shows which bay it came from,
-and the Today board shows what is outstanding and whose it is.
+and the dashboard shows what is outstanding and whose it is.
 
 ## 5. Verify during the day, not at the end
-Verifiers clear "My work" at fixed times (e.g. 11:00, 14:00, 16:30). The same-day target depends on it.
+Verifiers clear "My work" at fixed times (e.g. 11:00, 14:00, 16:30), so tests do not wait for the end of the day.
 *Aletheia:* the verification queue is sorted oldest first, verifiers are notified of every upload, and a test can be verified
 while others are still being tested.
 
-## 6. Customer form checklist at intake
-Send customers the Excel request form in advance (they can download and return it through the portal). At intake, check the
-entered values against the product and the original form before confirming. *Aletheia:* missing or malformed values (PIN
-code, phone, email, rating, witness) are listed at once; a PIN that does not match the state needs confirmation; release is
-blocked until the intake is confirmed against the original.
+## 6. Customers raise their request online
+Give each customer organisation a portal account and ask them to raise every test request online, on the Customer Request
+Form CPRI/QAF/01A (sheets 1 and 2), before the sample is sent. At intake, compare the request with the product, record
+sheet 3 and confirm. *Aletheia:* the form is checked as the customer types (PIN code, phone, email, rating, storage /
+disposal, decision rule, declarations); a request with something missing or wrong is returned to the customer with the
+reason instead of being corrected by the laboratory; a PIN that does not match the state needs confirmation; release is
+blocked until the intake is checked.
 
 ## 7. A single point of intake
-Security and the receiving engineer hand over at a fixed point, so the arrival time (which starts the same-day clock) is
-unambiguous. *Aletheia:* records arrival time, who opened the box and who received it.
+Security and the receiving engineer hand over at a fixed point, so the arrival time is
+unambiguous. *Aletheia:* records the arrival time, the physical condition on receipt and who accepted the job (sheet 3).
 
-## 8. Weekly review of the same-day target
-Review the jobs that were carried over and their reasons. *Aletheia:* every job past its cut-off needs a reason; release
-records whether it was finished the same day; the Records export lists all jobs in one workbook.
+## 8. Weekly review of open jobs
+Review the jobs still open and the customers' open tickets. *Aletheia:* release records when each report was finished; the
+Records export lists all jobs in one workbook.
 
 ## 9. Template change control
 Who may change a logsheet: named persons only. Procedure: change the sheet and its version number in the header, the
@@ -51,5 +53,5 @@ Never re-issue a report by editing it. An approver and a second approver open an
 tests are corrected and re-verified; the new version supersedes the old one, which stays verifiable.
 
 ## 11. Daily routine for the administrator
-Note the audit chain tip shown on the Backups page in the paper register; copy the `backups` folder to a second disk weekly;
+Answer the open customer tickets (dashboard: *Customer tickets to answer*). Note the audit chain tip shown on the Backups page in the paper register; copy the `backups` folder to a second disk weekly;
 use *Check* on one backup a month (the restore drill).

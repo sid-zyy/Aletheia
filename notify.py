@@ -1,11 +1,8 @@
-"""Notifications, the same-day target and lab settings (docs/NEXT_STEPS.md sections 7.2 and 7.3).
+"""Notifications and lab settings (docs/NEXT_STEPS.md section 7.3).
 
 * In-app notifications first (works on any lab PC). Optional email: queued in an outbox and sent by a background worker
   with retries; a failed email never blocks an upload, and the upload, not the email, is the record.
 * Emails carry the job number, what changed and a link to the portal page: never result values, never attachments.
-* Same-day target: each job gets a cut-off (arrival day at the configured time). Jobs within the warning window are
-  amber, past it red; a job that crosses the cut-off is "carried over" and needs a reason. Release records whether the
-  job was finished the same day.
 """
 import datetime as dt, json, os, smtplib, threading
 from email.message import EmailMessage
@@ -13,9 +10,9 @@ from flask import jsonify, request
 import auth
 
 A = None
-DEFAULTS = {"cutoff_time": "18:00", "warn_minutes": "120", "smtp_host": "", "smtp_port": "587", "smtp_tls": "1", "smtp_user": "",
+DEFAULTS = {"smtp_host": "", "smtp_port": "587", "smtp_tls": "1", "smtp_user": "",
             "smtp_sender": "", "portal_url": ""}
-CRITICAL = {"returned", "released", "cutoff"}  # always sent; others respect the user's email opt-out
+CRITICAL = {"returned", "released"}  # always sent; others respect the user's email opt-out
 
 
 def init_db(c):
@@ -27,7 +24,7 @@ def init_db(c):
     CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY, notification_id INT, to_addr TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL,
         attempts INT DEFAULT 0, last_error TEXT, created_at TEXT, next_try TEXT, sent_at TEXT);""")
     have = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
-    for col, ddl in (("cutoff", "TEXT"), ("carry_reason", "TEXT"), ("completed_at", "TEXT"), ("same_day", "INTEGER"), ("cutoff_warned", "INTEGER DEFAULT 0")):
+    for col, ddl in (("completed_at", "TEXT"),):  # when the report was released
         if col not in have: c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
     have = {r[1] for r in c.execute("PRAGMA table_info(users)")}
     if "email_opt_out" not in have: c.execute("ALTER TABLE users ADD COLUMN email_opt_out INTEGER DEFAULT 0")
@@ -36,16 +33,6 @@ def init_db(c):
 def setting(c, k):
     r = c.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone()
     return r[0] if r and r[0] is not None else os.environ.get("ALETHEIA_" + k.upper(), DEFAULTS.get(k, ""))
-
-
-def cutoff_for(c, arrived):
-    """The same-day cut-off for a product that arrived at `arrived` (ISO). Arrivals after the day's cut-off get the next
-    day's (Q12: the lab's rule for late arrivals is still to be confirmed)."""
-    hh, mm = (int(x) for x in setting(c, "cutoff_time").split(":"))
-    a = dt.datetime.fromisoformat(arrived)
-    cut = a.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    if a >= cut: cut += dt.timedelta(days=1)
-    return cut.isoformat(timespec="minutes")
 
 
 # ------------------------------------------------------------------ sending notifications
@@ -119,20 +106,6 @@ def on_ready_to_approve(c, job_id):
     notify(c, users_with(c, "approver"), job_id, "approve", f"{series}: report generated and waiting for approval")
 
 
-def cutoff_sweep():
-    """Warn the job's testers and verifiers once when a job enters the warning window before its cut-off."""
-    with A.db() as c:
-        warn = int(setting(c, "warn_minutes")); now = dt.datetime.now()
-        for j in c.execute("SELECT id, series, cutoff FROM jobs WHERE archived=0 AND stage<4 AND cutoff IS NOT NULL AND cutoff_warned=0").fetchall():
-            left = (dt.datetime.fromisoformat(j["cutoff"]) - now).total_seconds() / 60
-            if left <= warn:
-                people = [r[0] for r in c.execute("SELECT DISTINCT uploaded_by FROM sections WHERE job_id=? AND uploaded_by IS NOT NULL UNION "
-                                                  "SELECT user_id FROM assignments WHERE job_id=?", (j["id"], j["id"]))]
-                notify(c, people + users_with(c, "verifier"), j["id"], "cutoff",
-                       f"{j['series']}: {'past' if left < 0 else f'{int(left)} minutes to'} today's cut-off ({j['cutoff'][11:16]})")
-                c.execute("UPDATE jobs SET cutoff_warned=1 WHERE id=?", (j["id"],))
-
-
 # ------------------------------------------------------------------ email outbox
 def smtp_transport(c):
     host = setting(c, "smtp_host")
@@ -171,14 +144,11 @@ def send_pending(limit=20):
 
 
 def worker():
-    """Background: outbox every minute, cut-off warnings every five."""
+    """Background: send the email outbox every minute."""
     if os.environ.get("ALETHEIA_WORKER", "1") == "0": return
-    tick = {"n": 0}
     def run():
-        tick["n"] += 1
         try:
             send_pending()
-            if tick["n"] % 5 == 1: cutoff_sweep()
         except Exception as e:  # noqa: BLE001
             try:
                 with A.db() as c: A.log(c, None, f"Notification worker error: {type(e).__name__}: {e}", kind="admin")
@@ -216,7 +186,7 @@ def install(app_module):
     @app.post("/api/me/preferences")
     @auth.signed_in
     def preferences():
-        """Opt out of non-critical emails (returns, releases and cut-off warnings are always sent)."""
+        """Opt out of non-critical emails (returns and releases are always sent)."""
         v = int(bool(A.body().get("email_opt_out")))
         with A.db() as c:
             c.execute("UPDATE users SET email_opt_out=? WHERE id=?", (v, auth.current()["id"]))
@@ -232,10 +202,6 @@ def install(app_module):
     @auth.require("settings.manage")
     def settings_set():
         b = A.body(); err = []
-        if "cutoff_time" in b:
-            try: h, m = (int(x) for x in str(b["cutoff_time"]).split(":")); assert 0 <= h < 24 and 0 <= m < 60
-            except (ValueError, AssertionError): err.append("Cut-off time must be HH:MM")
-        if "warn_minutes" in b and not str(b["warn_minutes"]).isdigit(): err.append("Warning window must be whole minutes")
         if "smtp_port" in b and not str(b["smtp_port"]).isdigit(): err.append("SMTP port must be a number")
         if err: return jsonify(error=err), 400
         with A.db() as c:
@@ -255,35 +221,3 @@ def install(app_module):
     @app.post("/api/outbox/send")
     @auth.require("settings.manage")
     def outbox_send(): return jsonify(sent=send_pending(100))
-
-    @app.get("/api/today")
-    @auth.require("staff.view")
-    def today():
-        """The same-day board: every open job with its cut-off, time left and what is still outstanding (and whose it is)."""
-        now = dt.datetime.now()
-        with A.db() as c:
-            warn = int(setting(c, "warn_minutes")); out = []
-            for r in c.execute("SELECT id FROM jobs WHERE archived=0 AND stage<4 ORDER BY COALESCE(cutoff, created)").fetchall():
-                j = A.getjob(r[0], False)
-                left = (dt.datetime.fromisoformat(j["cutoff"]) - now).total_seconds() / 60 if j.get("cutoff") else None
-                owners = {k: (j["assign"].get(k) or {}).get("name") or (j["meta"].get(k) or {}).get("uploaded_by") for k in [p["key"] for p in j["progress"]]}
-                out.append(dict(id=j["id"], series=j["series"], customer=j["customer"], cutoff=j.get("cutoff"), minutes_left=None if left is None else int(left),
-                                status="none" if left is None else "red" if left < 0 else "amber" if left <= warn else "green",
-                                carried_over=left is not None and left < 0, carry_reason=j.get("carry_reason"),
-                                not_uploaded=[dict(name=p["name"], owner=owners.get(p["key"])) for p in j["progress"] if p["state"] == "not_started"],
-                                awaiting_verification=[dict(name=p["name"], owner=owners.get(p["key"])) for p in j["progress"] if p["state"] == "uploaded"],
-                                returned=[dict(name=p["name"], owner=owners.get(p["key"])) for p in j["progress"] if p["state"] == "returned"],
-                                stage=j["stage_name"], signed_off=bool(j["signoff"])))
-        return jsonify(jobs=out, warn_minutes=warn, now=now.isoformat(timespec="minutes"))
-
-    @app.post("/api/jobs/<int:i>/carry-over")
-    @auth.require("job.edit", "section.verify", "report.approve")
-    def carry_over(i):
-        """A job past its same-day cut-off is not blocked: the reason is recorded, so the exception is visible and reportable."""
-        j = A.getjob(i, False); reason = str(A.body().get("reason") or "").strip()
-        if not j.get("cutoff") or dt.datetime.fromisoformat(j["cutoff"]) > dt.datetime.now(): return jsonify(error=["This job has not passed its cut-off"]), 409
-        if len(reason) < 5: return jsonify(error=["Give the reason it is carried over"]), 400
-        with A.db() as c:
-            c.execute("UPDATE jobs SET carry_reason=?, updated=? WHERE id=?", (reason, A.now(), i))
-            A.log(c, i, f"Carried over past the same-day cut-off ({j['cutoff'].replace('T', ' ')}): {reason}", kind="job")
-        return jsonify(ok=True)
