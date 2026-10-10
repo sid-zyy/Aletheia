@@ -1,5 +1,5 @@
 /* Aletheia assistant: a rule-based helper (no AI model). It matches keywords in what the user types and drives the
-   same API and pages as the rest of the app: start a new request, search records, list open jobs, show status, explain
+   same API and pages as the rest of the app: open the customer requests, search records, list open jobs, show status, explain
    the workflow. Uses the helpers defined in index.html: $, esc, api, go, badge, ST. */
 (()=>{
 const box=document.createElement('div');box.id='cb';
@@ -18,43 +18,23 @@ let flow=null,started=false;
 /* ---------- rendering */
 const say=(html,who='bot')=>{const m=document.createElement('div');m.className='cbm '+who;m.innerHTML=html;log.append(m);log.scrollTop=log.scrollHeight;return m};
 const chips=list=>{$('#cbq').innerHTML=list.map(([t,a])=>`<button type="button" data-a="${esc(a)}">${esc(t)}</button>`).join('');log.scrollTop=log.scrollHeight};
-const MAIN=[['New report','new'],['Search records','search'],['In progress','pending'],['Status summary','status'],['How it works','how']];
+const MAIN=[['Customer requests','requests'],['Search records','search'],['In progress','pending'],['Status summary','status'],['How it works','how']];
 const think=async()=>{const t=say('<i class="cbd"></i><i class="cbd"></i><i class="cbd"></i>');
  await new Promise(r=>setTimeout(r,matchMedia('(prefers-reduced-motion: reduce)').matches?0:350));t.remove()};
 const jobRow=j=>`<button type="button" class="cbj" data-job="${j.id}"><b>${esc(j.series)}</b><span>${esc(j.customer)} &middot; ${esc(j.rating)}</span>${badge(j)}</button>`;
 const jobList=(l,more)=>l.slice(0,5).map(jobRow).join('')+(l.length>5?`<button type="button" class="lk" data-a="${esc(more)}">Show all ${l.length} in Records &amp; Search</button>`:'');
 
-/* ---------- guided new request: series is required, the rest may be skipped (stored as NA) */
-const STEPS=[['series','What is the <b>test series number</b>? It identifies the record, e.g. <code>CPRIBLRSCL25T1654</code>.',1],
- ['sample','<b>Sample code</b>? e.g. <code>HVD25S0847</code>, or type <i>skip</i>.'],
- ['customer','<b>Customer name</b>? Or <i>skip</i>.'],['rating','<b>Rating</b>? e.g. <i>250 kVA / 11 kV / 433 V</i>, or <i>skip</i>.']];
-function startNew(){flow={i:0,v:{}};
- say(`I'll set up a new test request. You add the log sheets afterwards. Type <i>cancel</i> at any time.<br><br>${STEPS[0][1]}`);
- chips([['Use the full form instead','form'],['Cancel','cancel']])}
-async function stepNew(t){const [k,,req]=STEPS[flow.i],skip=/^(skip|na|n\/a|-|none)$/i.test(t);
- if(req&&(skip||!t))return say('The series number is required, so it cannot be skipped.');
- if(k=='series'&&!/^CPRI[A-Z]{3,}\d{2}[A-Z]\d{3,5}$/i.test(t.replace(/\s/g,'')))say('That does not look like a CPRI series number, but I\'ll keep it; the server will check it.');
- flow.v[k]=skip?'':(k=='series'?t.replace(/\s/g,'').toUpperCase():k=='sample'?t.toUpperCase():t);
- if(++flow.i<STEPS.length){say(STEPS[flow.i][1]);return chips([['Skip','skip'],['Cancel','cancel']])}
- const v=flow.v;flow.confirm=true;
- say(`Create this request?<dl class="cbs"><dt>Series</dt><dd>${esc(v.series)}</dd><dt>Sample</dt><dd>${esc(v.sample||'NA')}</dd><dt>Customer</dt><dd>${esc(v.customer||'NA')}</dd><dt>Rating</dt><dd>${esc(v.rating||'NA')}</dd></dl>`);
- chips([['Create request','yes'],['Start over','new'],['Cancel','cancel']])}
-async function finishNew(){const v=flow.v;flow=null;
- try{const r=await api('/api/jobs',v);say(`Created <b>${esc(v.series)}</b>. I've opened it; the next step is to import its log sheets.`);
-  chips([['How do I import?','import'],...MAIN.slice(1,3)]);go('job/'+r.id)}
- catch(e){say(`That didn't work: ${esc([].concat(e).join(' '))}`);chips([['Try again','new'],['Use the full form','form'],...MAIN.slice(1,3)])}}
-
 /* ---------- answers */
 async function search(term){
  if(!term){flow={search:1};say('What should I look for? A series number, sample code, customer or rating all work.');return chips([['Cancel','cancel']])}
  const l=await api('/api/jobs?q='+encodeURIComponent(term));
- if(!l.length){say(`No records match <b>${esc(term)}</b>.`);return chips([['New report','new'],['Search again','search'],['Import an old register','register']])}
+ if(!l.length){say(`No records match <b>${esc(term)}</b>.`);return chips([['Customer requests','requests'],['Search again','search'],['Import an old register','register']])}
  say(`${l.length} record${l.length==1?'':'s'} match <b>${esc(term)}</b>:`+jobList(l,'all:'+term));chips(MAIN)}
 async function pending(){const l=(await api('/api/jobs')).filter(j=>j.stage<4&&!j.archived);
  if(!l.length){say('Nothing is in progress: every record has been approved.');return chips(MAIN)}
  say(`${l.length} report${l.length==1?' is':'s are'} still in progress (most recently updated first):`+jobList(l,'records'));chips(MAIN)}
 async function status(){const s=await api('/api/stats');
- if(!s.total){say('There are no records yet. Start a new report.');return chips([['New report','new'],['How it works','how']])}
+ if(!s.total){say('There are no records yet. A job starts when a customer raises a test request and the laboratory receives it.');return chips([['Customer requests','requests'],['How it works','how']])}
  say(`<b>${s.total}</b> record${s.total==1?'':'s'} in total:<dl class="cbs">${ST.map((n,i)=>`<dt>${esc(n)}</dt><dd>${s.by_stage[i]}</dd>`).join('')}</dl>`+
   (s.historical?`Plus <b>${s.historical}</b> historical record${s.historical==1?'':'s'} imported from registers. `:'')+
   (s.turnaround_h?`From request to release takes ${dur(s.turnaround_h.avg)} on average (${s.turnaround_h.n} released). `:'')+
@@ -66,7 +46,7 @@ const HELP={
  approve:`When the report is generated, open the job, check the preview, enter your name and <b>employee ID</b> (both are required and are printed on the report) and click <b>Approve and release</b>. The test engineer named on the report cannot approve it. Then copy the customer link or email it: the customer can verify and download the report. Every step is recorded in the job history.`,
  verify:`Each approved report carries a verification link and code. Opening it shows whether the PDF matches the one the lab issued, so changed copies can be detected.`,
  register:`Under <b>Records &amp; Search</b>, use <b>Import existing register</b> to bring in older records from a CSV, Excel or SQLite file. Download the register template there to see the expected columns.`,
- help:`I can help you:<ul class="cbo"><li>start a <b>new report</b> request</li><li><b>search</b> records by series, sample code, customer or rating</li><li>list reports <b>in progress</b> and give a <b>status summary</b></li><li>explain importing, checks, approval and verification</li><li>open a page: dashboard, records, preview or architecture</li></ul>I match keywords rather than understanding full sentences, so short requests work best.`};
+ help:`I can help you:<ul class="cbo"><li>open the <b>customer requests</b> waiting for intake</li><li><b>search</b> records by series, sample code, customer or rating</li><li>list reports <b>in progress</b> and give a <b>status summary</b></li><li>explain importing, checks, approval and verification</li><li>open a page: dashboard, records, preview or architecture</li></ul>I match keywords rather than understanding full sentences, so short requests work best.`};
 const PAGES=[[/dashboard|home/,'dashboard','the dashboard'],[/records?|archive/,'records','Records & Search'],[/preview|pdf/,'preview','Report Preview'],[/architect/,'arch','the architecture page'],[/workflow/,'workflow','Report Workflow']];
 
 /* ---------- routing what the user typed or clicked */
@@ -75,14 +55,11 @@ const STOP=new Set('please can could would you i want to what about is are there
 const searchTerm=t=>t.split(/\s+/).map(w=>w.replace(/^["'(]+|[?!,"')]+$/g,'').replace(/^([^.]+)\.$/,'$1')).filter(w=>w&&!STOP.has(w.toLowerCase())).join(' ');
 async function handle(t,click){t=t.trim();if(!t)return;const lo=t.toLowerCase();
  if(lo=='cancel'){flow=null;say('Cancelled. What would you like to do?');return chips(MAIN)}
- if(flow&&flow.confirm)return lo=='yes'||lo=='create'||lo=='y'?finishNew():lo=='new'?startNew():(say('Choose <b>Create request</b> or <b>Cancel</b>.'));
  if(flow&&flow.search){flow=null;return search(t)}
- if(flow&&!click||flow&&lo=='skip')return stepNew(t);
  flow=null;
  if(lo.startsWith('all:')){q=t.slice(4);sg='';return go('records')}
- if(lo=='form'){say('Opening the new request form.');return go('new')}
+ if(lo=='requests'||/\b(new|create|start|begin|add|request|intake)\b/.test(lo)){say('Only a customer raises a test request, from their portal. Opening the customer requests waiting for intake.');return go('intake')}
  if(/^(hi|hello|hey|good (morning|afternoon|evening))\b/.test(lo)){say('Hello! What would you like to do?');return chips(MAIN)}
- if(/\b(new|create|start|begin|add)\b/.test(lo))return startNew();
  if(/\b(status|summary|stats?|how many|overview|count)\b/.test(lo))return status();
  if(/\b(pending|in progress|progress|open jobs|unfinished|outstanding|to ?do|waiting|ongoing)\b/.test(lo))return pending();
  if(/\bregister|old records|legacy\b/.test(lo)){say(HELP.register);return chips([['Go to Records','records'],...MAIN.slice(0,2)])}
@@ -104,7 +81,7 @@ async function handle(t,click){t=t.trim();if(!t)return;const lo=t.toLowerCase();
 async function send(t,click){if(click)say(esc(t),'me');
  try{await think();await handle(click?click:t,!!click)}catch(e){say(`Something went wrong: ${esc([].concat(e).join(' '))}`);chips(MAIN)}}
 function toggle(open){panel.hidden=!open;opener.setAttribute('aria-expanded',open);box.classList.toggle('on',open);
- if(open&&!started){started=true;say('Hello, I\'m the Aletheia assistant. I can start a new report, find existing ones, or explain how the app works.');chips(MAIN)}
+ if(open&&!started){started=true;say('Hello, I\'m the Aletheia assistant. I can open the customer requests, find existing reports, or explain how the app works.');chips(MAIN)}
  if(open)inp.focus();else opener.focus()}
 
 opener.onclick=()=>toggle(panel.hidden);$('#cbc').onclick=()=>toggle(false);

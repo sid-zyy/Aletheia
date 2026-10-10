@@ -2,7 +2,7 @@
 import os, sys, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_app import Base, DEMO, INTAKE, PNG, PW, aletheia, signed_in, up  # noqa: E402
+from test_app import LAB, REQUEST, Base, DEMO, PNG, PW, aletheia, signed_in, up  # noqa: E402
 
 PARTS = {k: v for k, v in DEMO.items() if k != "request"}
 
@@ -25,22 +25,32 @@ def uid(un):
 class Flow(Base):
     def setUp(self):
         super().setUp(); extra_users(); self.v = signed_in("s.iyer")
-        self.org = self.admin.post("/api/orgs", json=dict(name="A.P. Transformers")).json["id"]
 
     def intake_body(self, **kw):
-        return dict(INTAKE, org_id=self.org, plan=["proforma", "temp", "sc"], **kw)
+        """The laboratory's part of the intake (sheet 3) for a fresh customer request."""
+        return dict(LAB, customer_form_id=kw.pop("customer_form_id", None) or self.request(), plan=["proforma", "temp", "sc"], **kw)
 
 
 class Intake(Flow):
     def test_nothing_missing_nothing_wrong(self):
+        # the customer's sheets 1 and 2, checked as they type
         for bad, expect in ((dict(pin="56001"), "PIN code: must be 6 digits"), (dict(pin="5600011"), "PIN code: must be 6 digits"),
                             (dict(pin="56OO01"), "PIN code: must be 6 digits"), (dict(pin="060001"), "PIN code: must be 6 digits"),
-                            (dict(pin="NA"), "PIN code: required"), (dict(customer=" "), "Customer name: required"),
-                            (dict(manufacturer="N/A"), "Manufacturer: required (or mark it not applicable"), (dict(phone="12345"), "Phone"),
+                            (dict(pin="NA"), "PIN code: required"), (dict(customer=" "), "Name of the Customer: required"),
+                            (dict(manufacturer="N/A"), "Manufacturer's Details: required (or mark it not applicable"), (dict(phone="12345"), "Phone"),
                             (dict(email="qa@nowhere"), "Email"), (dict(rating="big"), "Rating"), (dict(state="Atlantis"), "not an Indian state"),
-                            (dict(arrived_at="2099-01-01T10:00"), "future"), (dict(witness="maybe"), "yes or no"), (dict(plan=[]), "Test plan"),
-                            (dict(org_id=99999), "Unknown customer organisation")):
-            b = self.intake_body(); b.update(bad)
+                            (dict(samples="one"), "Number of Samples: a whole number"), (dict(take_back="maybe"), "answer yes or no"),
+                            (dict(msme="perhaps"), "MSME Discount: choose one"), (dict(signed_name=""), "Customers Name (signature): required"),
+                            (dict(declare_drawings=False), "Declaration not accepted")):
+            r = self.cust.post("/api/customer/requests/check", json=dict(REQUEST, plan=["sc"], **bad))
+            self.assertFalse(r.json["ok"], bad); self.assertTrue(any(expect in e for e in r.json["errors"]), (bad, r.json["errors"]))
+            self.assertEqual(self.cust.post("/api/customer/requests", json=dict(REQUEST, plan=["sc"], **bad)).status_code, 400)
+        # the laboratory's sheet 3
+        fid = self.request()
+        for bad, expect in ((dict(arrived_at="2099-01-01T10:00"), "future"), (dict(condition=""), "Physical Condition of Sample on receipt: required"),
+                            (dict(condition="Not suitable for Testing"), "concurrence"), (dict(condition="Not suitable for Testing", **{"continue": "Not to continue Testing"}), "cannot be accepted"),
+                            (dict(capability="No"), "no capability"), (dict(plan=[]), "Test plan"), (dict(customer_form_id=None), "only a customer can raise")):
+            b = dict(LAB, customer_form_id=fid, plan=["sc"]); b.update(bad)
             r = self.c.post("/api/intake/check", json=b)
             self.assertFalse(r.json["ok"], bad); self.assertTrue(any(expect in e for e in r.json["errors"]), (bad, r.json["errors"]))
             self.assertEqual(self.c.post("/api/intake", json=b).status_code, 400)
@@ -48,42 +58,41 @@ class Intake(Flow):
         with aletheia.db() as c: self.assertEqual(c.execute("SELECT COUNT(*) FROM counters").fetchone()[0], 0)
 
     def test_arrival_and_organisation_are_filled_in_by_themselves(self):
-        b = {k: v for k, v in self.intake_body(confirm_warnings=True).items() if k not in ("arrived_at", "opened_by", "org_id")}
-        r = self.c.post("/api/intake", json=b); self.assertEqual(r.status_code, 201, r.json)
+        r = self.c.post("/api/intake", json={k: v for k, v in self.intake_body().items() if k != "arrived_at"}); self.assertEqual(r.status_code, 201, r.json)
         j = self.get(r.json["id"])
-        self.assertEqual(j["org_id"], self.org)  # matched by the customer's name
-        self.assertTrue(j["intake"]["arrived_at"]); self.assertIsNone(j["intake"]["opened_by"])
+        self.assertEqual(j["org_id"], self.org)  # the organisation of the customer who raised the request
+        self.assertTrue(j["intake"]["arrived_at"]); self.assertEqual(j["intake"]["external"], "Nil")
 
     def test_the_whole_list_at_once(self):
-        r = self.c.post("/api/intake/check", json=dict(org_id=self.org, plan=["sc"]))
-        self.assertGreaterEqual(len(r.json["errors"]), 15)
+        r = self.cust.post("/api/customer/requests/check", json=dict(plan=["sc"]))
+        self.assertGreaterEqual(len(r.json["errors"]), 25)
 
     def test_pin_and_state_must_agree_or_be_confirmed(self):
-        b = self.intake_body(state="Karnataka")  # 600058 is Chennai
+        b = self.intake_body(customer_form_id=self.request(state="Karnataka"))  # 600058 is Chennai
         r = self.c.post("/api/intake", json=b); self.assertEqual(r.status_code, 400)
         self.assertIn("belongs to Tamil Nadu", " ".join(r.json["error"]))
         r = self.c.post("/api/intake", json=dict(b, confirm_warnings=True)); self.assertEqual(r.status_code, 201)
         self.assertIn("confirmed: PIN code", " ".join(a["event"] for a in self.get(r.json["id"])["audit"]))
 
     def test_not_applicable_needs_a_reason_and_is_recorded(self):
-        b = self.intake_body(witness="No", witness_name="", na=dict(manufacturer="ok"))
-        self.assertIn("give the reason", " ".join(self.c.post("/api/intake", json=b).json["error"]))
-        self.assertIn("cannot be marked not applicable", " ".join(self.c.post("/api/intake", json=dict(b, na=dict(pin="customer did not say"))).json["error"]))
-        r = self.c.post("/api/intake", json=dict(b, na=dict(manufacturer="imported unit, maker not declared")))
-        rq = self.get(r.json["id"])["data"]["request"]
+        chk = lambda **kw: " ".join(self.cust.post("/api/customer/requests/check", json=dict(REQUEST, plan=["sc"], **kw)).json["errors"])
+        self.assertIn("give the reason", chk(na=dict(manufacturer="ok")))
+        self.assertIn("cannot be marked not applicable", chk(na=dict(pin="customer did not say")))
+        fid = self.request(witness="", na=dict(manufacturer="imported unit, maker not declared"))
+        rq = self.get(self.c.post("/api/intake", json=self.intake_body(customer_form_id=fid)).json["id"])["data"]["request"]
         self.assertEqual(rq["manufacturer"], "Not applicable: imported unit, maker not declared")
-        self.assertEqual(rq["witness_name"], "Not applicable: no witness")
+        self.assertEqual(rq["witness"], "")  # optional on the form: left empty
 
     def test_valid_intake_allocates_numbers_and_records_who_received_it(self):
-        b = self.intake_body(assign=dict(sc=uid("t.rao"), temp=uid("sc.only")), form_file=up("request form.png", PNG))
-        r = self.c.post("/api/intake", json=b); self.assertEqual(r.status_code, 201, r.json)
+        r = self.c.post("/api/intake", json=self.intake_body(assign=dict(sc=uid("t.rao"), temp=uid("sc.only")), external="Crane hire: Bengaluru Cranes"))
+        self.assertEqual(r.status_code, 201, r.json)
         j = self.get(r.json["id"])
         self.assertRegex(j["series"], r"CPRIBLRSCL\d{2}T0001"); self.assertRegex(j["sample"], r"HVD\d{2}S0001")
         self.assertEqual(j["plan"], ["proforma", "sc", "temp"])
-        self.assertEqual(j["intake"]["received_by"], "T. Rao"); self.assertEqual(j["intake"]["opened_by"], "Security desk (R. Kumar)")
+        self.assertEqual(j["intake"]["received_by"], "T. Rao"); self.assertEqual(j["intake"]["external"], "Crane hire: Bengaluru Cranes")
         self.assertEqual(j["assign"]["sc"]["name"], "T. Rao"); self.assertNotIn("temp", j["assign"])  # an engineer takes tests only for themselves
-        self.assertEqual(j["sources"][0]["filename"], "Customer request form - request form.png")
         self.assertEqual(j["data"]["request"]["pin"], "600058"); self.assertEqual(j["org_id"], self.org)
+        self.assertEqual(j["data"]["request"]["decision_rule"][:3], "(i)"); self.assertTrue(j["data"]["request"]["signed_at"])
         self.assertIsNone(j["intake"]["checked_by"])
         self.assertEqual(self.c.post(f"/api/jobs/{j['id']}/intake/checked").status_code, 200)
         self.assertEqual(self.get(j["id"])["intake"]["checked_by"], "T. Rao")
@@ -157,7 +166,7 @@ class Sections(Flow):
         with aletheia.db() as c: self.assertGreaterEqual(c.execute("SELECT COUNT(*) FROM audit WHERE kind='denied' AND event LIKE 'Refused:%'").fetchone()[0], 3)
 
     def test_sign_off_gate(self):
-        i = self.c.post("/api/intake", json=self.intake_body(confirm_warnings=True)).json["id"]  # plan: proforma, temp, sc
+        i = self.receive()  # plan: proforma, temp, sc
         self.c.post(f"/api/jobs/{i}/import", json=dict(filename="d.json", content={k: PARTS[k] for k in ("proforma", "temp")}))
         self.c.post(f"/api/jobs/{i}/validate")
         r = self.v.post(f"/api/jobs/{i}/signoff"); self.assertEqual(r.status_code, 409)
@@ -184,7 +193,7 @@ class Sections(Flow):
 
 class Assignment(Flow):
     def planned(self):
-        return self.c.post("/api/intake", json=self.intake_body(confirm_warnings=True)).json["id"]  # plan: proforma, temp, sc
+        return self.receive()  # plan: proforma, temp, sc
 
     def test_engineer_takes_an_unassigned_test_with_a_bay(self):
         i = self.planned(); bay = self.admin.post("/api/bays", json=dict(name="SC cell 2")).json["id"]

@@ -61,7 +61,7 @@ class Login(Base):
         c.environ_base["HTTP_X_CSRF_TOKEN"] = "forged"
         self.assertEqual(c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1700")).status_code, 403)
         c.environ_base["HTTP_X_CSRF_TOKEN"] = c.get("/api/me").json["csrf"]
-        self.assertEqual(c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1700")).status_code, 201)
+        self.assertEqual(c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1700", customer_form_id=self.request())).status_code, 201)
         with aletheia.db() as d: self.assertTrue(d.execute("SELECT 1 FROM audit WHERE kind='denied' AND event LIKE '%security token%'").fetchone())
 
     def test_public_posts_must_be_json(self):
@@ -198,9 +198,10 @@ class Customers(Base):
     def test_customer_sees_only_their_own_jobs_and_no_values(self):
         cust = self.customer_client()
         oid = self.admin.get("/api/orgs").json[0]["id"]
-        mine = self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1654", sample="HVD25S0847", customer="A.P. Transformers", rating="250 kVA",
-                                                  request=DEMO["request"], org_id=oid)).json["id"]
-        other = self.job("CPRIBLRSCL25T1655")
+        mine = self.job()  # raised by the A.P. Transformers customer: their organisation's job
+        theirs = self.customer_client("Other Transformers Ltd", "other.customer")  # another customer raises their own request
+        fid = theirs.post("/api/customer/requests", json=dict(__import__("test_app").REQUEST, customer="Other Transformers Ltd", plan=["sc"])).json["id"]
+        other = self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1655", customer_form_id=fid)).json["id"]
         self.c.post(f"/api/jobs/{mine}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
         self.assertEqual([j["id"] for j in cust.get("/api/jobs").json], [mine])
         self.assertEqual(cust.get(f"/api/jobs/{other}").status_code, 404)  # guessing an id reveals nothing

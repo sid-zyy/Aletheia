@@ -225,7 +225,8 @@ def _render(A, t, j, F, C, version, verify_url, manifest, partial, prev, seen):
     shots = [x for x in ((d.get("sc") or {}).get("shots") or []) if isinstance(x, list) and str(x[9] if len(x) > 9 else "").lower() != "calibration"]
     drawings = [x.strip() for x in re.split(r"[,;\n]+", str(Rq.get("drawings") or "")) if x.strip() and not isna(x)]
     graphs = 2 if has("temp") else 0
-    witness = Rq.get("witness_name") if not isna(Rq.get("witness_name")) else Rq.get("witness")
+    witness = Rq.get("witness") if not isna(Rq.get("witness")) else Rq.get("witness_name")  # older requests named it witness_name
+    lab = j.get("intake") or {}  # the laboratory's part of the request form (sheet 3)
     cover = [("Test Report Number", f"{series}" + " " * 12 + f"Date: {date}"), ("", None),
              ("Name and Address of the Customer", address), ("", None),
              ("Name and Address of the Manufacturer", s(Rq.get("manufacturer"))), ("", None),
@@ -240,9 +241,10 @@ def _render(A, t, j, F, C, version, verify_url, manifest, partial, prev, seen):
              ("", None), ("Test in accordance with Standard / specification", s(Wk.get("standard") if not isna(Wk.get("standard")) else Rq.get("criteria"))), ("", None),
              ("Sampling plan", t["sampling_plan"]), ("", None),
              ("Customer's requirement", s(Rq.get("requirement")) if not isna(Rq.get("requirement")) else t["customer_requirement"]),
-             ("Deviations if any", t["deviations"]), ("", None),
+             ("Deviations if any", s(lab.get("deviations")) if not isna(lab.get("deviations")) else t["deviations"]), ("", None),
              ("Name of the witnessing persons", None),
-             ("Customer's representative", s(witness)), ("Other than customer's representative", t["other_witness"]), ("", None),
+             ("Customer's representative", s(witness) if not isna(witness) else "None"),
+             ("Other than customer's representative", s(Rq.get("witness_other")) if not isna(Rq.get("witness_other")) else t["other_witness"]), ("", None),
              ("Test subcontracted with address of the laboratory", t["subcontracted"]), ("", None)]
     story += [mark("cover"), kv(cover), Spacer(1, 4), P_("Documents constituting this Report (In words)", H3),
               kv([("Number of Sheet(s)", words(total) if total else "-"), ("Number of Oscillogram (s)", words(len(shots)) if has("sc") else "Nil"),

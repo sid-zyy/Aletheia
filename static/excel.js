@@ -42,10 +42,6 @@ function bayWorkbook(){pick('.xlsx',async f=>{if(!f)return;try{const b={filename
   try{const x=await api('/api/excel/import',{...b,route});closeModal();const bad=Object.entries(x.results).filter(([,v])=>v.status!=200);
    toast(bad.length?bad.map(([k,v])=>`${k}: ${[].concat(v.error).join(' ')}`):`Imported into ${Object.keys(x.results).length} job${Object.keys(x.results).length==1?'':'s'}`,bad.length?1:0);route()}catch(e){toast(e,1)}}}catch(e){toast(e,1)}})}
 
-/* ---------------------------------------------------------------- intake: the customer's filled Excel request form */
-function intakeFromExcel(){pick('.xlsx',async f=>{if(!f)return;try{const r=await api('/api/intake/from-excel',{filename:f.name,b64:await b64(f)});let n=0;
- for(const [k,v] of Object.entries(r.values)){const e=$('#i_'+k);if(!e)continue;if(e.tagName=='SELECT'){const o=[...e.options].find(o=>o.text.toLowerCase()==String(v).toLowerCase()||(k=='witness'&&o.text[0].toLowerCase()==String(v)[0].toLowerCase()));if(o){e.value=o.value;n++}}else{e.value=v;n++}}
- toast(`${n} value${n==1?'':'s'} filled from ${f.name}. Check each against the form, then save.`+(r.warnings.length?' '+r.warnings.join(' '):''))}catch(e){toast(e,1)}})}
 
 /* ---------------------------------------------------------------- Admin: templates */
 async function templatesPage(id){if(id)return templateView(+id);const t=await api('/api/templates'),by={};t.forEach(x=>(by[x.key]=by[x.key]||[]).push(x));

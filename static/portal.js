@@ -1,5 +1,5 @@
-/* Notifications (bell + page), lab settings (email), and the customer's portal additions: partial report,
-   approved values, request forms sent to the laboratory. */
+/* Notifications (bell + page), lab settings (email), and the customer's portal additions: partial report and
+   approved values (their test requests: request.js). */
 (()=>{const s=document.createElement('style');s.textContent=`
 .bell{position:relative;border:1px solid var(--ln);background:var(--cd);border-radius:12px;padding:7px 10px;cursor:pointer;display:inline-flex;align-items:center}
 .bell i{position:absolute;top:-6px;right:-6px;background:var(--er);color:#fff;font-style:normal;font-size:11px;font-weight:700;border-radius:99px;padding:1px 6px;min-width:18px;text-align:center}
@@ -36,15 +36,3 @@ async function custExtras(id,j){const [vals,ps]=await Promise.all([api(`/api/job
  el.innerHTML=(ps.length?`<div class="card"><div class="wh"><h2 style="margin:0">Partial report</h2><a class="btn" href="/api/jobs/${id}/partial.pdf?dl=1">Download partial report (PDF)</a></div><p class="note">Built from the approved tests only; marked PARTIAL, NOT FINAL. Version ${ps[0].version} of ${esc(ps[0].at.replace('T',' ').slice(0,16))}, fingerprint <span class="hash">${esc(ps[0].sha256.slice(0,16))}&hellip;</span>${ps.length>1?`. Earlier: ${ps.slice(1).map(p=>`<a class="lk" style="padding:0 4px" href="/api/jobs/${id}/partial.pdf?v=${p.version}">v${p.version}</a>`).join('')}`:''}</p></div>`:'')+
   (vals.length?`<div class="card"><h2>Approved values</h2>${vals.map(v=>`<details class="xs"><summary><b>${esc(v.name)}</b><span class="pst verified">Approved</span></summary><div style="padding:8px 14px">${v.items.map(item).join('')}</div></details>`).join('')}</div>`:'');
  $('#app').append(el)}
-async function custForms(){const l=await api('/api/customer/request-forms'),el=document.createElement('div');
- el.innerHTML=`<div class="card"><div class="wh"><h2 style="margin:0">Request forms</h2><span style="display:flex;gap:8px"><a class="btn g" href="/api/request-form.xlsx">Download the blank form</a><button class="btn g" onclick="pick('.xlsx',sendForm)">Send a filled Excel form</button><a class="btn" href="#/my/request">Fill in online</a></span></div><p class="note">Fill in the request online (easiest), or send the Excel form; the laboratory checks it against your product at intake.</p>${l.map(f=>`<div class="ps"><span>${f.kind=='web'?'Online request':esc(f.filename)} <small class="sby">${esc(f.at.replace('T',' ').slice(0,16))}</small></span><span class="pst ${f.status=='used'?'verified':'uploaded'}">${f.status=='used'?'Used for '+esc(f.series||'a job'):'Received'}</span></div>`).join('')}</div>`;$('#app').append(el)}
-async function sendForm(f){if(!f)return;try{await api('/api/customer/request-forms',{filename:f.name,b64:await b64(f)});toast('Form sent to the laboratory');myJobs()}catch(e){toast(e,1)}}
-
-/* ---------------------------------------------------------------- intake: forms that customers sent in */
-async function formInbox(){const l=(await api('/api/request-forms')).filter(f=>f.status=='received'),el=$('#formInbox');if(!el||!l.length)return;
- el.innerHTML=`<div class="card"><h2>Request forms sent by customers (${l.length})</h2>${l.map(f=>`<div class="ps"><span><b>${esc(f.org||'')}</b> &middot; ${f.kind=='web'?'Filled in online':esc(f.filename)} <small class="sby">sent by ${esc(f.sent_by||'')} ${esc(f.at.replace('T',' ').slice(0,16))}</small></span><span style="display:flex;gap:8px"><a class="lk" href="/api/request-forms/${f.id}/file">Open</a><button class="btn g s" onclick="useForm(${f.id})">Use for this intake</button></span></div>`).join('')}</div>`}
-let FORM_ID=null;
-async function useForm(fid){try{const r=await api(`/api/request-forms/${fid}/read`,{});let n=0;FORM_ID=fid;
- for(const [k,v] of Object.entries(r.values)){const e=$('#i_'+k);if(!e)continue;if(e.tagName=='SELECT'){const o=[...e.options].find(o=>o.text.toLowerCase()==String(v).toLowerCase()||(k=='witness'&&o.text[0].toLowerCase()==String(v)[0].toLowerCase()));if(o){e.value=o.value;n++}}else{e.value=v;n++}}
- if(r.org_id&&$('#i_org'))$('#i_org').value=r.org_id;
- if(r.plan&&r.plan.length)document.querySelectorAll('[name=pl]').forEach(x=>x.checked=r.plan.includes(x.value));toast(`${n} values filled from the customer's form. Check each against the product and the original.`)}catch(e){toast(e,1)}}

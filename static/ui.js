@@ -1,4 +1,4 @@
-/* User menu, the dashboard's "Your tasks", taking / assigning tests with a bay, the customer's online request form,
+/* User menu, the dashboard's "Your tasks", taking / assigning tests with a bay, (the customer's request form is in request.js),
    and the dashboard emblem. */
 (()=>{const s=document.createElement('style');s.textContent=`
 input.in,select{height:46px;box-sizing:border-box}
@@ -48,11 +48,11 @@ async function dashTasks(){if(!ME||isCust())return;const h=$('#app .hero');if(!h
  const assign=x=>Object.assign(x,{_btn:`<a class="btn g s" href="#/job/${x.id}">Assign</a>`});
  let g='';
  if(ME.roles.includes('admin'))g+=G('Reports to approve',w.to_approve,x=>`${esc(x.customer||'')} &middot; report generated ${ago(x.at)}`,1)+G('Tests not assigned',(w.unassigned||[]).map(assign),x=>'',0,'dashboard')+
-  G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:x.filename,href:'#/intake'})),x=>ago(x.at))+G('Awaiting verification',w.awaiting_verification,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`)+
+  G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:'Request '+x.id,href:'#/intake/r'+x.id})),x=>ago(x.at))+G('Awaiting verification',w.awaiting_verification,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`)+
   G('Locked accounts',(w.locked_accounts||[]).map(x=>({...x,href:'#/users'})),x=>`until ${esc((x.at||'').slice(11,16))}`,1);
  if(ME.roles.includes('tester'))g+=G('Returned to you',w.returned,x=>`<span style="color:var(--er)">${esc(x.note||'')}</span>`,1)+G('To test',w.assigned,x=>(x.bay?esc(x.bay)+' &middot; ':'')+'assigned '+ago(x.at),1)+
   G('Available to take',(w.available||[]).map(take),x=>'not assigned')+G('Intake to complete',w.intake,x=>'intake not confirmed against the original')+
-  G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:x.filename,href:'#/intake'})),x=>ago(x.at)+' &middot; use it on the Intake page');
+  G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:'Request '+x.id,href:'#/intake/r'+x.id})),x=>ago(x.at)+' &middot; open it when the sample arrives');
  if(ME.roles.includes('verifier'))g+=G('To verify',w.to_verify,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`,1)+G('Ready for your sign-off',w.to_signoff,x=>'every test verified');
  if(ME.roles.includes('approver')&&!ME.roles.includes('admin'))g+=G('Reports to approve',w.to_approve,x=>'report generated '+ago(x.at),1);
  const c=document.createElement('div');c.className='card';c.id='tasks';
@@ -74,19 +74,6 @@ async function assignModal(id,key,name,all){const t=await api('/api/testers');
   closeModal();toast(all?`Assigned ${r.assigned.length} test${r.assigned.length==1?'':'s'}${r.skipped.length?'; skipped: '+r.skipped.join(', '):''}`:'Assignment saved');job(id)}catch(e){toast(e,1)}}}
 
 /* ---------------------------------------------------------------- customer: fill in the request online */
-async function custRequestPage(){const F=await api('/api/intake/fields'),me=ME;
- const fld=f=>f.kind=='state'?`<select id="c_${f.key}"><option value="">Choose...</option>${F.states.map(s=>`<option>${esc(s)}</option>`).join('')}</select>`
-  :f.kind=='yesno'?`<select id="c_${f.key}"><option value="">Choose...</option><option>Yes</option><option>No</option></select>`
-  :`<input class="in" id="c_${f.key}" value="${esc(f.key=='customer'?me.org||'':f.key=='email'?me.email||'':f.key=='contact'?me.full_name:'')}" ${f.kind=='pin'?'inputmode="numeric" maxlength="6"':f.kind=='email'?'type="email"':f.kind=='phone'?'type="tel"':''}>`;
- $('#app').innerHTML=`<button class="back" onclick="go('my')">&larr; My jobs</button>`+head('New test request',`Fill in the request for ${esc(me.org||'your organisation')}. The laboratory checks it against your product when it arrives; nothing can be missing or malformed.`)+
- `<div class="card"><h2>Your details and the product</h2><div class="ifm">${F.fields.map(f=>`<div class="${['address','conformity','tests'].includes(f.key)?'w':''}"><label for="c_${f.key}">${esc(f.label)}${f.na_ok?` <span class="nab">&middot; <input type="checkbox" id="cn_${f.key}" onchange="$('#cr_${f.key}').style.display=this.checked?'':'none'"> not applicable</span>`:''}</label>${fld(f)}${f.na_ok?`<input class="in" id="cr_${f.key}" placeholder="Reason it does not apply" style="margin-top:6px;display:none">`:''}</div>`).join('')}</div></div>
- <div class="card"><h2>Tests requested</h2><div class="chk">${Object.entries(F.tests).map(([k,l])=>`<label><input type="checkbox" name="cp" value="${k}"> ${esc(l)}</label>`).join('')}</div></div>
- <div id="cv"></div><div class="card" style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap"><button class="btn g" id="cck">Check for problems</button><button class="btn lg" id="csd">Send the request</button></div>`;
- const collect=()=>{const b={na:{},plan:[...document.querySelectorAll('[name=cp]:checked')].map(x=>x.value)};F.fields.forEach(f=>{b[f.key]=$('#c_'+f.key).value;const n=$('#cn_'+f.key);if(n&&n.checked)b.na[f.key]=$('#cr_'+f.key).value});return b};
- const show=r=>{const e=r.errors||r.error||[],w=r.warnings||[];$('#cv').innerHTML=(e.length?`<div class="errs" role="alert"><b>${e.length} thing${e.length==1?'':'s'} to correct</b><ul>${e.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:'<div class="okb">Everything is filled in correctly.</div>')+(w.length?`<div class="warns">${w.map(esc).join('<br>')}</div>`:'')};
- $('#cck').onclick=async()=>{try{show(await api('/api/customer/requests/check',collect()))}catch(e){toast(e,1)}};
- $('#csd').onclick=async()=>{const b=collect();try{await api('/api/customer/requests',b);toast('Request sent to the laboratory');go('my')}catch(e){try{show(await api('/api/customer/requests/check',b))}catch(x){toast(e,1)}scrollTo(0,$('#cv').offsetTop-80)}}}
-
 /* ---------------------------------------------------------------- dashboard emblem: a seal in the manner of the CPRI emblem */
 function heroArt(){
  /* background: a short-circuit current as on an oscillogram (asymmetric, decaying DC offset), stretching with the banner */

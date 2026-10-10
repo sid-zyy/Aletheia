@@ -2,7 +2,7 @@
 import datetime as dt, io, json, os, sys, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_app import Base, DEMO, INTAKE, PW, aletheia, pdf_text, signed_in, up  # noqa: E402
+from test_app import LAB, REQUEST, Base, DEMO, PW, aletheia, pdf_text, signed_in, up  # noqa: E402
 import notify, seed_templates as S, xltemplates as X  # noqa: E402
 
 PARTS = {k: v for k, v in DEMO.items() if k != "request"}
@@ -11,22 +11,16 @@ PARTS = {k: v for k, v in DEMO.items() if k != "request"}
 class Portal(Base):
     def setUp(self):
         super().setUp()
-        self.org = self.admin.post("/api/orgs", json=dict(name="A.P. Transformers")).json["id"]
-        from werkzeug.security import generate_password_hash
-        with aletheia.db() as c:
-            if not c.execute("SELECT 1 FROM users WHERE username='ap.portal'").fetchone():
-                c.execute("INSERT INTO users(username,full_name,roles,org_id,email,password_hash,must_change_password,created_at) VALUES(?,?,?,?,?,?,0,'x')",
-                          ("ap.portal", "AP Portal", "customer", self.org, "buyer@ap.example", generate_password_hash(PW)))
+        with aletheia.db() as c:  # the customer (ap.portal, A.P. Transformers) comes from test_app
             c.execute("UPDATE users SET email=? WHERE username='s.iyer'", ("s.iyer@lab.example",))
             c.execute("UPDATE users SET email_opt_out=0")
-            c.execute("DELETE FROM notifications"); c.execute("DELETE FROM outbox"); c.execute("DELETE FROM settings"); c.execute("DELETE FROM customer_forms")
+            c.execute("DELETE FROM notifications"); c.execute("DELETE FROM outbox"); c.execute("DELETE FROM settings")
             from test_app import integrity; integrity.drop_triggers(c); c.execute("DELETE FROM partials"); integrity.install_triggers(c)
-        self.cust = signed_in("ap.portal"); self.v = signed_in("s.iyer")
+        self.v = signed_in("s.iyer")
         aletheia.app.config.pop("MAIL_TRANSPORT", None)
 
     def job_for_customer(self):
-        r = self.c.post("/api/intake", json=dict(INTAKE, org_id=self.org, plan=["proforma", "temp", "sc"], confirm_warnings=True))
-        self.assertEqual(r.status_code, 201, r.json); i = r.json["id"]
+        i = self.receive()
         self.c.post(f"/api/jobs/{i}/import", json=dict(filename="d.json", content={k: PARTS[k] for k in ("proforma", "temp", "sc")}))
         return i
 
@@ -118,37 +112,42 @@ class NoSameDayBoard(Portal):
 
 
 class RequestForms(Portal):
-    def test_customer_sends_the_form_and_intake_uses_it(self):
-        blank = self.cust.get("/api/request-form.xlsx").data
-        filled = X.workbook([(S.request_form(), {"customer": "A.P. Transformers", "pin": "600058", "city": "Chennai"}, None)])
-        self.assertEqual(self.c.post("/api/customer/request-forms", json=up("form.xlsx", filled)).status_code, 403)  # staff record intake directly
-        self.assertEqual(self.cust.post("/api/customer/request-forms", json=up("form.pdf", b"%PDF-1.4")).status_code, 400)
-        r = self.cust.post("/api/customer/request-forms", json=up("our request.xlsx", filled)); self.assertEqual(r.status_code, 201); fid = r.json["id"]
-        self.assertTrue(blank.startswith(b"PK"))
-        self.assertTrue(self.notes("t.rao", "form"))
-        inbox = self.c.get("/api/request-forms").json; self.assertEqual((inbox[0]["org"], inbox[0]["status"]), ("A.P. Transformers", "received"))
-        vals = self.c.post(f"/api/request-forms/{fid}/read").json; self.assertEqual(vals["values"]["pin"], "600058"); self.assertEqual(vals["org_id"], self.org)
-        j = self.c.post("/api/intake", json=dict(INTAKE, org_id=self.org, plan=["sc"], customer_form_id=fid, confirm_warnings=True)).json["id"]
-        mine = self.cust.get("/api/customer/request-forms").json; self.assertEqual((mine[0]["status"], mine[0]["series"]), ("used", self.get(j)["series"]))
-        with aletheia.db() as c:  # the customer's file is kept with the record, byte for byte
-            f = c.execute("SELECT name, content FROM files WHERE job_id=?", (j,)).fetchone()
-        self.assertEqual((f["name"], f["content"]), ("Customer request form - our request.xlsx", filled))
-    def test_customer_fills_in_the_request_online(self):
-        body = {k: v for k, v in INTAKE.items() if k not in ("arrived_at", "opened_by")}
-        bad = self.cust.post("/api/customer/requests/check", json=dict(body, pin="5600", plan=[])).json
-        self.assertFalse(bad["ok"]); self.assertTrue(any("PIN" in e for e in bad["errors"])); self.assertTrue(any("tick at least one" in e for e in bad["errors"]))
-        self.assertFalse(any("Arrival" in e or "opened" in e for e in bad["errors"]))  # the laboratory records those
-        self.assertEqual(self.cust.post("/api/customer/requests", json=dict(body, pin="5600", plan=["sc"])).status_code, 400)
-        self.assertEqual(self.c.post("/api/customer/requests", json=dict(body, plan=["sc"])).status_code, 403)
-        r = self.cust.post("/api/customer/requests", json=dict(body, plan=["sc", "temp"])); self.assertEqual(r.status_code, 201, r.json)
-        inbox = self.c.get("/api/request-forms").json[0]; self.assertEqual(inbox["kind"], "web")
-        vals = self.c.post(f"/api/request-forms/{inbox['id']}/read").json
-        self.assertEqual((vals["values"]["pin"], vals["plan"], vals["org_id"]), ("600058", ["sc", "temp"], self.org))
-        self.assertTrue(self.admin.get("/api/my-work").json["requests"])
-        j = self.c.post("/api/intake", json=dict(INTAKE, org_id=self.org, plan=vals["plan"], customer_form_id=inbox["id"], confirm_warnings=True)).json["id"]
+    def test_only_the_customer_raises_a_request_filled_in_as_the_printed_form(self):
+        bad = self.cust.post("/api/customer/requests/check", json=dict(REQUEST, pin="5600", scrap="Yes", declare_terms=False, plan=[])).json
+        self.assertFalse(bad["ok"]); e = " ".join(bad["errors"])
+        for want in ("PIN", "tick at least one", "exactly one of (a) and (b)", "Declaration not accepted"): self.assertIn(want, e)
+        self.assertNotIn("Arrival", e)  # the laboratory records that on receipt
+        self.assertIn("Decision rule (if Yes): required", " ".join(self.cust.post("/api/customer/requests/check", json=dict(REQUEST, decision_rule="", plan=["sc"])).json["errors"]))
+        self.assertTrue(self.cust.post("/api/customer/requests/check", json=dict(REQUEST, conformity="No", decision_rule="", plan=["sc"])).json["ok"])
+        self.assertEqual(self.c.post("/api/customer/requests", json=dict(REQUEST, plan=["sc"])).status_code, 403)  # staff cannot raise one
+        self.assertEqual(self.c.post("/api/intake", json=dict(LAB, plan=["sc"])).status_code, 400)  # nor start a job without one
+        r = self.cust.post("/api/customer/requests", json=dict(REQUEST, plan=["sc", "temp"])); self.assertEqual(r.status_code, 201, r.json); fid = r.json["id"]
+        self.assertTrue(self.notes("t.rao", "form")); self.assertTrue(self.admin.get("/api/my-work").json["requests"])
+        inbox = self.c.get("/api/request-forms").json[0]; self.assertEqual((inbox["kind"], inbox["org"], inbox["status"]), ("web", "A.P. Transformers", "received"))
+        vals = self.c.post(f"/api/request-forms/{fid}/read").json
+        self.assertEqual((vals["values"]["pin"], vals["values"]["decision_rule"][:3], vals["plan"], vals["org_id"]), ("600058", "(i)", ["sc", "temp"], self.org))
+        self.assertTrue(vals["values"]["signed_at"])
+        # the laboratory records sheet 3; the customer's answers are taken as sent, whatever the engineer's page sends
+        self.assertIn("capability", " ".join(self.c.post("/api/intake", json=dict(LAB, capability="No", customer_form_id=fid, plan=["sc"])).json["error"]))
+        j = self.c.post("/api/intake", json=dict(LAB, customer="Someone else", customer_form_id=fid, plan=vals["plan"])).json["id"]
+        job = self.get(j); self.assertEqual((job["customer"], job["data"]["request"]["serial"], job["intake"]["condition"]), ("A.P. Transformers", "1098", "Suitable for Testing"))
+        self.assertEqual(job["intake"]["request_form_id"], fid)
         with aletheia.db() as c: f = c.execute("SELECT name FROM files WHERE job_id=?", (j,)).fetchone()
         self.assertEqual(f["name"], "Customer request (filled online).json")
-        self.assertEqual(self.cust.get("/api/customer/request-forms").json[0]["status"], "used")
+        mine = self.cust.get("/api/customer/request-forms").json[0]; self.assertEqual((mine["status"], mine["series"]), ("used", job["series"]))
+        self.assertEqual(self.c.post("/api/intake", json=dict(LAB, customer_form_id=fid, plan=["sc"])).status_code, 400)  # used once only
+
+    def test_laboratory_returns_a_request_and_the_customer_corrects_it(self):
+        fid = self.request(plan=["sc"], drawings="APT/250-11/001")
+        self.assertEqual(self.c.post(f"/api/request-forms/{fid}/return", json=dict(reason="")).status_code, 400)
+        self.assertEqual(self.c.post(f"/api/request-forms/{fid}/return", json=dict(reason="Drawing APT/250-11/001B is missing")).status_code, 200)
+        self.assertIn("returned for correction", self.notes("ap.portal", "returned")[0]["message"])
+        self.assertEqual(self.c.post("/api/intake", json=dict(LAB, customer_form_id=fid, plan=["sc"])).status_code, 400)
+        mine = self.cust.get(f"/api/customer/requests/{fid}").json; self.assertEqual((mine["status"], mine["note"]), ("returned", "Drawing APT/250-11/001B is missing"))
+        r = self.cust.post("/api/customer/requests", json=dict(mine["values"], drawings=REQUEST["drawings"], plan=mine["plan"], replaces=fid))
+        self.assertEqual(r.status_code, 201, r.json)
+        self.assertEqual(self.cust.get(f"/api/customer/requests/{fid}").json["status"], "replaced")
+        self.assertEqual(self.c.post("/api/intake", json=dict(LAB, customer_form_id=r.json["id"], plan=["sc"])).status_code, 201)
 
 
 if __name__ == "__main__":

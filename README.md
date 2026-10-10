@@ -29,10 +29,10 @@ changes at first sign-in), the customer organisations and the test bays.
 | Role | Does | Cannot |
 |---|---|---|
 | **Admin** | assigns tests (or a whole job) to test engineers with the bay; users, customer organisations, test bays, Excel templates, settings, backups, audit log; sees what waits for approval | enter or verify data, sign reports |
-| **Tester** (test engineer) | intake (receives the customer's request, allocates series/sample number), takes unassigned tests and chooses the bay, uploads the logsheets of their tests, corrects returned tests | take a test assigned to someone else, verify their own upload, sign off or approve a job they worked on |
+| **Tester** (test engineer) | intake: receives a customer's request (records sheet 3 of the form, the test plan; series/sample numbers are allocated) or returns it to the customer with the reason; takes unassigned tests and chooses the bay, uploads the logsheets of their tests, corrects returned tests | raise or change a customer's request, take a test assigned to someone else, verify their own upload, sign off or approve a job they worked on |
 | **Verifier** | checks each uploaded test against its source cells: verify, return (with reason), reopen, not applicable; signs the job off ("all data correct") | verify their own upload |
 | **Approver** | approves and releases the report (re-enters password); with a second approver, amends a released report | approve a job they uploaded, entered or verified data on |
-| **Customer** | fills in the test request online (or sends the Excel form); sees their organisation's jobs: progress, approved values, partial report, released reports | see other customers' jobs, values of tests not yet approved, staff names |
+| **Customer** | the only one who raises a test request: fills in the Customer Request Form (CPRI/QAF/01A, sheets 1-2) online and corrects it when returned; sees their organisation's jobs: progress, approved values, partial report, released reports | see other customers' jobs, values of tests not yet approved, staff names |
 
 Tester, Verifier and Approver may be combined on one account; the rules above still apply per job. Admin and Customer
 accounts stand alone. Every rule is enforced by the server (a route without a permission rule is refused) and every refusal
@@ -40,18 +40,25 @@ is recorded in the audit log.
 
 ## Workflow
 
-1. **Intake** (Tester): the customer's request, filled in online by the customer (checked as they type), their Excel form, the
-   form on screen, or a data file. Every required field is checked (PIN code, phone, email, state, rating...;
-   "NA" only with a reason); the series and sample numbers are allocated only when nothing is missing or wrong. The engineer
-   records arrival time and who opened the box, chooses the test plan and may assign each test to a tester.
-2. **Assignment and testing**: the administrator assigns tests (or the whole job) with the bay, or an engineer takes an
+1. **Request** (Customer): only a customer raises a test request. They fill in the **Customer Request Form CPRI/QAF/01A**
+   online, laid out as the printed form (sheet 1: customer, sample, rating, description, type, serial, manufacturer,
+   drawings, requirement, standard, number of samples, storage / disposal, tests, mounting, witnesses, despatch; sheet 2:
+   MSME discount, statement of conformity and decision rule (i)/(ii)/(iii), the two declarations, name and date), and tick
+   the tests they need. Every value is checked as they type (PIN code, phone, email, state, rating...; "NA" only where the
+   form allows it, with a reason). The request lands in the laboratory's inbox (**Customer requests**).
+2. **Intake** (Tester): when the sample arrives the engineer opens the request (shown exactly as the customer sent it; the
+   laboratory never edits it), records **sheet 3** (physical condition on receipt, the customer's concurrence if not
+   suitable, capability, externally provided products/services; later the deviations noticed during testing), chooses the
+   test plan and may take tests. Accepting allocates the series and sample numbers; a request with something missing or
+   wrong is **returned** to the customer with the reason, and they correct it and send it again.
+3. **Assignment and testing**: the administrator assigns tests (or the whole job) with the bay, or an engineer takes an
    unassigned test and chooses the bay. Testers, in any order and bay, upload each test's Excel logsheet. The upload preview shows every value with
    the cell it was read from; a required empty cell blocks the test (never stored as NA). Each test keeps its full history.
-3. **Verification** (Verifier): compare each test's values with its source file, then verify, or return it with a reason.
+4. **Verification** (Verifier): compare each test's values with its source file, then verify, or return it with a reason.
    A verified test is locked. Checks (`validate`) run on the data; recomputations of logged figures are advisory only.
-4. **Sign-off and report** (Verifier, then Tester): when every planned test is verified or not applicable, the verifier signs
+5. **Sign-off and report** (Verifier, then Tester): when every planned test is verified or not applicable, the verifier signs
    the job off; the report is generated as a numbered, hashed version with a printed manifest of everything it was built from.
-5. **Approval** (Approver): re-enter the password to sign; the report is released, locked (also in the database) and the
+6. **Approval** (Approver): re-enter the password to sign; the report is released, locked (also in the database) and the
    customer is notified. Corrections after release are **amendments**: a new version that supersedes the old one, which stays
    verifiable.
 
@@ -63,7 +70,7 @@ Pages: **Dashboard** (with each person's tasks: what to test, take, verify, appr
 
 | Show | Steps |
 |---|---|
-| Whole chain | Sign in as a customer: *New request*. Sign in as a tester: open the request, complete the intake, take each test, upload its logsheet (`sample_data/`), run checks, review flagged items. Sign in as a verifier: verify each test, sign off. Tester: generate. Sign in as an approver (not anyone who uploaded or verified): approve. |
+| Whole chain | Sign in as a customer: *New test request*, fill in the form, send it. Sign in as a tester: *Customer requests*, open it, record sheet 3, accept; take each test, upload its logsheet (`sample_data/`), run checks, review flagged items. Sign in as a verifier: verify each test, sign off. Tester: generate. Sign in as an approver (not anyone who uploaded or verified): approve. |
 | Excel logsheets | Job page -> *This job as filled logsheets*, or a test's blank logsheet from Templates (Admin): drop the workbook on a job to see the preview with source cells |
 | Several jobs in one workbook | Report Workflow -> *Upload a workbook for several jobs* |
 | Failing sample | `test-files/3 - failing job (top-oil rise over limit).csv`: the logged top-oil rise is over its limit, so the report says the sample does NOT comply |
@@ -117,6 +124,7 @@ Environment variables, read when the app starts. Email is set in the app (Admin 
 | `ALETHEIA_BACKUP_DIR`, `ALETHEIA_BACKUP_KEEP` | `backups/`, `30` | Backup folder; how many daily backups to keep (the first of each month is always kept) |
 | `ALETHEIA_AUTO_BACKUP`, `ALETHEIA_WORKER` | `1`, `1` | Daily backup; email outbox (`0` turns off) |
 | `ALETHEIA_SMTP_PASSWORD` | unset | SMTP password (server, port, sender, user are set in the app) |
+| `ALETHEIA_DEMO` | `0` | `1` enables `/api/demo` (loads the demo job; used by the tests). A real job always starts from a customer's request |
 | `ALETHEIA_FEATURE_SCAN` | `0` | `1` turns on the optional AI reading of scanned sheets (below) |
 | `GEMINI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY`, `AI_*` | unset | AI reader for scans (only with `ALETHEIA_FEATURE_SCAN=1`) |
 
@@ -137,7 +145,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | Area | Endpoints |
 |---|---|
 | Accounts | `/api/setup`, `/api/login`, `/api/logout`, `/api/me`, `/api/password`, `/api/users[...]`, `/api/orgs` |
-| Intake | `/api/intake/check`, `/api/intake`, `/api/jobs/<id>/intake`, `/api/jobs/<id>/intake/checked`, `/api/intake/from-excel`, `/api/request-forms[...]` |
+| Intake | `/api/intake/check`, `/api/intake`, `/api/jobs/<id>/intake`, `/api/jobs/<id>/intake/checked`, `/api/request-forms[...]`, `/api/request-forms/<id>/return`, `/api/customer/requests[/check|/<id>]` |
 | Data | `/api/jobs/<id>/import`, `/api/jobs/<id>/excel/preview|import`, `/api/excel/preview|import` (several jobs), `/api/jobs/<id>/section`, `/api/jobs/<id>/history`, `/api/files/<id>` |
 | Verification | `/api/jobs/<id>/sections/<test>/verify|return|reopen|na`, `/api/jobs/<id>/assign`, `/api/jobs/<id>/signoff` |
 | Reports | `/api/jobs/<id>/validate|review|generate|approve|amend`, `/api/jobs/<id>/report.pdf`, `/api/verify/<code>` |
@@ -155,10 +163,10 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `test_validity.py` | one mutation test per engineering check |
 | `test_auth.py` | every route x every role, CSRF, lock-out, timeouts, first run, customers, separation of duties |
 | `test_integrity.py` | concurrent uploads, revisions, atomic numbering, audit chain, release locks, schema migration |
-| `test_workflow.py` | intake rules, verify / return / reopen, ownership, sign-off, bays, My work |
+| `test_workflow.py` | request form and sheet 3 rules, verify / return / reopen, ownership, sign-off, bays, My work |
 | `test_excel.py` | template round trips, preview, layout drift, formulas, refused files, several jobs per workbook, template versions |
 | `test_amend.py` | manifest, amendments, record packages, backups and tamper detection |
-| `test_portal.py` | approved values only, partial reports, notifications and email, customers' forms, no same-day board |
+| `test_portal.py` | approved values only, partial reports, notifications and email, customer-only requests, return and correction, no same-day board |
 | `test_load.py` | eight people at once on one database |
 
 ## Files
@@ -175,7 +183,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `notify.py`, `portal.py` | notifications, email outbox, settings; partial reports, approved values, customer forms |
 | `rules.py` | every engineering threshold with its source and status |
 | `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
-| `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `assistant.js` |
+| `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `assistant.js` |
 | `docs/` | [NEXT_STEPS.md](docs/NEXT_STEPS.md) (plan and progress), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VALIDITY.md](docs/VALIDITY.md), [NOTES.md](docs/NOTES.md) |
 | `sample_data/`, `test-files/` | demo job in every format with its scans, legacy registers; three CSV demo jobs |
 
@@ -185,7 +193,8 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 - The report's "Limit as per the standard" column for temperature rise (35 / 40 C) and the clause numbers come from
   `report_template.json` and are to be confirmed by the lab; the checks themselves use the limits on the proforma.
 - The version-1 logsheet templates are Aletheia's own layouts; the lab's real sheets (Q8 in NEXT_STEPS) become new template
-  versions when they arrive. The intake field list (Q14) is an assumption to confirm.
+  versions when they arrive. The request form follows CPRI/QAF/01A (Issue 02); the address, contact, phone and email lines
+  are asked separately so they can be checked (and used for notifications).
 - Demo values were typed from handwritten scans; the validator flags the doubtful ones.
 - The development web server is used; on a lab network, run it on the server PC behind the lab's firewall (customers on the
   same network only, as agreed).

@@ -61,7 +61,7 @@ function pwView(forced){const h=`${forced?'<p class="note">This is a temporary p
 async function logout(){try{await api('/api/logout',{})}catch(e){}ME=null;PERMS=[];CSRF='';document.body.innerHTML=SHELL_HTML;location.hash='';boot()}
 /* userChip() (the user menu) is in ui.js */
 /* navigation per role: staff see the laboratory pages, Admin also the administration pages, customers only their jobs */
-function navFor(){if(isCust())return[['my','My jobs'],['notifications','Notifications']];const n=[['dashboard','Dashboard'],...(ME.roles.includes('admin')?[]:[['mywork','My work']]),['workflow','Report Workflow'],['records','Records & Search'],['preview','Report Preview']];
+function navFor(){if(isCust())return[['my','My jobs'],['notifications','Notifications']];const n=[['dashboard','Dashboard'],...(ME.roles.includes('admin')?[]:[['mywork','My work']]),...(can('job.create')?[['intake','Customer requests']]:[]),['workflow','Report Workflow'],['records','Records & Search'],['preview','Report Preview']];
  if(can('users.manage'))n.push(['users','Users & customers'],['templates','Templates'],['audit','Audit log'],['backups','Backups'],['settings','Settings']);n.push(['arch','Architecture']);return n}
 
 /* ---------------------------------------------------------------- Admin: users and customer organisations */

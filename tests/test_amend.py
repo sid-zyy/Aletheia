@@ -78,7 +78,8 @@ class Amendment(Released):
                           (oid, generate_password_hash(PW)))
         i = self.released(); self.open_amendment(i, ["request"], reason="Customer address PIN was wrong on the form")
         self.assertIsNone(self.get(i)["intake"]["checked_by"])  # the intake must be read back again
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/intake", json=dict(__import__("test_app").INTAKE, org_id=oid, plan=self.get(i)["plan"] or ["temp"])).status_code, 200)
+        plan = self.get(i)["plan"] or ["temp"]  # the customer sends a corrected request; the laboratory links it to the job
+        r = self.c.post(f"/api/jobs/{i}/intake", json=dict(__import__("test_app").LAB, customer_form_id=self.request(plan), plan=plan)); self.assertEqual(r.status_code, 200, r.json)
         self.c.post(f"/api/jobs/{i}/validate")
         for n, f in enumerate(self.get(i)["findings"]):
             if f["level"] == "warn" and not f.get("advisory"): self.c.post(f"/api/jobs/{i}/review", json=dict(index=n))

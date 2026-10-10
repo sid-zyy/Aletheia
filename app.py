@@ -677,39 +677,50 @@ def register_verdict(s):
 @app.post("/api/jobs")
 @auth.require("job.create")
 def create():
-    """New job. With auto_ids the series number (and the sample code, if not typed) is allocated by the system, atomically."""
+    """New job for a customer's waiting request (customer_form_id): only a customer raises a request. With auto_ids the series
+    number (and the sample code, if not typed) is allocated by the system, atomically. The laboratory's part of the intake
+    (sheet 3) is recorded afterwards on the job page."""
     b = body(); auto = bool(b.get("auto_ids"))
-    err = check_ids(b, auto=auto) + org_problem(b)
+    err = check_ids(b, auto=auto)
     if err: return jsonify(error=err), 400
     try:
         with db() as c:
             c.execute("BEGIN IMMEDIATE")  # numbering and insert in one write transaction: two people cannot get the same number
+            f, req, _, rerr, _ = customer_request(c, b.get("customer_form_id"))
+            if rerr: c.execute("ROLLBACK"); return jsonify(error=rerr), 400
             if auto:
                 b["series"] = integrity.allocate(c, "series")
                 if b["sample"] == "NA": b["sample"] = integrity.allocate(c, "sample")
-            i = insert_job(c, b, "Customer request captured" + (f" (series {b['series']} allocated)" if auto else ""))
+            i = insert_job(c, dict(b, customer=req["customer"], rating=req["rating"], request={}, org_id=f["org_id"]),
+                           "Job opened for the customer's request" + (f" (series {b['series']} allocated)" if auto else ""))
+            use_request(c, i, f, req)
         return jsonify(id=i, series=b["series"], sample=b["sample"]), 201
     except sqlite3.IntegrityError: return jsonify(error=["Series number already exists"]), 409
 
 @app.post("/api/jobs/from-file")
 @auth.require("job.create")
 def create_from_file():
-    """New request from a data file: the series number and request details come from the file (or the form, if typed)."""
+    """New job for a customer's waiting request (customer_form_id), with its test data from a file: the series number comes
+    from the file (or the form, if typed). The request itself is always the customer's; a request section in the file is ignored."""
     b = body(); name, raw = upload(b)
+    with db() as c: f, req, _, rerr, _ = customer_request(c, b.get("customer_form_id"))
+    if rerr: return jsonify(error=rerr), 400
     typed = str(b.get("series") or "").strip().upper() or None
     content, kind, notes, used = excel_routes.load_any(name, raw, typed)
     if not isinstance(content, dict) or not content: return jsonify(error=["No test data found in this file"]), 400
-    rq, wk = content.get("request") or {}, content.get("work") or {}
+    content.pop("request", None); wk = content.get("work") or {}
     ids = (content.get("ids") or {}).get("work") or [None, None]
     series = typed or str(wk.get("series") or ids[0] or "").strip().upper()
-    new = dict(series=series, sample=str(wk.get("sample") or ids[1] or "").strip().upper(), customer=rq.get("customer") or wk.get("customer"),
-               rating=rq.get("rating"), request={k: rq[k] for k in REQ_KEYS if rq.get(k)})
+    new = dict(series=series, sample=str(wk.get("sample") or ids[1] or "").strip().upper(), customer=req["customer"], rating=req["rating"],
+               request={}, org_id=f["org_id"])
     if not series: return jsonify(error=["This file has no test series number. Type it in the form, then drop the file again."]), 400
     if new["sample"] and not re.fullmatch(SAMPLE_RE, new["sample"]): new["sample"] = ""  # a misread sample code must not block the job
     err = check_ids(new)
     if err: return jsonify(error=err + ["Type the correct test series number in the form and drop the file again."]), 400
     try:
-        with db() as c: i = insert_job(c, new, f"Customer request created from {name}")
+        with db() as c:
+            if c.execute("SELECT status FROM customer_forms WHERE id=?", (f["id"],)).fetchone()[0] != "received": return jsonify(error=["This customer request was taken meanwhile"]), 409
+            i = insert_job(c, new, f"Job opened for the customer's request, test data from {name}"); use_request(c, i, f, req)
     except sqlite3.IntegrityError: return jsonify(error=[f"Series {series} already exists. Open that job, or type a different series number."]), 409
     r = apply_import(getjob(i), i, name, content, kind, notes, raw, templates=used)
     if isinstance(r, tuple): return jsonify(id=i, warning=r[0].get_json().get("error")), 201  # job exists; import problem shown on its page
@@ -776,6 +787,9 @@ def apply_import(j, i, name, content, kind, notes, raw, bay=None, templates=None
         return jsonify(error=["Unrecognised file: expected sections " + ", ".join(NAMES)]), 400
     bad = [k for k, v in content.items() if not isinstance(v, dict)]
     if bad: return jsonify(error=[f"Section '{k}' must contain named fields" for k in bad]), 400
+    if "request" in content:  # the request is the customer's own (raised online); a data file never changes it
+        content = {k: v for k, v in content.items() if k != "request"}; notes = list(notes) + ["customer request section in the file ignored"]
+        if not content: return jsonify(error=["This file holds only a customer request: the customer raises the request online"]), 400
     sha = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
     if isinstance(content.get("other"), dict):  # additional log sheets: cleaned, added alongside any already on the job
         content["other"] = {str(k): clean_other(v) for k, v in content["other"].items() if isinstance(v, dict)}
@@ -1216,20 +1230,15 @@ def verify_page(token): return send_from_directory(app.static_folder, "index.htm
 @app.post("/api/jobs/<int:i>/edit")
 @auth.require("job.edit")
 def edit(i):
-    """Edit record details before release. A generated (unreleased) report is rebuilt as a new version."""
-    j = getjob(i); b = body(); err = check_ids(b)
+    """Correct the job's identifiers (series, sample code) before release. The customer's details come from their request and
+    are not edited by the laboratory. A generated (unreleased) report is rebuilt as a new version."""
+    j = getjob(i); b = dict(body(), customer=j["customer"], rating=j["rating"]); err = check_ids(b)
     if locked(j): return locked(j)
     if err: return jsonify(error=err), 400
     try:
         with db() as c:
             c.execute("BEGIN IMMEDIATE")
-            why = write_check(c, i, ["request"]) if j.get("amend") else None
-            if why: return refuse(c, i, *why)
-            rq = integrity.read_section(c, i, "request") or {}
-            new = {**rq, **{k: str(b[k]).strip() for k in REQ_KEYS if k in b}}
-            if new != rq: integrity.write_section(c, i, "request", new, me(), "Record details edited")
-            c.execute("UPDATE jobs SET series=?, sample=?, customer=?, rating=?, updated=? WHERE id=?",
-                      (b["series"], b["sample"], b["customer"].strip(), b["rating"].strip(), now(), i))
+            c.execute("UPDATE jobs SET series=?, sample=?, updated=? WHERE id=?", (b["series"], b["sample"], now(), i))
     except sqlite3.IntegrityError: return jsonify(error=["Series number already exists"]), 409
     note = ""
     if j["stage"] >= 3:
@@ -1394,56 +1403,71 @@ def signoff(i):
         log(c, i, "Job signed off by the verifier: all data checked against the source files", kind="verify")
     return jsonify(ok=True)
 
-# ---- intake (NEXT_STEPS.md section 3.6): nothing missing, nothing wrong, before a number is allocated
-def intake_problems(b):
-    errs, warns, clean = workflow.check_intake(b)
-    plan, perr = workflow.check_plan(b.get("plan"), NAMES)
-    errs += perr
-    with db() as c:  # the organisation whose customer accounts follow the job: given, from the customer's own request, or by name
-        o = b.get("org_id")
-        if o in (None, "") and b.get("customer_form_id"):
-            r = c.execute("SELECT org_id FROM customer_forms WHERE id=?", (b["customer_form_id"],)).fetchone(); o = r[0] if r else None
-        if o in (None, "") and clean.get("customer"):
-            r = c.execute("SELECT id FROM orgs WHERE lower(name)=lower(?)", (clean["customer"],)).fetchone(); o = r[0] if r else None
-        if o not in (None, "") and not (isinstance(o, int) and c.execute("SELECT 1 FROM orgs WHERE id=?", (o,)).fetchone()):
-            errs.append("Unknown customer organisation")
-        b["org_id"] = o if o not in ("",) else None
+# ---- intake (NEXT_STEPS.md section 3.6): a customer's request (CPRI/QAF/01A sheets 1-2), received by the laboratory (sheet 3).
+# Only a customer raises a request. The laboratory never edits the customer's answers: it records sheet 3 and the test
+# plan, or returns the request to the customer with the reason.
+def customer_request(c, fid):
+    """(form row, the customer's values validated again, the tests they ticked, errors, warnings) of a waiting request."""
+    f = c.execute("SELECT * FROM customer_forms WHERE id=?", (fid,)).fetchone() if str(fid or "").isdigit() else None
+    if not f: return None, {}, [], ["Choose the customer's request: only a customer can raise a test request"], []
+    if f["status"] != "received": return f, {}, [], [f"This customer request is {f['status']}, not waiting for intake"], []
+    if f["kind"] != "web": return f, {}, [], ["This request was not filled in online: ask the customer to send it through the portal"], []
+    errs, warns, clean = workflow.check_request(json.loads(f["data"] or "{}"))
+    clean["signed_at"] = json.loads(f["data"] or "{}").get("signed_at") or f["at"]
+    return f, clean, json.loads(f["plan"] or "[]"), [f"Customer request: {e} (return it to the customer to correct)" for e in errs], warns
+
+def intake_problems(c, b, job=None):
+    """Everything wrong with an intake, at once: (errors, warnings, request values, lab values, plan, form row, org)."""
+    errs, warns, lab = workflow.check_lab(b)
+    f, req, fplan, rerr, rwarn = None, {}, [], [], []
+    if b.get("customer_form_id") or job is None:
+        f, req, fplan, rerr, rwarn = customer_request(c, b.get("customer_form_id"))
+    else:  # an existing job: the request it already holds, as the customer sent it
+        rerr, rwarn, req = workflow.check_request(integrity.read_section(c, job["id"], "request") or {})
+        rerr = [f"Customer request: {e} (the customer must send a corrected request)" for e in rerr]
+        req["signed_at"] = (integrity.read_section(c, job["id"], "request") or {}).get("signed_at")
+    plan, perr = workflow.check_plan(b.get("plan") if b.get("plan") is not None else fplan, NAMES)
+    errs = rerr + errs + perr; warns = rwarn + warns
+    org = f["org_id"] if f else (job or {}).get("org_id")
     if warns and not b.get("confirm_warnings"): errs += [f"Confirm: {w}" for w in warns]
-    return errs, warns, clean, plan
+    return errs, warns, req, lab, plan, f, org
 
 @app.post("/api/intake/check")
 @auth.require("job.create")
 def intake_check():
-    """Dry run of the intake form: every missing or malformed value, so the engineer sees the whole list at once."""
-    errs, warns, _, _ = intake_problems(body())
+    """Dry run: every problem with the customer's request and the laboratory's part, so the engineer sees the whole list."""
+    with db() as c: errs, warns, *_ = intake_problems(c, body())
     return jsonify(errors=errs, warnings=warns, ok=not errs)
 
-def intake_record(clean, prior=None):
+def intake_record(lab, prior=None, form=None):
     u = auth.current()
-    return dict(prior or {}, valid=True, arrived_at=clean.pop("arrived_at"), opened_by=clean.pop("opened_by"),
-                received_by=u["full_name"], received_by_id=u["id"], recorded_at=now(), checked_by=None, checked_at=None)
+    return dict(prior or {}, valid=True, **lab, received_by=u["full_name"], received_by_id=u["id"], recorded_at=now(),
+                request_form_id=form["id"] if form else (prior or {}).get("request_form_id"), checked_by=None, checked_at=None)
+
+def use_request(c, i, f, req):
+    """Link a waiting customer request to job i: its values become the job's request section; the form is kept as sent."""
+    integrity.write_section(c, i, "request", req, me(), "Customer request received")
+    integrity.store_file(c, i, "Customer request (filled online).json", f["content"], MIMES["json"], me())
+    c.execute("UPDATE customer_forms SET status='used', job_id=? WHERE id=?", (i, f["id"]))
+    c.execute("UPDATE jobs SET customer=?, rating=?, org_id=? WHERE id=?", (req["customer"], req["rating"], f["org_id"], i))
+    log(c, i, f"Customer request {f['id']} (SHA-256 {f['sha256'][:12]}...) used for this job", kind="job")
+    notify.notify(c, notify.users_with(c, "customer", f["org_id"]), i, "progress", "Your test request was received by the laboratory")
 
 @app.post("/api/intake")
 @auth.require("job.create")
 def intake_create():
-    """Create a job from a complete, valid customer request: the series and sample numbers are allocated only now."""
-    b = body(); errs, warns, clean, plan = intake_problems(b)
-    if errs: return jsonify(error=errs, warnings=warns), 400
-    rec = intake_record(clean); req = dict(clean)
+    """Receive a customer's request: the series and sample numbers are allocated only when nothing is missing or wrong."""
+    b = body()
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
+        errs, warns, req, lab, plan, f, org = intake_problems(c, b)
+        if errs: c.execute("ROLLBACK"); return jsonify(error=errs, warnings=warns), 400
+        rec = intake_record(lab, form=f)
         series, sample = integrity.allocate(c, "series"), integrity.allocate(c, "sample")
-        i = insert_job(c, dict(series=series, sample=sample, customer=clean["customer"], rating=clean["rating"], request=req, org_id=b["org_id"]),
+        i = insert_job(c, dict(series=series, sample=sample, customer=req["customer"], rating=req["rating"], request={}, org_id=org),
                        f"Customer request received (intake); series {series} and sample {sample} allocated")
+        use_request(c, i, f, req)
         c.execute("UPDATE jobs SET plan=?, intake=? WHERE id=?", (json.dumps(plan), json.dumps(rec), i))
-        if b.get("customer_form_id"):
-            f = c.execute("SELECT * FROM customer_forms WHERE id=? AND status='received'", (b["customer_form_id"],)).fetchone()
-            if f:
-                web = f["kind"] == "web"  # kept with the record: the workbook, or the online form as submitted
-                integrity.store_file(c, i, "Customer request (filled online).json" if web else "Customer request form - " + f["filename"], f["content"],
-                                     MIMES["json"] if web else MIMES["xlsx"], me())
-                c.execute("UPDATE customer_forms SET status='used', job_id=? WHERE id=?", (i, f["id"]))
-                log(c, i, f"Customer's request form {f['filename']} (SHA-256 {f['sha256'][:12]}...) used for this intake", kind="job")
         for k, uid in (b.get("assign") or {}).items():  # at intake an engineer can only take tests themselves
             if k in plan and uid and (uid == me() or "admin" in auth.current()["roles"]):
                 t = c.execute("SELECT full_name, roles, test_types, active FROM users WHERE id=?", (uid,)).fetchone()
@@ -1451,51 +1475,62 @@ def intake_create():
                 if t and t["active"] and "tester" in t["roles"].split(",") and (not tt or k in tt):
                     c.execute("INSERT INTO assignments(job_id,key,user_id,assigned_by,at) VALUES(?,?,?,?,?)", (i, k, uid, me(), now()))
                     log(c, i, f"{NAMES[k]} assigned to {t['full_name']}", kind="job")
-        if b.get("form_file"):
-            name, raw = upload(b["form_file"])
-            try: insert_source(c, i, "Customer request form - " + name, raw)
-            except sqlite3.IntegrityError: pass
-        log(c, i, f"Intake recorded: arrived {rec['arrived_at']}, box opened by {rec['opened_by']}, received by {rec['received_by']}; "
+        log(c, i, f"Intake recorded: {lab['condition']}, capability {lab['capability']}, received by {rec['received_by']}; "
                   f"test plan: {', '.join(NAMES[k] for k in plan)}" + (f"; confirmed: {'; '.join(warns)}" if warns else ""), kind="job")
     return jsonify(id=i, series=series, sample=sample), 201
 
 @app.post("/api/jobs/<int:i>/intake")
 @auth.require("job.edit")
 def intake_complete(i):
-    """Complete or correct the intake of an existing job (one created before strict intake, or from a data file)."""
+    """Record or correct the laboratory's part (sheet 3) and the test plan of an existing job. With customer_form_id, a
+    waiting customer request is linked to the job (one created from a data file before the request was received)."""
     j = getjob(i, False); b = body()
     if locked(j): return locked(j)
-    errs, warns, clean, plan = intake_problems(b)
-    if errs: return jsonify(error=errs, warnings=warns), 400
-    rec = intake_record(clean, {k: v for k, v in j["intake"].items() if k not in ("checked_by", "checked_at")})
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        why = write_check(c, i, ["request"]) if j.get("amend") else None
+        errs, warns, req, lab, plan, f, org = intake_problems(c, b, j)
+        if errs: c.execute("ROLLBACK"); return jsonify(error=errs, warnings=warns), 400
+        why = write_check(c, i, ["request"]) if j.get("amend") and f else None
         if why: return refuse(c, i, *why)
-        rq = integrity.read_section(c, i, "request") or {}
-        integrity.write_section(c, i, "request", {**rq, **clean}, me(), "Intake details completed")
-        c.execute("UPDATE jobs SET customer=?, rating=?, org_id=?, plan=?, intake=?, updated=? WHERE id=?",
-                  (clean["customer"], clean["rating"], b["org_id"], json.dumps(plan), json.dumps(rec), now(), i))
-        log(c, i, "Intake details completed and validated" + (f"; confirmed: {'; '.join(warns)}" if warns else ""), kind="job")
+        rec = intake_record(lab, {k: v for k, v in j["intake"].items() if k not in ("checked_by", "checked_at")}, f)
+        if f: use_request(c, i, f, req)
+        c.execute("UPDATE jobs SET plan=?, intake=?, updated=? WHERE id=?", (json.dumps(plan), json.dumps(rec), now(), i))
+        log(c, i, "Intake (laboratory's part) recorded" + (" with the customer's request" if f else "") +
+                  (f"; confirmed: {'; '.join(warns)}" if warns else ""), kind="job")
     return jsonify(ok=True)
 
 @app.post("/api/jobs/<int:i>/intake/checked")
 @auth.require("job.edit")
 def intake_checked(i):
-    """The receiving engineer has read the entered values back against the customer's original form."""
+    """The receiving engineer has compared the product and the entries with the customer's request."""
     j = getjob(i, False)
     if locked(j): return locked(j)
     if not j["intake"].get("valid"): return jsonify(error=["Complete the intake details first"]), 409
     rec = dict(j["intake"], checked_by=auth.current()["full_name"], checked_at=now())
     with db() as c:
         c.execute("UPDATE jobs SET intake=?, updated=? WHERE id=?", (json.dumps(rec), now(), i))
-        log(c, i, "Intake checked against the customer's original request form", kind="job")
+        log(c, i, "Intake checked against the customer's request and the product", kind="job")
+    return jsonify(ok=True)
+
+@app.post("/api/request-forms/<int:fid>/return")
+@auth.require("job.create")
+def request_return(fid):
+    """Send a customer's request back with the reason (something missing or wrong); the customer corrects it and sends it again."""
+    reason = str(body().get("reason") or "").strip()
+    if len(reason) < 5: return jsonify(error=["Give the reason, so the customer knows what to correct"]), 400
+    with db() as c:
+        f = c.execute("SELECT * FROM customer_forms WHERE id=?", (fid,)).fetchone()
+        if not f: abort(404)
+        if f["status"] != "received": return jsonify(error=[f"This request is {f['status']}"]), 409
+        c.execute("UPDATE customer_forms SET status='returned', note=? WHERE id=?", (reason, fid))
+        log(c, None, f"Customer request {fid} returned to the customer: {reason}", kind="job")
+        notify.notify(c, notify.users_with(c, "customer", f["org_id"]), None, "returned", f"Your test request was returned for correction: {reason}")
     return jsonify(ok=True)
 
 @app.get("/api/intake/fields")
-@auth.require("job.create", "jobs.view")  # customers fill in the same request form themselves
+@auth.require("job.create", "jobs.view")  # customers fill in the request form themselves
 def intake_fields():
-    return jsonify(fields=[dict(key=k, label=l, kind=t, na_ok=n) for k, l, t, n in workflow.INTAKE_FIELDS], states=workflow.STATES_UT,
+    return jsonify(form=workflow.FORM, fields=list(workflow.REQUEST_FIELDS), lab=list(workflow.LAB_FIELDS), states=workflow.STATES_UT,
                    tests={k: v for k, v in NAMES.items() if k != "request"})
 
 # ---- test bays, testers, "My work"
@@ -1661,7 +1696,9 @@ def stats():
 @app.post("/api/demo")
 @auth.require("job.create")
 def demo():
-    """Load the demo job with its scanned sheets. If it is already loaded, attach any scans it is missing and return it."""
+    """Load the demo job with its scanned sheets (only when ALETHEIA_DEMO=1: a real job starts from a customer's request).
+    If it is already loaded, attach any scans it is missing and return it."""
+    if os.environ.get("ALETHEIA_DEMO") != "1": abort(404)
     data = load_demo(); w = data["work"]
     with db() as c: old = c.execute("SELECT id FROM jobs WHERE series=?", (w["series"],)).fetchone()
     if old: i = old[0]
