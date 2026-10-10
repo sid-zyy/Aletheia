@@ -377,6 +377,13 @@ class ImportFormats(Base):
             self.drop(n)
 
 
+class Caching(Base):
+    def test_browsers_never_keep_a_stale_page_or_api_answer(self):
+        self.assertEqual(self.c.get("/").headers["Cache-Control"], "no-cache")
+        self.assertEqual(self.c.get("/static/workflow.js").headers["Cache-Control"], "no-cache")
+        self.assertEqual(self.c.get("/api/me").headers["Cache-Control"], "no-store")
+
+
 class Register(Base):
     def test_register_from_csv_and_database(self):
         r = self.c.post("/api/import-register", json=up("legacy_register.csv", raw("legacy_register.csv"))).json

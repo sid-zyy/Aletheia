@@ -605,6 +605,14 @@ def freeze(j):
 @auth.public
 def index(): return send_from_directory(app.static_folder, "index.html")
 
+@app.after_request
+def no_stale_pages(r):
+    """The page and its scripts are revalidated on every load (cheap: 304 when unchanged), so a browser never keeps running
+    an old script after an update. API responses are never cached."""
+    if request.path == "/" or request.path.startswith(("/static/", "/verify/")): r.headers["Cache-Control"] = "no-cache"
+    elif request.path.startswith("/api/") and "Cache-Control" not in r.headers: r.headers["Cache-Control"] = "no-store"
+    return r
+
 # Searched text: record details plus what the request and work instruction say (tests, standard, engineer, dates) and the outcome
 RQ, WK = (f"(SELECT data FROM sections WHERE job_id=jobs.id AND key='{k}')" for k in ("request", "work"))
 SEARCHED = ("series", "sample", "customer", "rating", "verdict", "tested", f"json_extract({RQ},'$.tests')", f"json_extract({RQ},'$.criteria')",

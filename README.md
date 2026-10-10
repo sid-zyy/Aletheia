@@ -14,6 +14,8 @@ The plan this build follows, with the status of every phase, is in [docs/NEXT_ST
     python app.py                 # open http://localhost:5000 on the server PC
 
 Python 3.10 or newer. Records are kept in `aletheia.db` next to `app.py`; backups go to `backups/` beside it.
+Browsers re-check the page and its scripts on every load and never cache API answers, so an update shows at once
+(no need to clear the browser cache).
 
 **First start:** the page asks for the first administrator account. This works only on the server PC itself and closes for
 good once the account exists. The administrator then creates the other accounts (each with a temporary password the person
