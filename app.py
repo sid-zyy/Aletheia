@@ -461,8 +461,8 @@ def safe_validate(d, plan=None):
         F.insert(0, dict(level="fail", blocks=True, check=f"Data structure: {nm}", source=nm,
                          detail=f"The {nm.lower()} is not in the expected layout ({what(err)}), so it could not be checked.",
                          found="Fields or table shape differ from the standard layout", expected="Same layout as the downloadable template",
-                         action=f"Open the {nm.lower()} (Edit under Sources) and correct it, re-import it from a corrected file, "
-                                "or remove it from this job (Remove under Sources) if it should not be part of the report."))
+                         action=f"Open the {nm.lower()} (Edit on its row under Tests and verification) and correct it, re-import it from a corrected file, "
+                                "or remove it from this job (Remove on its row) if it should not be part of the report."))
     return F, C
 
 def blocking(F):
@@ -858,7 +858,7 @@ def remove_import(i, imp):
     secs = row["sections"]
     if secs is None:  # imported before the app recorded what each file brought in
         if len(j["imports"]) > 1: return jsonify(error=["This file was imported before the app recorded which documents it contained. "
-                                                        "Remove its documents one by one under Sources instead."]), 409
+                                                        "Remove its documents one by one on their rows under Tests and verification instead."]), 409
         secs = {k: True for k in j["data"] if k != "request"}  # the only import: everything but the request came from it or was typed
     what = ', '.join(name(k) for k in secs if k != 'request') or 'no documents'
     with db() as c:

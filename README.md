@@ -78,7 +78,7 @@ Pages for staff: **Dashboard** (each person's tasks: for testers what to verify,
 approve, ready for sign-off, not assigned, and the customer tickets to answer), **My work** (what waits on you, oldest first), **Customer requests**
 (test engineers and the admin: the intake inbox), **Report Workflow**, **Records & Search** (with Excel export of many jobs), **Report
 Preview**; for Admin also **Users & customers**, **Templates**, **Audit log**, **Customer tickets**, **Backups**, **Settings**.
-The job page lists only the source documents the job needs: the request, the tests in its plan, and anything uploaded.
+The job page has one list, **Tests and verification**: every test the job needs (its plan, and anything uploaded), then the sample identification record and the supplementary records. Each row carries its files (*Blank sheet*, *Upload*, *Enter* or *Edit*, *Remove*) under the name, and its state and workflow actions (take, assign, verify, not applicable) on the right.
 Every file is uploaded from the row of the test it belongs to (*Upload* on that row): a data file only fills that test,
 a scan is attached to that test. Nothing is assigned to a test by itself (no general drop area, no workbook routed to several jobs).
 Pages for customers: **Open requests** (their jobs and their test requests, *New test request*), **Tickets**, **Notifications**.
@@ -142,7 +142,7 @@ names, and signatures are never shown to customers. On the first start of this v
 version 1 is retired (an administrator's own active version is kept, and version 2 is offered as a draft). Files filled in
 on version 1 still import: an upload is matched against the active version first, then the retired ones.
 `sample_data/tests/*.xlsx` are the demo job's values in the paper layout. Testers get the blank sheets from the job page:
-**Blank sheet** on each test's row downloads that test's logsheet with the job's series number, sample code and customer
+**Blank sheet** on each test's row (Tests and verification) downloads that test's logsheet with the job's series number, sample code and customer
 already written in; they fill in the readings and upload it with **Upload** on the same row.
 
 The original flat layout (`section, field, value` in CSV, Excel, SQLite or JSON) is still read; any job can be downloaded in it.

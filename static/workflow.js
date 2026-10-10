@@ -8,7 +8,8 @@ const secName=k=>SECN[k]||k;
 (()=>{const s=document.createElement('style');s.textContent=`
 .wt{width:100%;border-collapse:collapse;font-size:14px}.wt td{padding:10px 8px;border-top:1px solid var(--ln);vertical-align:top}.wt tr:first-child td{border-top:0}
 .wt .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.wt small{display:block;color:var(--mu);font-size:12px;line-height:1.35}
-.wt .rsn{color:var(--er)}.wh{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.wt .rsn{color:var(--er)}.dacts{display:flex;gap:4px 14px;flex-wrap:wrap;align-items:center;margin-top:6px;font-size:13px}.dacts .lk{padding:0;font-size:13px}
+.dacts .osh{display:inline-flex;gap:8px;align-items:center;padding:2px 10px;border-radius:99px;background:var(--cd2);color:var(--tx)}.wfn{margin:14px 0 0}.wfn .lk{padding:0 0 0 8px}.wh{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
 .ib{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:12px 14px;border-radius:12px;margin-bottom:14px;font-size:14px}
 .ib.ok{background:var(--ok2);color:var(--ok)}.ib.no{background:var(--wn2);color:var(--wn)}
 .vt{width:100%;border-collapse:collapse;font-size:13px}.vt td{padding:5px 8px;border-bottom:1px solid var(--ln)}.vt td:first-child{color:var(--mu);font-family:ui-monospace,Consolas,monospace;font-size:12px}
@@ -30,9 +31,21 @@ const bay=()=>null;  /* test bays were removed */
 async function wfCard(j){if(isCust())return;const id=j.id,nx=$('.card.next');if(!nx)return;
  const testers=can('job.assign')?await api('/api/testers'):[];
  const keys=[...new Set([...(j.plan.length?j.plan:j.progress.map(p=>p.key)),...Object.keys(j.meta).filter(k=>k!='request')])];
+ /* every test, then the sample identification record and the supplementary records: one list for the files and the workflow */
+ const rows=[...keys.filter(k=>k!='ids'&&k!='other'),'ids','other'].filter(k=>(k!='ids'&&k!='other')||k in j.meta||(can('data.write')&&!j.released));
  const st=k=>(j.meta[k]||{}).state||'not_started',n=s=>keys.filter(k=>st(k)==s).length,ver=can('section.verify');
+ const wr=can('data.write')&&!j.released,others=Object.entries(j.data.other||{});
+ /* the files of one test, on a line under its name: blank sheet, upload, enter or edit by hand, remove */
+ const files=k=>{const nm=secName(k),has=k=='other'?others.length>0:k in j.data,L=[];
+  if(!j.released&&k!='ids'&&k!='other')L.push(`<a class="lk dl" href="/api/jobs/${id}/logsheets/${k}.xlsx" title="Blank Excel logsheet with this job's series number, sample code and customer filled in">${ic('doc',13)}Blank sheet</a>`);
+  if(wr&&k!='ids')L.push(`<button class="lk" onclick="upFor(${id},'${k}')">Upload</button>`);
+  if(k=='other'){if(wr)L.push(`<button class="lk" onclick="editSec(${id},'other:new')">+ Enter by hand</button>`)}
+  else if(wr||has)L.push(`<button class="lk" onclick="editSec(${id},'${k}')">${!wr?'View values':has?'Edit':'Enter'}</button>`);
+  if(wr&&has&&k!='other')L.push(`<button class="lk rm" onclick="rmSec(${id},'${k}',this.dataset.doc)" data-doc="${esc(nm)}">Remove</button>`);
+  const sheets=k=='other'?others.map(([x,o])=>`<span class="osh">${esc(o.title||'Supplementary test record')}<button class="lk" onclick="editSec(${id},'other:${x}')">${wr?'Edit':'View'}</button>${wr?`<button class="lk rm" onclick="rmSec(${id},'other:${x}',this.dataset.doc)" data-doc="${esc(o.title||'Supplementary test record')}">Remove</button>`:''}</span>`).join(''):'';
+  return L.length||sheets?`<div class="dacts">${L.join('')}${sheets}</div>`:''};
  const row=k=>{const m=j.meta[k]||{},s=st(k),a=j.assign[k],acts=[];
-  if(ver&&!j.released){if(s=='uploaded'&&k in j.data)acts.push(`<button class="btn s" onclick="wfReview(${id},'${k}')">Check and verify</button>`);
+  if(ver&&!j.released&&(k in j.meta||(k!='ids'&&k!='other'))){if(s=='uploaded'&&k in j.data)acts.push(`<button class="btn s" onclick="wfReview(${id},'${k}')">Check and verify</button>`);
    if(s=='verified'||s=='na')acts.push(`<button class="btn g s" onclick="wfReason(${id},'${k}','reopen')">Reopen</button>`);
    if(s=='not_started'||s=='uploaded'||s=='returned')acts.push(`<button class="lk" onclick="wfReason(${id},'${k}','na')">Not applicable</button>`)}
   const cert=!(ME.test_types||'')||(ME.test_types||'').split(',').includes(k);
@@ -43,19 +56,22 @@ async function wfCard(j){if(isCust())return;const id=j.id,nx=$('.card.next');if(
   return `<tr><td><b>${esc(secName(k,j))}</b>${!j.plan.length||j.plan.includes(k)||k=='ids'||k=='other'?'':' <small style="display:inline">(not in the test plan)</small>'}
    ${m.uploaded_by?`<small>Uploaded by ${esc(m.uploaded_by)}${m.bay?' in '+esc(m.bay):''}${m.uploaded_at?' &middot; '+esc(m.uploaded_at.slice(0,16).replace('T',' ')):''}${m.file?` &middot; <a class="lk" style="padding:0;font-size:12px" href="/api/files/${m.file_id}">${esc(m.file)}</a>`:''} &middot; rev ${m.revision}</small>`:''}
    ${m.verified_by?`<small>Verified by ${esc(m.verified_by)} &middot; ${esc((m.verified_at||'').slice(0,16).replace('T',' '))}</small>`:''}
-   ${a?`<small>Assigned to ${esc(a.name)}</small>`:''}${m.note&&(s=='returned'||s=='na'||s=='uploaded')?`<small class="${s=='returned'?'rsn':''}">${s=='returned'?'Returned: ':s=='na'?'Reason: ':'Reopened: '}${esc(m.note)}</small>`:''}</td>
-   <td style="white-space:nowrap"><span class="pst ${s=='returned'?'returned':s}">${WSTATE[s]}</span></td><td><div class="acts">${acts.join('')}</div></td></tr>`};
+   ${a?`<small>Assigned to ${esc(a.name)}</small>`:''}${m.note&&(s=='returned'||s=='na'||s=='uploaded')?`<small class="${s=='returned'?'rsn':''}">${s=='returned'?'Returned: ':s=='na'?'Reason: ':'Reopened: '}${esc(m.note)}</small>`:''}${files(k)}</td>
+   <td style="white-space:nowrap">${(k=='ids'||k=='other')&&!(k in j.meta)?'<span class="note" style="margin:0">optional</span>':`<span class="pst ${s=='returned'?'returned':s}">${WSTATE[s]}</span>`}</td><td><div class="acts">${acts.join('')}</div></td></tr>`};
  const it=j.intake||{},iok=it.valid&&it.checked_by;
  const intake=`<div class="ib ${iok?'ok':'no'}"><span>${iok?`Intake complete: received ${esc((it.arrived_at||'').replace('T',' '))} by ${esc(it.received_by)}${it.opened_by?`, box opened by ${esc(it.opened_by)}`:''}; checked against the original form by ${esc(it.checked_by)}.`
   :it.valid?'Intake details are complete. Read them back against the customer\'s original form, then confirm.':'Intake details are incomplete. The report cannot be released until every required field is filled in and checked.'}</span>
-  <span style="display:flex;gap:8px">${!j.released&&can('job.edit')?`<a class="btn g s" href="#/intake/${id}">${it.valid?'Review intake':'Complete intake'}</a>`:''}${!j.released&&can('job.edit')&&it.valid&&!it.checked_by?`<button class="btn s" onclick="wfChecked(${id})">Checked against the original</button>`:''}</span></div>`;
+  <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="lk" onclick="editSec(${id},'request')">Customer request</button>${!j.released&&can('job.edit')?`<a class="btn g s" href="#/intake/${id}">${it.valid?'Review intake':'Complete intake'}</a>`:''}${!j.released&&can('job.edit')&&it.valid&&!it.checked_by?`<button class="btn s" onclick="wfChecked(${id})">Checked against the original</button>`:''}</span></div>`;
  const so=j.signoff?`<span class="pst verified">Approved by ${esc(j.signoff.by)}</span>`:can('job.signoff')&&!j.released&&!j.signoff_blockers.length&&j.stage>=2?`<button class="btn s" onclick="wfSignoff(${id})">Approve: every test verified</button>`:`<span class="note" style="margin:0">${j.signoff_blockers.length?`${j.signoff_blockers.length} item${j.signoff_blockers.length==1?'':'s'} before approval`:j.stage<2?'Run the checks before approval':''}</span>`;
  let ab=null;if(j.amend){const b=ab=document.createElement('div');b.className='card';b.style.borderColor='var(--wn)';
   b.innerHTML=`<h2 style="margin:0 0 6px">Amendment open</h2><p style="margin:0">Opened ${esc(j.amend.opened_at.replace('T',' '))} by ${esc(j.amend.opened_by)} with ${esc(j.amend.second_signer)}: <b>${esc(j.amend.reason)}</b></p><p class="note">Reopened: ${j.amend.sections.map(k=>esc(k=='request'?'Customer request / intake':secName(k))).join(', ')}. Version ${j.amend.from_version} remains the valid report until the corrected version is released.</p>`}
  const c=document.createElement('div');c.className='card';c.id='wf';
  c.innerHTML=`<div class="wh"><div><h2 style="margin:0">Tests and verification</h2><span class="note">${n('verified')} of ${keys.length-n('na')} verified &middot; ${n('uploaded')} awaiting verification &middot; ${n('returned')} returned &middot; ${n('not_started')} not started${n('na')?` &middot; ${n('na')} not applicable`:''}</span></div>
-  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${so}<button class="lk" onclick="wfHistory(${id})">Section history</button>${j.ever_released&&can('data.export')?`<a class="lk" href="/api/jobs/${id}/package.zip" title="Every released version, its manifest, source files, history and audit, with checksums">Record package (zip)</a>`:''}${!j.released&&ME.roles.includes('admin')?`<button class="btn g s" onclick="assignModal(${id},null,'',1)">Assign whole job</button>`:''}${j.released&&can('report.amend')?`<button class="btn g s" onclick='amendModal(${id},${JSON.stringify(Object.keys(j.meta).filter(k=>k!="request"))})'>Amend this report</button>`:''}</div></div>
-  ${intake}<div class="scroll"><table class="wt">${keys.map(row).join('')}</table></div>`;
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${so}${!j.released&&can('data.check')&&j.stage>=1?`<button class="btn g s" onclick="act('validate','Checks complete')">Run checks again</button>`:''}<button class="lk" onclick="wfHistory(${id})">Section history</button>${j.ever_released&&can('data.export')?`<a class="lk" href="/api/jobs/${id}/package.zip" title="Every released version, its manifest, source files, history and audit, with checksums">Record package (zip)</a>`:''}${!j.released&&ME.roles.includes('admin')?`<button class="btn g s" onclick="assignModal(${id},null,'',1)">Assign whole job</button>`:''}${j.released&&can('report.amend')?`<button class="btn g s" onclick='amendModal(${id},${JSON.stringify(Object.keys(j.meta).filter(k=>k!="request"))})'>Amend this report</button>`:''}</div></div>
+  ${intake}<div class="scroll"><table class="wt">${rows.map(row).join('')}</table></div>
+  <p class="note wfn">Each file goes to the test it is uploaded for: <b>Blank sheet</b> gives the test's Excel logsheet with this job's numbers filled in; fill in the readings and <b>Upload</b> it on the same row.
+  This job's data: <a class="lk" href="/api/jobs/${id}/export/csv">CSV</a><a class="lk" href="/api/jobs/${id}/export/xlsx">Excel</a><a class="lk" href="/api/jobs/${id}/export/sqlite">Database</a><a class="lk" href="/api/jobs/${id}/export/json">JSON</a>
+  &middot; as filled logsheets: <a class="lk" href="/api/jobs/${id}/logsheets.xlsx">Excel</a> &middot; flat layout: <a class="lk" href="/api/template/csv">CSV template</a><a class="lk" href="/api/template/xlsx">Excel template</a></p>`;
  nx.after(c);if(ab)nx.after(ab)}
 /* released reports are superseded, never edited: an administrator and a second administrator sign the reason */
 function amendModal(id,keys){modal(`<h2>Amend the released report</h2><p class="note">The released version stays valid, stored and verifiable until the corrected version is released; it is then marked superseded with your reason. Only the tests you name reopen; they go through upload, verification, approval and sign-off again.</p>
