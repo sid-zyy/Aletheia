@@ -53,9 +53,36 @@ class ImportFormats(Base):
         f = self.c.post(f"/api/jobs/{i}/validate").json["findings"]
         self.assertFalse([x for x in f if x["level"] == "fail"]); self.assertEqual(len(f), 30)
         g = self.gen(i).json; self.assertEqual(g["version"], 1)
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/approve", json=dict(name="Reviewer")).json["version"], 2)
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/approve", json=dict(name="Reviewer", employee_id="E1042")).json["version"], 2)
         pdf = self.c.get(f"/api/jobs/{i}/report.pdf"); self.assertTrue(pdf.data.startswith(b"%PDF"))
         j = self.get(i); self.assertEqual(j["stage"], 4); self.assertEqual(j["imports"][0]["kind"], "csv")
+
+    def test_approval_needs_name_and_employee_id(self):
+        i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("lab.csv", raw("AP_Transformers_25T1654.csv")))
+        self.c.post(f"/api/jobs/{i}/validate"); self.gen(i)
+        for b in (dict(name="Reviewer"), dict(name="Reviewer", employee_id="  "), dict(employee_id="E1042"),
+                  dict(name="Reviewer", employee_id="E 1042; drop"), dict(name="Reviewer", employee_id="X")):
+            r = self.c.post(f"/api/jobs/{i}/approve", json=b)
+            self.assertEqual(r.status_code, 400, b); self.assertEqual(self.get(i)["stage"], 3, b)
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/approve", json=dict(name="Reviewer", employee_id="cpri/sc-1042")).status_code, 200)
+        j = self.get(i); self.assertEqual((j["approver"], j["approver_id"]), ("Reviewer", "CPRI/SC-1042"))
+        self.assertEqual(j["reports"][0]["approver_id"], "CPRI/SC-1042")
+        self.assertIn("Approved by Reviewer (Employee ID CPRI/SC-1042)", j["audit"][-1]["event"])
+        self.assertEqual(self.c.get("/api/verify/" + j["reports"][0]["token"]).json["approver_id"], "CPRI/SC-1042")
+        self.c.post(f"/api/jobs/{i}/discard")  # withdrawing the report clears the approval, ID included
+        self.assertEqual((self.get(i)["approver"], self.get(i)["approver_id"]), (None, None))
+
+    def test_older_database_gains_the_employee_id_column(self):
+        path = os.path.join(_tmp.name, "old.db")
+        with sqlite3.connect(path) as c:
+            c.execute("CREATE TABLE jobs(id INTEGER PRIMARY KEY, series TEXT UNIQUE, approver TEXT)")
+            c.execute("CREATE TABLE reports(id INTEGER PRIMARY KEY, job_id INT, approver TEXT)")
+        old, aletheia.DB = aletheia.DB, path
+        try:
+            aletheia.init()
+            with sqlite3.connect(path) as c:
+                for t in ("jobs", "reports"): self.assertIn("approver_id", [r[1] for r in c.execute(f"PRAGMA table_info({t})")], t)
+        finally: aletheia.DB = old
 
     def test_semicolon_csv_and_series_column(self):
         text = "series;section;field;value\nCPRIBLRSCL25T1654;proforma;kva;250\nCPRIBLRSCL25T9999;proforma;kva;999\nCPRIBLRSCL25T1654;proforma;limits.oil;35\n"
@@ -212,7 +239,7 @@ class ReportsAndSources(Base):
         a = self.c.get(f"/api/jobs/{i}/report.pdf").data; self.assertEqual(a, self.c.get(f"/api/jobs/{i}/report.pdf").data)
         import hashlib; self.assertEqual(hashlib.sha256(a).hexdigest(), v1["sha256"])
         s = self.c.get("/api/verify/" + v1["token"]).json; self.assertTrue(s["intact"] and s["current"]); self.assertFalse(s["approved"])
-        self.c.post(f"/api/jobs/{i}/approve", json=dict(name="R. Viewer"))
+        self.c.post(f"/api/jobs/{i}/approve", json=dict(name="R. Viewer", employee_id="E2001"))
         self.assertFalse(self.c.get("/api/verify/" + v1["token"]).json["current"])  # superseded by the approved version
         s2 = self.c.get("/api/verify/" + self.get(i)["reports"][0]["token"]).json; self.assertTrue(s2["approved"]); self.assertEqual(s2["version"], 2)
         with aletheia.db() as c: c.execute("UPDATE reports SET pdf=? WHERE version=2", (b"%PDF tampered",))

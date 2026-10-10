@@ -44,3 +44,4 @@ per version and stored with their hash; the verification page recomputes the has
 | `vision.py` | Send one source document to Gemini on request, enforce the daily limit, return a proposal only |
 | `app.py` | REST API, SQLite storage and audit trail, validation rules, PDF layout, report versions |
 | `static/index.html` | Single-page UI: dashboard, workflow, records, preview, architecture, verification |
+| `static/assistant.js` | Rule-based chat assistant: guided new request, record search, open jobs, status, how-to answers. Keyword matching only; uses the same API as the UI |

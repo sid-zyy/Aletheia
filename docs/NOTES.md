@@ -10,6 +10,7 @@ Quick reference for the team. The README has full install and usage steps; `docs
 | `importers.py` | CSV / Excel / SQLite / JSON in and out, using rows of `section, field, value` |
 | `vision.py` | Scan reader: Gemini, Ollama, or any OpenAI-compatible service; page clean-up, part-by-part reading, saved scans |
 | `static/index.html` | The whole web UI (single page) |
+| `static/assistant.js` | Rule-based chat assistant: new request, record search, status, how-to answers (keyword matching, no AI model) |
 | `tests/test_app.py` | 22 tests: `python -m unittest discover -s tests` |
 | `sample_data/` | The A.P. Transformers sample job in every format, plus two legacy registers |
 

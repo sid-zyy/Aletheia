@@ -5,6 +5,8 @@ Modules: Data Collection (importers.py: JSON / CSV / Excel / SQLite; vision.py: 
 """
 import base64, json, hashlib, io, math, os, re, secrets, sqlite3, datetime as dt
 import importers, vision
+import rules
+from rules import val as rule, nll_limits, ratio_tolerance, classify_observation
 from statistics import mean
 from flask import Flask, request, jsonify, send_file, send_from_directory, abort
 from reportlab.lib.pagesizes import A4
@@ -45,12 +47,14 @@ def init():
     with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, series TEXT UNIQUE, sample TEXT, customer TEXT, rating TEXT,
-            stage INTEGER DEFAULT 0, data TEXT DEFAULT '{}', findings TEXT DEFAULT '[]', approver TEXT, created TEXT, updated TEXT);
+            stage INTEGER DEFAULT 0, data TEXT DEFAULT '{}', findings TEXT DEFAULT '[]', approver TEXT, approver_id TEXT, created TEXT, updated TEXT);
         CREATE TABLE IF NOT EXISTS imports(id INTEGER PRIMARY KEY, job_id INT, source TEXT, kind TEXT, sha256 TEXT, at TEXT, UNIQUE(job_id, sha256));
         CREATE TABLE IF NOT EXISTS sources(id INTEGER PRIMARY KEY, job_id INT, filename TEXT, mime TEXT, sha256 TEXT, content BLOB, at TEXT, UNIQUE(job_id, sha256));
-        CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY, job_id INT, version INT, token TEXT UNIQUE, sha256 TEXT, pdf BLOB, approver TEXT, at TEXT);
+        CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY, job_id INT, version INT, token TEXT UNIQUE, sha256 TEXT, pdf BLOB, approver TEXT, approver_id TEXT, at TEXT);
         CREATE TABLE IF NOT EXISTS vision_calls(id INTEGER PRIMARY KEY, day TEXT, model TEXT);
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, job_id INT, event TEXT, at TEXT);""")
+        for t in ("jobs", "reports"):  # databases from before the approver's employee ID was recorded
+            if "approver_id" not in {r[1] for r in c.execute(f"PRAGMA table_info({t})")}: c.execute(f"ALTER TABLE {t} ADD COLUMN approver_id TEXT")
 
 def log(c, jid, ev): c.execute("INSERT INTO audit(job_id,event,at) VALUES(?,?,?)", (jid, ev, now()))
 
@@ -64,7 +68,7 @@ def getjob(jid, full=True):
             j["audit"] = [dict(a) for a in c.execute("SELECT event,at FROM audit WHERE job_id=? ORDER BY id", (jid,))]
             j["imports"] = [dict(a) for a in c.execute("SELECT source,kind,sha256,at FROM imports WHERE job_id=?", (jid,))]
             j["sources"] = [dict(a) for a in c.execute("SELECT id,filename,mime,sha256,at FROM sources WHERE job_id=? ORDER BY id", (jid,))]
-            j["reports"] = [dict(a) for a in c.execute("SELECT version,token,sha256,approver,at FROM reports WHERE job_id=? ORDER BY version DESC", (jid,))]
+            j["reports"] = [dict(a) for a in c.execute("SELECT version,token,sha256,approver,approver_id,at FROM reports WHERE job_id=? ORDER BY version DESC", (jid,))]
         return j
 
 def save(jid, **kw):
@@ -76,9 +80,12 @@ def save(jid, **kw):
 def validate(d):
     """Returns (findings, calc). Levels: pass / warn (needs reviewer attention) / fail (blocks)."""
     F, C = [], {}
-    def add(l, c, t, src=None, found=None, exp=None, fix=None, na=False):
-        """src: document(s) checked; found / exp: observed vs required value; fix: what the engineer should do."""
-        f = dict(level=l, check=c, detail=t, **({"na": True} if na else {}))
+    def add(l, c, t, src=None, found=None, exp=None, fix=None, na=False, basis=None, inconclusive=False, cause=None):
+        """src: document(s) checked; found / exp: observed vs required value; fix: what the engineer should do.
+        cause: technical reason a check was skipped, for the engineer only; never printed in the report."""
+        f = dict(level=l, check=c, detail=t, **({"na": True} if na else {}), **({"inconclusive": True} if inconclusive else {}))
+        if cause: f["cause"] = cause
+        if basis: f["basis"] = rules.basis(*basis)  # where the threshold comes from and whether anyone has confirmed it
         f.update({k: v for k, v in dict(source=src, found=found, expected=exp, action=fix).items() if v is not None})
         for k in ("detail", "found", "expected"):  # an empty value formatted into the text reads NA, not Python's "None"
             if isinstance(f.get(k), str): f[k] = re.sub(r"\bNone\b", "NA", f[k])
@@ -89,9 +96,9 @@ def validate(d):
         def guard():
             try:
                 yield
-            except (TypeError, ValueError, KeyError, IndexError, AttributeError, ZeroDivisionError):
+            except (TypeError, ValueError, KeyError, IndexError, AttributeError, ZeroDivisionError) as e:
                 if check: add("warn", check, f"Not evaluated: values it needs in the {src or 'source document'} are NA (left empty) or incomplete.", src=src, found="NA",
-                              exp="All values this check needs", na=True,
+                              exp="All values this check needs", na=True, cause=f"{type(e).__name__}: {e}",
                               fix="Fill in the missing values if this test was performed; otherwise leave them as NA. The report lists it as not evaluated.")
         return guard()
     miss = [v for k, v in NAMES.items() if k not in d]
@@ -122,7 +129,7 @@ def validate(d):
     P = d.get("proforma", {})
     if P:
         with na(None):
-            irat = P["kva"] * 1000 / (math.sqrt(3) * P["lv"]); C["irat"] = irat
+            irat = P["kva"] * 1000 / ((math.sqrt(3) if P.get("phases", 3) == 3 else 1) * P["lv"]); C["irat"] = irat
     # 2. resistance
     R = d.get("resistance")
     if R:
@@ -130,8 +137,9 @@ def validate(d):
             worst = 0
             for ph in list(R["hv"].values()) + [R["lv"]]:
                 for row in ph: worst = max(worst, (max(row) - min(row)) / mean(row) * 100)
-            add("pass" if worst <= 2 else "fail", "Winding resistance phase imbalance", f"Max imbalance {worst:.2f}% (limit 2%)",
-                src=NAMES["resistance"], found=f"{worst:.2f}% between phases", exp="2% or less",
+            lim = rule("resistance_imbalance_pct")
+            add("pass" if worst <= lim else "fail", "Winding resistance phase imbalance", f"Max imbalance {worst:.2f}% (limit {lim:g}%)",
+                src=NAMES["resistance"], found=f"{worst:.2f}% between phases", exp=f"{lim:g}% or less", basis=("resistance_imbalance_pct",),
                 fix="Re-check the three phase readings on the resistance log; a large imbalance can mean a winding fault or a misread value.")
         T = d.get("temp")
         if T:
@@ -153,11 +161,15 @@ def validate(d):
                     src=NAMES["noload"], found=f"{lb}: logged total {Wa} W", exp=f"W1 + W2 + W3 = {' + '.join(map(str, W))} = {sum(W):.2f} W",
                     fix="Check the three wattmeter readings and the total on the scan; one of them was probably misread or mis-added.")
         with na('No-load current limits', NAMES["noload"]):
-            i100, i112 = N["rows"][0][4], N["rows"][2][4]
-            for nm, i, lim in (("100%", i100, 2), ("112.5%", i112, 5)):
+            lim100, lim112 = nll_limits(P["kva"])
+            r112 = [r for r in N["rows"] if "112" in str(r[0])]  # chosen by label, not by row position
+            r100 = [r for r in N["rows"] if "112" not in str(r[0])]
+            if not r112 or not r100: raise KeyError("a no-load row labelled 112.5% and at least one rated-voltage row")
+            for nm, i, lim, key in (("100%", max(r[4] for r in r100), lim100, "nll_pct_to_200kva" if P["kva"] <= 200 else "nll_pct_above_200kva"),
+                                    ("112.5%", max(r[4] for r in r112), lim112, "nll_112_pct_to_200kva" if P["kva"] <= 200 else "nll_112_pct_above_200kva")):
                 pc = i / C["irat"] * 100
-                add("pass" if pc <= lim else "fail", f"No-load current at {nm} voltage", f"{i} A = {pc:.2f}% of rated {C['irat']:.1f} A (limit {lim}%)",
-                    src=NAMES["noload"], found=f"{i} A ({pc:.2f}% of rated current)", exp=f"{lim}% of rated {C['irat']:.1f} A or less",
+                add("pass" if pc <= lim else "fail", f"No-load current at {nm} voltage", f"{i} A = {pc:.2f}% of rated {C['irat']:.1f} A (limit {lim:g}% for {P['kva']} kVA)",
+                    src=NAMES["noload"], found=f"{i} A ({pc:.2f}% of rated current)", exp=f"{lim:g}% of rated {C['irat']:.1f} A or less", basis=(key,),
                     fix=None if pc <= lim else "The sample exceeds the no-load current limit; confirm the reading before reporting a failure.")
     # 4. losses / impedance (IS 1180 limits from proforma, +/-10% impedance)
     L = d.get("losses")
@@ -167,20 +179,22 @@ def validate(d):
             t100 = max(r[13] for r in rows); t50 = max(r[12] for r in rows if r[12])
             C["t100"], C["t50"] = t100, t50
             for pct, t, lim in (("100%", t100, P["loss100"]), ("50%", t50, P["loss50"])):
-                add("pass" if t <= lim else "fail", f"Total loss at {pct} load" + (" (75 C)" if pct == "100%" else ""), f"Max {t} W vs limit {lim} W",
-                    src=NAMES["losses"], found=f"{t} W (worst tap)", exp=f"{lim} W or less (guaranteed in proforma)",
-                    fix=None if t <= lim else "Losses exceed the guaranteed value; confirm the readings and the 75 C correction.")
+                cap = lim * (1 + rule("loss_positive_tolerance_pct") / 100)
+                add("pass" if t <= cap else "fail", f"Total loss at {pct} load" + (" (75 C)" if pct == "100%" else ""), f"Max {t} W vs limit {lim} W",
+                    src=NAMES["losses"], found=f"{t} W (worst tap)", exp=f"{lim} W or less (guaranteed in proforma)", basis=("loss_positive_tolerance_pct",),
+                    fix=None if t <= cap else "Losses exceed the guaranteed value; confirm the readings and the 75 C correction.")
         with na('Impedance voltage (+/-10%)', NAMES["losses"]):
-            zs = [r[1] for r in rows]; lo, hi = P["z_pct"] * .9, P["z_pct"] * 1.1
+            zs = [r[1] for r in rows]; tol = rule("impedance_tolerance_pct") / 100; lo, hi = P["z_pct"] * (1 - tol), P["z_pct"] * (1 + tol)
             zok = all(lo <= z <= hi for z in zs)
             add("pass" if zok else "fail", "Impedance voltage (+/-10%)", f"%Z {min(zs)}-{max(zs)} vs declared {P['z_pct']} (band {lo:.2f}-{hi:.2f})",
-                src=NAMES["losses"], found=f"%Z {min(zs)} to {max(zs)}", exp=f"{lo:.2f} to {hi:.2f} (declared {P['z_pct']}% +/-10%)",
+                src=NAMES["losses"], found=f"%Z {min(zs)} to {max(zs)}", exp=f"{lo:.2f} to {hi:.2f} (declared {P['z_pct']}% +/-{tol * 100:g}%)", basis=("impedance_tolerance_pct",),
                 fix=None if zok else "Impedance is outside the tolerance band; check the readings for each tap.")
         with na('Reactance change before/after short circuit', NAMES["losses"]):
             xc = max(abs(r[3]) for r in rows if r[3] is not None)
-            add("pass" if xc <= 2 else "fail", "Reactance change before/after short circuit", f"Max {xc}% (limit 2%) - no winding displacement indicated",
-                src=NAMES["losses"], found=f"{xc}% change", exp="2% or less",
-                fix=None if xc <= 2 else "A reactance change above 2% suggests the windings moved during the short-circuit test.")
+            xl = rule("reactance_change_pct")
+            add("pass" if xc <= xl else "fail", "Reactance change before/after short circuit", f"Max {xc}% (limit {xl:g}%)" + (" - no winding displacement indicated" if xc <= xl else ""),
+                src=NAMES["losses"], found=f"{xc}% change", exp=f"{xl:g}% or less", basis=("reactance_change_pct",),
+                fix=None if xc <= xl else f"A reactance change above {xl:g}% suggests the windings moved during the short-circuit test.")
     # 5. voltage ratio, 7 taps +5% .. -10%
     Rt = d.get("routine")
     if Rt and P:
@@ -191,14 +205,19 @@ def validate(d):
                     th = P["hv"] * (1 + (5 - 2.5 * i) / 100) / vph
                     dev = max(dev, max(abs(x - th) / th * 100 for x in row))
             C["ratio_dev"] = dev
-            add("pass" if dev <= .5 else "fail", "Voltage ratio, all taps", f"Max deviation from theoretical {dev:.2f}% (tolerance 0.5%)",
-                src=NAMES["routine"], found=f"{dev:.2f}% worst deviation", exp="0.5% or less from the theoretical ratio",
-                fix=None if dev <= .5 else "Check the ratio readings for each tap on the routine test log.")
+            rt = ratio_tolerance(P["z_pct"])
+            add("pass" if dev <= rt else "fail", "Voltage ratio, all taps", f"Max deviation from theoretical {dev:.2f}% (tolerance {rt:.2f}%: smaller of 0.5% and 10% of {P['z_pct']}% impedance)",
+                src=NAMES["routine"], found=f"{dev:.2f}% worst deviation", exp=f"{rt:.2f}% or less from the theoretical ratio", basis=("ratio_tolerance_pct", "ratio_impedance_fraction"),
+                fix=None if dev <= rt else "Check the ratio readings for each tap on the routine test log.")
         with na('Dielectric routine tests', NAMES["routine"]):
-            ok = all(Rt[k].get("obs", "").lower().startswith("no disruptive") for k in ("induced", "hvac", "lvac"))
-            add("pass" if ok else "fail", "Dielectric routine tests", "Induced over-voltage, HV (28 kV) and LV (3 kV) power-frequency: withstood",
-                src=NAMES["routine"], exp="No disruptive discharge in any test",
-                fix=None if ok else "A dielectric test did not record 'no disruptive discharge'; check the observations on the log.")
+            v = [classify_observation(Rt[k].get("obs")) for k in ("induced", "hvac", "lvac")]
+            lvl = "fail" if False in v else "warn" if None in v else "pass"
+            add(lvl, "Dielectric routine tests",
+                {"pass": "Induced over-voltage, HV (28 kV) and LV (3 kV) power-frequency: withstood",
+                 "fail": "A dielectric test records a discharge, flashover or breakdown.",
+                 "warn": "The recorded observation could not be interpreted (empty or unusual wording), so it was not counted as passed."}[lvl],
+                src=NAMES["routine"], found="; ".join(str(Rt[k].get("obs")) for k in ("induced", "hvac", "lvac")), exp="No disruptive discharge in any test",
+                fix=None if lvl == "pass" else "Check the observations on the log against the scan; use plain wording such as 'No disruptive discharge, withstood'.")
     # 6. short circuit
     S = d.get("sc")
     if S:
@@ -214,18 +233,30 @@ def validate(d):
                 mi, mp = mean(s[7] for s in sh), mean(s[3] for s in sh)
                 C["sc"][tap] = (round(mi, 2), round(mp, 2))
                 e = (mi - ir) / ir * 100
-                add("pass" if abs(e) <= 10 else "fail", f"SC current at {tap} tap", f"{len(sh)} shots: mean {mi:.2f} kA rms (req {ir}, {e:+.1f}%), peak {mp:.2f} kA (req {ip})",
-                    src=NAMES["sc"], found=f"{mi:.2f} kA rms ({e:+.1f}%), peak {mp:.2f} kA over {len(sh)} shots", exp=f"{ir} kA rms +/-10%, peak {ip} kA",
-                    fix=None if abs(e) <= 10 else "The applied current was outside +/-10% of the required value; the test may need repeating.")
+                tl = rule("sc_rms_tolerance_pct")
+                add("pass" if abs(e) <= tl else "fail", f"SC current at {tap} tap", f"{len(sh)} shots: mean {mi:.2f} kA rms (req {ir}, {e:+.1f}%), peak {mp:.2f} kA (req {ip})",
+                    src=NAMES["sc"], found=f"{mi:.2f} kA rms ({e:+.1f}%), peak {mp:.2f} kA over {len(sh)} shots", exp=f"{ir} kA rms +/-{tl:g}%, peak {ip} kA", basis=("sc_rms_tolerance_pct",),
+                    fix=None if abs(e) <= tl else f"The applied current was outside +/-{tl:g}% of the required value; the test may need repeating.")
+                # a mean can hide one bad shot: look at each shot, and at the peak, which was displayed but never checked
+                off = [f"{s[0]} ({(s[7] - ir) / ir * 100:+.1f}%)" for s in sh if abs((s[7] - ir) / ir * 100) > tl]
+                low = [f"{s[0]} ({s[3]} kA)" for s in sh if s[3] is not None and s[3] < ip]
+                if off or low:
+                    add("warn", f"SC shot-by-shot at {tap} tap", "; ".join(filter(None, [f"rms outside +/-{tl:g}%: " + ", ".join(off) if off else "", f"peak below required {ip} kA: " + ", ".join(low) if low else ""])),
+                        src=NAMES["sc"], found=", ".join(off + low), exp=f"Every shot within +/-{tl:g}% rms and at or above {ip} kA peak", basis=("sc_rms_tolerance_pct",),
+                        fix="Check these shots on the log. Whether a single shot below the required peak invalidates the test depends on the standard, which has not been checked.")
         with na('Thermal ability of SC', NAMES["sc"]):
             th = [s for s in S["shots"] if s[9] == "thermal"]
-            if th: add("pass" if th[0][8] >= 2 else "fail", "Thermal ability of SC", f"Duration {th[0][8]} s (min 2 s)",
-                       src=NAMES["sc"], found=f"{th[0][8]} s", exp="2 s or more",
-                       fix=None if th[0][8] >= 2 else "The thermal short-circuit shot was shorter than 2 s.")
+            tm = rule("sc_thermal_min_s")
+            if th: add("pass" if th[0][8] >= tm else "fail", "Thermal ability of SC", f"Duration {th[0][8]} s (min {tm:g} s)",
+                       src=NAMES["sc"], found=f"{th[0][8]} s", exp=f"{tm:g} s or more", basis=("sc_thermal_min_s",),
+                       fix=None if th[0][8] >= tm else f"The thermal short-circuit shot was shorter than {tm:g} s.")
         with na('Post-test inspection', NAMES["sc"]):
-            iok = "no" in S["after"].lower()
-            add("pass" if iok else "fail", "Post-test inspection", S["inspection"], src=NAMES["sc"], found=S["after"], exp="No abnormalities",
-                fix=None if iok else "Abnormalities were recorded after the short-circuit test; review the untanking notes.")
+            v = classify_observation(S["after"])
+            add({True: "pass", False: "fail", None: "warn"}[v], "Post-test inspection",
+                S["inspection"] if v is not None else f"The recorded finding '{S['after']}' could not be interpreted, so it was not counted as passed.",
+                src=NAMES["sc"], found=S["after"], exp="No abnormalities",
+                fix=None if v else "Abnormalities were recorded after the short-circuit test; review the untanking notes." if v is False
+                    else "Check the finding against the scan; use plain wording such as 'No abnormalities'.")
     # 7. temperature rise
     T = d.get("temp")
     temp_ok = wdg_ok = False  # oil rise (hourly readings) and winding rise (resistances) are computed independently
@@ -241,23 +272,26 @@ def validate(d):
         if temp_ok:
             with na('Top-oil temperature rise', NAMES["temp"]):
                 oil = P["limits"]["oil"]
-                add("pass" if rises[-1] <= oil else "fail", "Top-oil temperature rise", f"{rises[-1]:.2f} K (limit {oil} K)",
-                    src=NAMES["temp"], found=f"{rises[-1]:.2f} K at the last hour", exp=f"{oil} K or less",
+                um = rule("temp_margin_inconclusive_k"); thin = 0 <= oil - rises[-1] < um
+                add("fail" if rises[-1] > oil else "warn" if thin else "pass", "Top-oil temperature rise", f"{rises[-1]:.2f} K (limit {oil} K" + (f", margin {oil - rises[-1]:.1f} K: inconclusive)" if thin else ")"),
+                    src=NAMES["temp"], found=f"{rises[-1]:.2f} K at the last hour", exp=f"{oil} K or less", basis=("temp_margin_inconclusive_k",), inconclusive=thin,
                     fix=None if rises[-1] <= oil else "Top-oil rise exceeds the limit; the sample fails this test unless a reading is wrong.")
         if wdg_ok:
             with na('Winding temperature rise', NAMES["temp"]):
                 w = P["limits"]["wdg"]
                 for nm, v in (("HV", hv), ("LV", lv)):
-                    add("fail" if v > w else "warn" if w - v < 1 else "pass", f"{nm} winding temperature rise", f"{v:.1f} K (limit {w} K, margin {w - v:.1f} K)",
-                        src=NAMES["temp"], found=f"{v:.1f} K (margin {w - v:.1f} K)", exp=f"{w} K or less",
+                    um = rule("temp_margin_inconclusive_k"); thin = 0 <= w - v < um
+                    add("fail" if v > w else "warn" if thin else "pass", f"{nm} winding temperature rise", f"{v:.1f} K (limit {w} K, margin {w - v:.1f} K" + (": inconclusive)" if thin else ")"),
+                        src=NAMES["temp"], found=f"{v:.1f} K (margin {w - v:.1f} K)", exp=f"{w} K or less", basis=("temp_margin_inconclusive_k",), inconclusive=thin,
                         fix="Exceeds the limit; check the hot and cold resistance readings." if v > w else
-                            "Passes, but by less than 1 K, so a small reading error could change the verdict. Double-check the hot resistance and the correction factor." if w - v < 1 else None)
+                            f"Inconclusive: within {um:g} K of the limit, so a small reading or correction-factor error could change the verdict. Re-check the hot resistance and the correction factor; the lab's own measurement uncertainty should decide this." if thin else None)
         if temp_ok:
             with na('Steady-state criterion (<=1 K/h)', NAMES["temp"]):
                 dd = [abs(rises[i + 1] - rises[i]) for i in range(len(rises) - 5, len(rises) - 1)]
-                add("pass" if max(dd) <= 1 else "warn", "Steady-state criterion (<=1 K/h)", f"Last-4-hour change in oil rise: max {max(dd):.2f} K",
-                    src=NAMES["temp"], found=f"{max(dd):.2f} K per hour over the last 4 hours", exp="1 K per hour or less",
-                    fix=None if max(dd) <= 1 else "The oil temperature had not settled; the test may have ended too early.")
+                ss = rule("steady_state_k_per_h")
+                add("pass" if max(dd) <= ss else "warn", "Steady-state criterion (<=1 K/h)", f"Last-4-hour change in oil rise: max {max(dd):.2f} K",
+                    src=NAMES["temp"], found=f"{max(dd):.2f} K per hour over the last 4 hours", exp=f"{ss:g} K per hour or less", basis=("steady_state_k_per_h",),
+                    fix=None if max(dd) <= ss else "The oil temperature had not settled; the test may have ended too early.")
         if temp_ok:
             with na('Reported vs computed oil rise', NAMES["temp"]):
                 if abs(T["oil_rise_reported"] - rises[-1]) > .1: add("warn", "Reported vs computed oil rise", f"Logsheet reports {T['oil_rise_reported']} K, last-hour computed {rises[-1]:.2f} K",
@@ -285,10 +319,11 @@ def validate(d):
                     src=NAMES["pressure"], found=f"{x['max']} mm logged as maximum", exp=f"{m:.2f} mm, the largest before/after difference",
                     fix=None if dok else "Re-check the deflection readings and the maximum written on the log.")
         with na('Oil leakage test', NAMES["pressure"]):
-            lok = "no" in Pr["leak"]["obs"].lower()
-            add("pass" if lok else "fail", "Oil leakage test", f"{Pr['leak']['kpa']} kPa for {Pr['leak']['hrs']} h: {Pr['leak']['obs']}",
+            lv = classify_observation(Pr["leak"]["obs"])
+            add({True: "pass", False: "fail", None: "warn"}[lv], "Oil leakage test", f"{Pr['leak']['kpa']} kPa for {Pr['leak']['hrs']} h: {Pr['leak']['obs']}",
                 src=NAMES["pressure"], found=Pr["leak"]["obs"], exp="No leakage at any point",
-                fix=None if lok else "Leakage was recorded; the sample fails the oil leakage test.")
+                fix=None if lv else "Leakage was recorded; the sample fails the oil leakage test." if lv is False
+                    else "The recorded observation could not be interpreted; check it against the scan.")
     # 9. additional log sheets of other types: no known limits, so only completeness and identifiers
     work_ids = (ids.get("work") or [None, None]) if isinstance(ids, dict) else [None, None]
     ws_all = norm(str(work_ids[0] or (d.get("work") or {}).get("series") or ""))[-7:]
@@ -498,7 +533,7 @@ def build_pdf(j, version=None, verify_url=None):
     if warns:
         E += [Paragraph("* Items flagged by automated validation and accepted by the reviewer at approval:" if j.get("approver") else
                         "* Items flagged by automated validation - to be confirmed by the reviewer before approval:", n), tbl([["Check", "Detail"]] + [[f["check"], f["detail"]] for f in warns])]
-    E += [Spacer(1, 14), tbl([["Test Engineer: " + W["engineer"], f"Approved by: {j['approver'] or '(pending)'}"]], head=False),
+    E += [Spacer(1, 14), tbl([["Test Engineer: " + W["engineer"], f"Approved by: {signed(j['approver'], j.get('approver_id')) or '(pending)'}"]], head=False),
           Paragraph("This report applies only to the sample tested and shall not be reproduced except in full. Auto-generated by Aletheia from digitised log sheets.", n)]
     if verify_url:
         from reportlab.graphics.barcode.qr import QrCodeWidget
@@ -516,6 +551,8 @@ ParagraphStyle_small = ParagraphStyle("c", fontSize=7.5, leading=9)
 
 # --------------------------------------------------------------------- API
 SERIES_RE, SAMPLE_RE = r"CPRIBLRSCL\d{2}T\d{4}", r"HVD\d{2}S\d{4}"
+EMP_RE = r"[A-Z0-9][A-Z0-9/-]{1,19}"  # the lab's employee ID format is not known, so only its shape is checked
+def signed(name, emp): return f"{name} (Employee ID {emp})" if name and emp else name  # reports approved before IDs were recorded show the name only
 REQ_KEYS = ("customer", "address", "serial", "tests", "criteria", "witness", "conformity", "rating")
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 
@@ -556,7 +593,7 @@ def data_changed(j, d, event):
     found = dict(customer=rq.get("customer") or wk.get("customer"), rating=rq.get("rating"), sample=wk.get("sample"))
     fill = {k: str(v).strip() for k, v in found.items() if j.get(k) in (None, "", "NA") and v and str(v).strip()
             and (k != "sample" or re.fullmatch(SAMPLE_RE, str(v).strip()))}
-    save(j["id"], data=d, stage=max(min(j["stage"], 1), 1), findings=[], approver=None, **fill)
+    save(j["id"], data=d, stage=max(min(j["stage"], 1), 1), findings=[], approver=None, approver_id=None, **fill)
     with db() as c: log(c, j["id"], event + (" - earlier report is now out of date" if stale else ""))
 
 def freeze(j):
@@ -565,7 +602,8 @@ def freeze(j):
     token = secrets.token_urlsafe(12)
     pdf = build_pdf(j, v, request.host_url + "verify/" + token).getvalue()
     sha = hashlib.sha256(pdf).hexdigest()
-    with db() as c: c.execute("INSERT INTO reports(job_id,version,token,sha256,pdf,approver,at) VALUES(?,?,?,?,?,?,?)", (j["id"], v, token, sha, pdf, j.get("approver"), now()))
+    with db() as c: c.execute("INSERT INTO reports(job_id,version,token,sha256,pdf,approver,approver_id,at) VALUES(?,?,?,?,?,?,?,?)",
+                         (j["id"], v, token, sha, pdf, j.get("approver"), j.get("approver_id"), now()))
     return v, sha
 
 @app.get("/")
@@ -837,10 +875,14 @@ def gen(i):
 
 @app.post("/api/jobs/<int:i>/approve")
 def approve(i):
-    j = getjob(i); name = str(body().get("name") or "").strip()
-    if j["stage"] < 3 or not name: return jsonify(error=["Generate the report and enter reviewer name first"]), 409
-    save(i, stage=4, approver=name); v, sha = freeze(getjob(i))
-    with db() as c: log(c, i, f"Approved by {name}; released for export (version {v}, SHA-256 {sha[:12]}...)")
+    """The approver's name and employee ID are both required; both are printed on the report and kept with each version."""
+    j = getjob(i); b = body(); name, emp = str(b.get("name") or "").strip(), str(b.get("employee_id") or "").strip().upper()
+    if j["stage"] < 3: return jsonify(error=["Generate the report before approving it"]), 409
+    err = ([] if name else ["Enter the approver's name"]) + (
+        ["Enter the approver's employee ID"] if not emp else [] if re.fullmatch(EMP_RE, emp) else ["Employee ID must be 2-20 letters, digits, '-' or '/'"])
+    if err: return jsonify(error=err), 400
+    save(i, stage=4, approver=name, approver_id=emp); v, sha = freeze(getjob(i))
+    with db() as c: log(c, i, f"Approved by {signed(name, emp)}; released for export (version {v}, SHA-256 {sha[:12]}...)")
     return jsonify(ok=True, version=v)
 
 def latest(i):
@@ -861,7 +903,7 @@ def verify(token):
         newest = c.execute("SELECT MAX(version) FROM reports WHERE job_id=?", (r["job_id"],)).fetchone()[0]
     intact = hashlib.sha256(r["pdf"]).hexdigest() == r["sha256"]; current = r["version"] == newest and j["stage"] >= 3
     return jsonify(series=j["series"], sample=j["sample"], customer=j["customer"], version=r["version"], sha256=r["sha256"], generated=r["at"],
-                   approver=r["approver"], intact=intact, current=current, approved=bool(r["approver"]) and current and j["stage"] == 4)
+                   approver=r["approver"], approver_id=r["approver_id"], intact=intact, current=current, approved=bool(r["approver"]) and current and j["stage"] == 4)
 
 @app.get("/verify/<token>")
 def verify_page(token): return send_from_directory(app.static_folder, "index.html")
@@ -876,7 +918,8 @@ def edit(i):
         if k in b: rq[k] = str(b[k]).strip()
     try:
         save(i, series=b["series"], sample=b["sample"], customer=b["customer"].strip(), rating=b["rating"].strip(), data=d,
-             stage=3 if j["stage"] == 4 else j["stage"], approver=None if j["stage"] == 4 else j["approver"])
+             stage=3 if j["stage"] == 4 else j["stage"], approver=None if j["stage"] == 4 else j["approver"],
+             approver_id=None if j["stage"] == 4 else j.get("approver_id"))
     except sqlite3.IntegrityError: return jsonify(error=["Series number already exists"]), 409
     note = ""
     if j["stage"] >= 3:
@@ -890,7 +933,7 @@ def discard(i):
     """Withdraw the generated report; record and imported data are kept (stage returns to 'Validated'). Stored versions stay verifiable as superseded."""
     j = getjob(i)
     if j["stage"] < 3: return jsonify(error=["No generated report to delete"]), 409
-    save(i, stage=2, approver=None)
+    save(i, stage=2, approver=None, approver_id=None)
     with db() as c: log(c, i, "Generated report withdrawn (record kept)")
     return jsonify(ok=True)
 

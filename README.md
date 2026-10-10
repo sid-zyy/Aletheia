@@ -25,7 +25,7 @@ To show historical records: **Records & Search** -> **Import existing register**
 2. **Import data** - drop a file on the job page. Data files are read; PDFs and images are kept as source documents.
 3. **Validate** - 30 checks: arithmetic re-computation, cross-document ID consistency, IS 1180 limits, thin margins.
 4. **Generate** - the PDF template is filled from the database and stored as a numbered, hashed version.
-5. **Review and export** - preview, print, download, approve with reviewer name. Every step is in the job history.
+5. **Review and export** - preview, print, download, approve with the reviewer's name and employee ID (both required; printed on the report). Every step is in the job history.
 
 Dashboard: pipeline counts, quality gate, charts against limits, search by series / sample / customer / rating, status filter.
 
@@ -99,7 +99,7 @@ tamper detection, source documents, and the AI reader (mocked): Gemini and OpenA
 ## Files
 
 `app.py` API, database, validation, PDF | `importers.py` CSV / Excel / SQLite / JSON readers and exporters |
-`vision.py` optional Gemini reader | `static/index.html` UI | `sample_data/` demo job in every format and two legacy registers |
+`vision.py` optional Gemini reader | `static/index.html` UI | `static/assistant.js` rule-based help assistant (no AI) | `sample_data/` demo job in every format and two legacy registers |
 `tests/` | `docs/ARCHITECTURE.md`
 
 ## Limits to know about
@@ -109,5 +109,9 @@ tamper detection, source documents, and the AI reader (mocked): Gemini and OpenA
 - Series and sample codes must match the CPRI patterns (`CPRIBLRSCL25T1654`, `HVD25S0847`), also for register rows.
 - Database import reads SQLite files. Other databases (Access, SQL Server, PostgreSQL) need a CSV or Excel export first.
   Legacy `.xls` must be saved as `.xlsx`.
-- No user accounts: the reviewer is a typed name. Run it on a trusted machine or network only.
+- No user accounts: the reviewer is a typed name and employee ID, not checked against a staff list. Run it on a trusted machine or network only.
 - Not an official CPRI system; reports are prototypes.
+
+## Validity
+
+Thresholds live in `rules.py`, each with its source and a status (`secondary` / `unconfirmed`); no lab engineer has confirmed any of them. See [docs/VALIDITY.md](docs/VALIDITY.md) for what is and is not established, and `tests/test_validity.py` for the mutation tests.
