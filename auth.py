@@ -1,7 +1,8 @@
 """Accounts, login and permissions (docs/NEXT_STEPS.md section 2).
 
-Roles: admin, tester, verifier, approver, customer. A user may hold several staff roles (tester + verifier, say), but
-admin is never combined with a role that touches test data, and customer is never combined with anything.
+Roles: admin, tester, customer (the verifier and approver roles were removed). Testers enter data, run the checks and verify
+each other's tests (never their own upload); the administrator approves a job once every test is verified, generates the
+report and signs it off. Admin is never combined with tester, and customer is never combined with anything.
 
 Every route must name its permission with @require(...) (or @public). A request to a route that names none is refused,
 so a new route cannot ship unprotected; tests/test_auth.py walks every route to keep it that way.
@@ -13,8 +14,9 @@ import datetime as dt, functools, os, re, secrets
 from flask import Blueprint, current_app, g, jsonify, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
-ROLES = ("admin", "tester", "approver", "customer")  # the verifier role was folded into admin
-STAFF = ("admin", "tester", "approver")
+ROLES = ("admin", "tester", "customer")
+LEGACY = {"verifier": "tester", "approver": "admin"}  # roles of earlier versions, converted by migrate_roles()
+STAFF = ("admin", "tester")
 # permission -> roles holding it. Server-enforced; the page only hides what a role cannot use.
 PERMS = {
     "jobs.view":        STAFF + ("customer",),  # customers are further limited to their organisation's jobs
@@ -23,11 +25,12 @@ PERMS = {
     "job.edit":         ("tester",),
     "job.delete":       ("admin",),             # only records that never had a released report
     "data.write":       ("tester",),            # import, enter / correct / remove sections, attach scans, AI reading
-    "data.check":       ("tester", "admin"),  # run checks, mark flagged items reviewed
-    "section.verify":   ("admin",),            # the administrator verifies tests and signs jobs off
-    "report.generate":  ("tester", "admin"),
-    "report.approve":   ("approver",),
-    "report.amend":     ("approver",),
+    "data.check":       ("tester",),           # run checks, mark flagged items reviewed
+    "section.verify":   ("tester",),           # verify, return, reopen, not applicable: never a test the tester uploaded
+    "job.signoff":      ("admin",),            # approve the job once every test is verified or not applicable
+    "report.generate":  ("admin",),
+    "report.approve":   ("admin",),            # sign off and release: an administrator who did not upload, check or verify the data
+    "report.amend":     ("admin",),            # with a second administrator as second signer
     "report.view":      STAFF + ("customer",),  # customers: released or partial reports of their own jobs only
     "data.export":      STAFF,
     "sources.view":     STAFF,
@@ -68,6 +71,23 @@ def init_db(c):
         roles TEXT NOT NULL, org_id INT REFERENCES orgs(id), email TEXT, test_types TEXT, password_hash TEXT NOT NULL,
         active INTEGER DEFAULT 1, must_change_password INTEGER DEFAULT 1, failed_attempts INTEGER DEFAULT 0, locked_until TEXT,
         session_epoch INTEGER DEFAULT 0, created_by INT, created_at TEXT, last_login TEXT);""")
+
+
+def migrate_roles(c, log=None):
+    """One-time conversion of the removed roles: a verifier becomes a tester, an approver an administrator. A user whose
+    roles would then combine admin with tester cannot be converted (separation of duties): nothing is changed and the
+    list of those users is returned, so the laboratory splits each into two accounts first. Returns [] when done."""
+    rows = [r for r in c.execute("SELECT id, username, roles FROM users") if any(x in LEGACY for x in user_roles(r))]
+    plan, clash = [], []
+    for r in rows:
+        new = sorted({LEGACY.get(x, x) for x in user_roles(r)})
+        if "admin" in new and len(new) > 1: clash.append(f"{r['username']} ({r['roles']})")
+        plan.append((r, new))
+    if clash: return clash
+    for r, new in plan:
+        c.execute("UPDATE users SET roles=?, session_epoch=session_epoch+1 WHERE id=?", (",".join(new), r["id"]))
+        if log: log(c, None, f"Role of {r['username']} converted: {r['roles']} -> {','.join(new)} (verifier and approver roles removed)", kind="admin")
+    return []
 
 
 def setup(app, db, log, key_folder):
@@ -211,7 +231,7 @@ def clean_roles(roles):
     if bad: return None, f"Unknown role: {', '.join(bad)}"
     if "customer" in roles and len(roles) > 1: return None, "A customer account cannot hold a laboratory role"
     if "admin" in roles and len(roles) > 1:
-        return None, "Admin cannot also be tester or approver (separation of duties); create a second account"
+        return None, "Admin cannot also be a tester (separation of duties); create a second account"
     return roles, None
 
 
@@ -259,7 +279,7 @@ def me():
     if u.get("org_id"):
         with _db() as c: r = c.execute("SELECT name FROM orgs WHERE id=?", (u["org_id"],)).fetchone()
         org = r[0] if r else None
-    return jsonify(user=dict(public_user(u), org=org), csrf=session["csrf"], perms=perms, setup_needed=False,
+    return jsonify(user=dict(public_user(u), org=org), csrf=session["csrf"], perms=perms, setup_needed=False, names=current_app.config.get("TEST_NAMES"),
                    idle_minutes=IDLE_MINUTES, passwords=PASSWORDS, features=dict(scan=bool(current_app.config.get("FEATURE_SCAN", os.environ.get("ALETHEIA_FEATURE_SCAN", "0") == "1"))))
 
 
@@ -365,7 +385,7 @@ def second_signer(username, password, role):
     me_ = current(); un = str(username or "").strip().lower()
     with _db() as c: r = c.execute("SELECT * FROM users WHERE username=?", (un,)).fetchone()
     if not r or r["id"] == me_["id"] or not r["active"] or role not in user_roles(r):
-        check_password_hash(_DUMMY, str(password or "")); return None, "The second signer must be another active " + role
+        check_password_hash(_DUMMY, str(password or "")); return None, "The second signer must be another active " + {"admin": "administrator"}.get(role, role)
     if r["locked_until"] and r["locked_until"] > now(): return None, "The second signer's account is locked"
     if PASSWORDS and not check_password_hash(r["password_hash"], str(password or "")):
         n = r["failed_attempts"] + 1

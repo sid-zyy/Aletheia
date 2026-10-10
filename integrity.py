@@ -19,7 +19,7 @@ MERGED = ("ids", "request", "other")  # sections built up from several files (me
 
 
 class Locked(Exception):
-    """A verified section: only a verifier's reopen (with a reason) makes it writable again."""
+    """A verified section: only a tester's reopen (with a reason) makes it writable again."""
     def __init__(self, key, row):
         super().__init__(key); self.key, self.row = key, row
 
@@ -269,9 +269,9 @@ TRIGGERS = {
     "sections_locked_delete": f"BEFORE DELETE ON sections WHEN {RELEASED.format(j='OLD.job_id')} BEGIN SELECT RAISE(ABORT, 'the report is released: its data is locked'); END",
     "sections_locked_insert": f"BEFORE INSERT ON sections WHEN {RELEASED.format(j='NEW.job_id')} BEGIN SELECT RAISE(ABORT, 'the report is released: its data is locked'); END",
     "sections_verified_data": "BEFORE UPDATE OF data ON sections WHEN OLD.state='verified' AND NEW.data IS NOT OLD.data "
-                              "BEGIN SELECT RAISE(ABORT, 'a verified section cannot be changed; a verifier must reopen it'); END",
+                              "BEGIN SELECT RAISE(ABORT, 'a verified section cannot be changed; a tester must reopen it'); END",
     "sections_verified_delete": "BEFORE DELETE ON sections WHEN OLD.state='verified' AND EXISTS(SELECT 1 FROM jobs WHERE id=OLD.job_id) "
-                                "BEGIN SELECT RAISE(ABORT, 'a verified section cannot be removed; a verifier must reopen it'); END",
+                                "BEGIN SELECT RAISE(ABORT, 'a verified section cannot be removed; a tester must reopen it'); END",
     # a released job changes only by opening an amendment (amend set in the same update)
     "jobs_released_locked": "BEFORE UPDATE OF series, sample, customer, rating, stage, approver, approver_id, findings, org_id, data, plan, intake, signed_off_by ON jobs "
                             "WHEN OLD.stage=4 AND OLD.archived=0 AND NEW.amend IS NULL BEGIN SELECT RAISE(ABORT, 'the report is released: the record is locked'); END",

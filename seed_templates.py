@@ -13,11 +13,11 @@ import re
 # field spec: (path, label, type[, required]) ; table spec: dict(table=path, caption, columns=[...], rows=n, **options)
 NUM, TXT, DATE = "number", "text", "date"
 SPECS = {
-    "work": ("Work instruction", "WI", [
+    "work": ("Work Instruction", "WI", [
         ("series", "Test series no.", TXT, True), ("sample", "Sample code no.", TXT, True), ("customer", "Customer", TXT),
         ("start", "Test started", DATE), ("completed", "Test completed", DATE), ("standard", "Standard", TXT),
         ("allotted", "Allotted to", TXT), ("engineer", "Test engineer", TXT, True)], ("@ids.work[0]", "@ids.work[1]")),
-    "proforma": ("Proforma for transformers", "PF", [
+    "proforma": ("Proforma for Transformers", "PF", [
         ("kva", "Rating (kVA)", NUM, True), ("hv", "HV voltage (V)", NUM, True), ("lv", "LV voltage (V)", NUM, True),
         ("hv_max_kv", "Highest system voltage (kV)", NUM), ("bil", "Insulation levels", TXT), ("z_pct", "Impedance at 75 C (%)", NUM, True),
         ("phases", "Phases", NUM), ("freq", "Frequency (Hz)", NUM), ("vector", "Vector group", TXT), ("cooling", "Cooling", TXT),
@@ -27,27 +27,27 @@ SPECS = {
         ("efficiency", "Energy efficiency level", TXT), ("coil", "Coil", TXT), ("core", "Core material", TXT),
         ("lv_winding", "LV winding details", TXT), ("hv_winding", "HV winding details", TXT),
         dict(table="tests", caption="Tests to be carried out", rows_as="values", rows=10, columns=[dict(label="Test", type=TXT)])], None),
-    "losses": ("Losses datasheet", "LS", [
+    "losses": ("Loss Measurement Datasheet", "LS", [
         ("nll_bt", "No-load loss before SC (W)", NUM), ("nll_at", "No-load loss after SC (W)", NUM),
         dict(table="rows", caption="Losses and impedance (75 C)", rows=9, required=True, columns=[
             dict(label="Tap / condition", type=TXT), dict(label="%Z"), dict(label="%X"), dict(label="%X change"), dict(label="R HV (ohm)"),
             dict(label="R LV (mohm)"), dict(label="Load loss 100% (W)"), dict(label="X/R"), dict(label="Isc peak (kA)"), dict(label="Isc rms (kA)"),
             dict(label="Stray loss (W)"), dict(label="Load loss 50% (W)"), dict(label="Total loss 50% (W)"), dict(label="Total loss 100% (W)")])],
         ("@ids.losses[0]", "@ids.losses[1]"), [dict(field="cols", by="const", value=["tap", "z", "x", "xchg", "rhv", "rlv", "ll100", "xr", "ipk", "irms", "stray", "ll50", "t50", "t100"])]),
-    "resistance": ("Losses logsheet (resistance)", "RS", [
+    "resistance": ("Winding Resistance and Loss Logsheet", "RS", [
         ("date_bt", "Date, before SC", DATE), ("date_at", "Date, after SC", DATE), ("oil_top[0]", "Top oil before (C)", NUM),
         ("oil_top[1]", "Top oil after (C)", NUM), ("oil_bot[0]", "Bottom oil before (C)", NUM), ("oil_bot[1]", "Bottom oil after (C)", NUM),
         dict(table="hv", caption="Winding resistance (HV ohm, LV milli-ohm)", rows=4, rows_as="dict", keys=["N", "H", "L"], required=True, columns=[
             dict(label="Tap / winding", type=TXT), dict(group=["BT R1", "BT R2", "BT R3"], title="Before short circuit"),
             dict(group=["AT R1", "AT R2", "AT R3"], title="After short circuit")]),
         dict(table="lv", share="hv", rows_as="row", key="LV", required=True)], ("@ids.resistance[0]", "@ids.resistance[1]")),
-    "noload": ("Losses logsheet (no-load)", "NL", [
+    "noload": ("No-Load Loss and Current Logsheet", "NL", [
         ("v100", "Rated voltage, 100% (V)", NUM), ("v1125", "Voltage at 112.5% (V)", NUM), ("remarks", "Remarks", TXT),
         dict(table="rows", caption="No-load readings", rows=6, required=True, columns=[
             dict(label="Condition", type=TXT), dict(group=["V1", "V2", "V3"], title="Voltage (V)"), dict(label="Average V"),
             dict(group=["I1", "I2", "I3"], title="Current (A)"), dict(label="Average I"), dict(group=["W1", "W2", "W3"], title="Watts"),
             dict(label="Total W"), dict(label="Frequency (Hz)"), dict(label="Corrected loss (W)")])], ("@ids.noload[0]", "@ids.noload[1]")),
-    "routine": ("Routine test logsheet", "RT", [
+    "routine": ("Routine Test Logsheet", "RT", [
         ("date_bt", "Date, before SC", DATE), ("date_at", "Date, after SC", DATE), ("amb[0]", "Ambient before (C)", NUM), ("amb[1]", "Ambient after (C)", NUM),
         ("rh[0]", "RH before (%)", NUM), ("rh[1]", "RH after (%)", NUM), ("vector", "Vector group (measured)", TXT),
         ("induced.v", "Induced test voltage (V)", NUM), ("induced.f", "Induced test frequency (Hz)", NUM), ("induced.t", "Induced test duration (s)", NUM),
@@ -59,7 +59,7 @@ SPECS = {
             dict(label="Tap no.", type=TXT), dict(group=["BT 1U", "BT 1V", "BT 1W"], title="Before short circuit"),
             dict(group=["AT 1U", "AT 1V", "AT 1W"], title="After short circuit")]),
         dict(table="ratio.AT", share="ratio.BT", pick=2)], ("@ids.routine[0]", "@ids.routine[1]")),
-    "sc": ("Short-circuit logsheet", "SC", [
+    "sc": ("Short-Circuit Withstand Test Logsheet", "SC", [
         ("date", "Date of test", DATE), ("condition", "Condition of sample", TXT), ("during", "Observation during test", TXT),
         ("after", "Observation after test", TXT), ("inspection", "Untanking / inspection", TXT),
         dict(table="required", caption="Required test currents", rows=3, rows_as="dict", required=True, columns=[
@@ -68,7 +68,7 @@ SPECS = {
             dict(label="Oscillogram no.", type=TXT), dict(label="Tap position", type=TXT), dict(label="Setting (as logged)"), dict(label="Peak (kA)"),
             dict(label="RMS U (kA)"), dict(label="RMS V (kA)"), dict(label="RMS W (kA)"), dict(label="Average rms (kA)"), dict(label="Duration (s)"),
             dict(label="Note", type=TXT, blank="")])], ("@ids.sc[0]", "@ids.sc[1]")),
-    "temp": ("Temperature-rise logsheet", "TR", [
+    "temp": ("Temperature-Rise Test Logsheet", "TR", [
         ("dates", "Date(s) of test", TXT), ("tap", "Tap position", TXT), ("current", "Test current (A)", NUM), ("nll", "No-load loss (W)", NUM),
         ("fll", "Full-load loss (W)", NUM), ("total", "Total loss injected (W)", NUM), ("rhv_cold", "HV cold resistance (ohm)", NUM),
         ("rlv_cold", "LV cold resistance (mohm)", NUM), ("amb_cold", "Ambient at cold resistance (C)", NUM), ("rhv_hot", "HV hot resistance (ohm)", NUM),
@@ -79,7 +79,7 @@ SPECS = {
         dict(table="hours", caption="Hourly readings", rows=24, required=True, columns=[
             dict(label="Hour"), dict(label="Top oil (C)"), dict(label="Bottom oil (C)"), dict(label="Ambient 1 (C)"), dict(label="Ambient 2 (C)"), dict(label="Ambient 3 (C)")])],
         ("@ids.temp[0]", "@ids.temp[1]")),
-    "pressure": ("Pressure / oil-leakage logsheet", "PR", [
+    "pressure": ("Pressure and Oil-Leakage Test Logsheet", "PR", [
         ("amb", "Ambient (C)", NUM), ("atm_kpa", "Atmospheric pressure (kPa)", NUM), ("plate_m", "Plate / tank height (m)", NUM), ("routine.kpa", "Routine pressure (kPa)", NUM),
         ("routine.min", "Routine pressure duration (min)", NUM), ("routine.date", "Routine pressure date", DATE), ("routine.obs", "Routine pressure observation", TXT),
         ("type.date", "Type tests date(s)", TXT), ("type.pressure.kpa", "Type pressure (kPa)", NUM), ("type.pressure.min", "Type pressure duration (min)", NUM),
@@ -129,7 +129,7 @@ def layout(section):
             row += f.get("rows", 5) + (2 if any("group" in c for c in f["columns"]) else 1) + 3
         fields.append(f)
     for c in consts or []: fields.append(dict(c))
-    return dict(section=section, title=title, sheet_title=title, version=1, kind="logsheet",
+    return dict(section=section, title=title, sheet_title=title if len(title) <= 31 else title.removesuffix(" Logsheet")[:31], version=1, kind="logsheet",
                 fingerprint=dict(contains=f"Aletheia template {section}", within="A1:L3"), fields=fields)
 
 
@@ -144,12 +144,12 @@ REQUEST_FIELDS = (("customer", "Customer name"), ("address", "Address (street, a
 def request_form():
     """The customer request form, sent to the customer as an Excel file and read back at intake (labels, not fixed cells)."""
     fields = [dict(field=k, label=l, cell=f"B{4 + n}", name=f"RQ_{k.upper()}", type="text", by=["name", "label", "cell"]) for n, (k, l) in enumerate(REQUEST_FIELDS)]
-    return dict(section="request", title="Customer request form", sheet_title="Customer request form", version=1, kind="request_form",
+    return dict(section="request", title="Customer Request Form", sheet_title="Customer Request Form", version=1, kind="request_form",
                 fingerprint=dict(contains="Aletheia template request", within="A1:L3"), fields=fields)
 
 
 def all_templates():
     """[(key, kind, section, name, mapping)] for the first start."""
     out = [(f"{s}-std", "logsheet", s, SPECS[s][0], layout(s)) for s in SPECS]
-    out.append(("request-form", "request_form", "request", "Customer request form", request_form()))
+    out.append(("request-form", "request_form", "request", "Customer Request Form", request_form()))
     return out

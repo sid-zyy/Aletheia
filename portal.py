@@ -38,7 +38,7 @@ _building = threading.Lock()
 
 def refresh(i):
     """Store a new partial report if the approved tests (or their revisions) changed since the last one. Returns its version.
-    Two verifiers approving tests of one job at the same moment must not both claim the next version number: rebuilds are
+    Two testers verifying tests of one job at the same moment must not both claim the next version number: rebuilds are
     serialised, and a version taken by another process meanwhile (UNIQUE) makes it re-read the job and try again."""
     with _building:
         for _ in range(3):
@@ -58,7 +58,7 @@ def _refresh(i):
     if not keys and not last: return None  # nothing approved yet, and nothing shown before: no partial report
     # (a test reopened after approval produces a new version without it, so the customer no longer sees its values)
     v = (last["version"] if last else 0) + 1
-    name = lambda k: A.NAMES.get(k, {"ids": "Identifiers on each sheet", "other": "Additional log sheets"}.get(k, k))
+    name = A.name
     plan = [p["key"] for p in j["progress"]]
     part = dict(version=v, approved=[name(k) for k in keys if k in A.NAMES or k == "other"],
                 pending=[p["name"] for p in j["progress"] if p["key"] not in keys and p["state"] != "na"],
@@ -159,7 +159,8 @@ def install(app_module):
             A.log(c, None, f"Test request {fid} received from customer {org[0] if org else ''} ({len(plan)} tests)" +
                   (f", replacing request {old['id']}" if old else ""), kind="job")
             A.notify.notify(c, A.notify.users_with(c, "tester") + A.notify.users_with(c, "admin"), None, "form",
-                            f"New test request from {org[0] if org else 'a customer'}" + (" (corrected)" if old else ""))
+                            f"New test request {fid} from {org[0] if org else 'a customer'}" + (" (corrected)" if old else "") + ": open it to accept or return it",
+                            target=f"intake/r{fid}")
         return jsonify(id=fid), 201
 
     @app.post("/api/customer/requests/check")
@@ -216,9 +217,11 @@ def install(app_module):
     @auth.require("request.receive")
     def form_read(fid):
         """A customer's request as they sent it, for the intake page (the laboratory does not change the customer's answers)."""
-        with A.db() as c: r = c.execute("SELECT * FROM customer_forms WHERE id=?", (fid,)).fetchone()
+        with A.db() as c:
+            r = c.execute("SELECT * FROM customer_forms WHERE id=?", (fid,)).fetchone()
+            job = c.execute("SELECT id, series FROM jobs WHERE id=?", (r["job_id"],)).fetchone() if r and r["job_id"] else None
         if not r: abort(404)
         if r["kind"] != "web": return jsonify(error=["This request was not filled in online: ask the customer to send it through the portal"]), 409
         errs, warns, _ = A.workflow.check_request(json.loads(r["data"] or "{}"))
         return jsonify(values=json.loads(r["data"]), plan=json.loads(r["plan"] or "[]"), org_id=r["org_id"], status=r["status"], note=r["note"],
-                       at=r["at"], problems=errs, warnings=warns)
+                       at=r["at"], problems=errs, warnings=warns, job=dict(job) if job else None)

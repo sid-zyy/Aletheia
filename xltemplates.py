@@ -4,12 +4,12 @@ A template is data, not code: a JSON mapping stored in the database. When the la
 the mapping and the Python does not change. One mapping does two jobs:
 
 * read a filled sheet: every mapped value comes back with the cell it was read from and a status, so the tester (and later
-  the verifier) can see exactly where each number came from;
+  the tester verifying it) can see exactly where each number came from;
 * write a blank sheet (and fill one from stored data), so testers always start from the current layout, with named cells.
 
 Mapping (one sheet):
 
-    {"section": "noload", "title": "Losses logsheet (no-load)",
+    {"section": "noload", "title": "No-Load Loss and Current Logsheet",
      "fingerprint": {"contains": "Aletheia template noload", "within": "A1:L3"},
      "fields": [
        {"field": "v100", "label": "Rated voltage V (100%)", "cell": "C5", "name": "NL_V100", "type": "number", "required": true},

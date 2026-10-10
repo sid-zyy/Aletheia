@@ -9,7 +9,7 @@ new MutationObserver(()=>{if(PW)return;document.querySelectorAll('input[type=pas
 
 let ME=null,PERMS=[],CSRF='';
 const can=p=>PERMS.includes(p),isCust=()=>!!ME&&ME.roles.includes('customer');
-const ROLE_LBL={admin:'Admin',tester:'Tester',approver:'Approver',customer:'Customer'};
+const ROLE_LBL={admin:'Admin',tester:'Tester',customer:'Customer'};
 (()=>{const s=document.createElement('style');s.textContent=`
 .gate{min-height:100vh;display:grid;place-items:center;padding:24px 16px;background:linear-gradient(160deg,#12315f,#1c4f9c 55%,#2a6fc4)}
 .gate .card{width:100%;max-width:420px;margin:0}.gate h1{font-size:24px}.gate label{display:block;font-size:13px;font-weight:600;color:var(--mu);margin:14px 0 6px}
@@ -18,7 +18,11 @@ const ROLE_LBL={admin:'Admin',tester:'Tester',approver:'Approver',customer:'Cust
 .uchip{display:flex;gap:10px;align-items:center;white-space:nowrap}.uchip b{font-size:14px}.uchip small{display:block;color:var(--mu);font-size:12px;line-height:1.2}
 .rl{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--ac2);color:var(--ac);margin:0 4px 4px 0}
 .ut{width:100%;border-collapse:collapse;font-size:14px}.ut th{text-align:left;color:var(--mu);font-size:12.5px;font-weight:600;padding:8px 10px;border-bottom:1px solid var(--ln)}
-.ut td{padding:10px;border-bottom:1px solid var(--ln);vertical-align:top}.ut tr.off td{color:var(--mu)}.scroll{overflow-x:auto}
+.ut td{padding:10px;border-bottom:1px solid var(--ln);vertical-align:top}.ut thead th{position:sticky;top:0;background:var(--cd)}
+.adh{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu);margin:22px 0 4px}.adh:first-of-type{margin-top:6px}
+.ae{border-top:1px solid var(--ln)}.ae>summary{display:grid;grid-template-columns:48px 1fr auto;gap:14px;align-items:start;padding:12px 4px;cursor:pointer;list-style:none;font-size:14.5px;line-height:1.55}.ae>summary::-webkit-details-marker{display:none}.ae>summary:hover{background:var(--cd2);border-radius:8px}
+.ae .at{color:var(--mu);font-variant-numeric:tabular-nums}.ae .aw{min-width:0;overflow-wrap:anywhere}.ae.den .aw{color:var(--er)}.rl.rf{background:var(--er2);color:var(--er)}
+@media(max-width:700px){.ae>summary{grid-template-columns:42px 1fr}.ae>summary .rl{grid-column:2;justify-self:start}.ae .fb{margin-left:0!important}}.ut tr.off td{color:var(--mu)}.scroll{overflow-x:auto}
 .chk{display:flex;gap:14px;flex-wrap:wrap}.chk label{display:flex;gap:6px;align-items:center;font-size:14px;margin:0;font-weight:500;color:var(--tx)}
 .frm label{display:block;font-size:13px;font-weight:600;color:var(--mu);margin:12px 0 6px}.frm .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media(max-width:600px){.frm .row2{grid-template-columns:1fr}.uchip small{display:none}}
@@ -42,7 +46,7 @@ async function boot(){let m;try{m=await(await fetch('/api/me',{cache:'no-store'}
 /* timestamps are legal records: warn when this workstation's clock and the server's disagree */
 async function clockCheck(){try{const t0=Date.now(),r=await(await fetch('/api/time')).json(),off=(new Date(r.utc)-(t0+Date.now())/2)/1000;
  if(Math.abs(off)>120){const b=document.createElement('div');b.className='stale';b.setAttribute('role','alert');b.innerHTML=`<b>This computer's clock differs from the server's by ${Math.round(Math.abs(off)/60)} minutes.</b> Times recorded by Aletheia use the server clock; ask the administrator to correct whichever clock is wrong.`;$('#tb').after(b)}}catch(e){}}
-function setMe(m){ME=m.user;PERMS=m.perms||[];CSRF=m.csrf||'';document.body.classList.toggle('cust',isCust());document.body.classList.toggle('no-scan',!(m.features||{}).scan);roleClasses()}
+function setMe(m){ME=m.user;PERMS=m.perms||[];CSRF=m.csrf||'';if(m.names&&typeof SECN=='object')Object.assign(SECN,m.names);document.body.classList.toggle('cust',isCust());document.body.classList.toggle('no-scan',!(m.features||{}).scan);roleClasses()}
 let OBS=null;
 function shell(){if(!$('.shell'))document.body.innerHTML=SHELL_HTML;if($('#app')!==OBS){OBS=$('#app');new MutationObserver(anim).observe(OBS,{childList:true})}}
 const SHELL_HTML='<div class="shell"><aside id="nav"></aside><div class="col"><div class="tbar" id="tb"></div><main id="app"></main><footer>Central Power Research Institute, Bengaluru &middot; Ministry of Power, Govt. of India &middot; Short Circuit Laboratory</footer></div></div><div id="toast"></div>';
@@ -79,8 +83,8 @@ async function usersPage(){const [us,os]=await Promise.all([api('/api/users'),ap
 async function userForm(u){const os=await api('/api/orgs'),R=u?u.roles:['tester'];
  modal(`<h2>${u?'Edit '+esc(u.username):'New user'}</h2><form id="uf" class="frm">${u?'':`<label for="un">Username</label><input class="in" id="un" required placeholder="e.g. a.rao" autocomplete="off">`}
  <div class="row2"><div><label for="ufn">Full name</label><input class="in" id="ufn" required value="${esc(u?u.full_name:'')}"></div><div><label for="uem">Employee ID (staff)</label><input class="in" id="uem" value="${esc(u?u.employee_id||'':'')}"></div></div>
- <label>Role</label><div class="chk">${Object.entries(ROLE_LBL).filter(([k])=>k!='customer'||R.includes('customer')).map(([k,l])=>`<label><input type="checkbox" name="ro" value="${k}" ${R.includes(k)?'checked':''}> ${l}</label>`).join('')}</div>
- <p class="note">Tester, Verifier and Approver can be combined. Admin and Customer stand alone (separation of duties).</p>
+ <label>Role</label><div class="chk">${Object.entries(ROLE_LBL).filter(([k])=>k!='customer'||R.includes('customer')).map(([k,l])=>`<label><input type="radio" name="ro" value="${k}" ${R.includes(k)?'checked':''}> ${l}</label>`).join('')}</div>
+ <p class="note">Choose one role. Testers enter data, run the checks and verify each other's tests; the administrator approves, generates and signs off reports. Admin and Tester are never combined (separation of duties).</p>
  <div id="orgw"><label for="uorg">Customer organisation</label><select id="uorg"><option value="">Choose...</option>${os.map(o=>`<option value="${o.id}" ${u&&u.org_id==o.id?'selected':''}>${esc(o.name)}</option>`).join('')}</select></div>
  <div class="row2"><div><label for="uml">Email (notifications)</label><input class="in" id="uml" type="email" value="${esc(u?u.email||'':'')}"></div><div><label for="utt">Certified tests (testers; empty = all)</label><input class="in" id="utt" placeholder="e.g. sc, temp" value="${esc(u?u.test_types||'':'')}"></div></div>
  ${u?`<label class="chk" style="margin-top:14px"><label><input type="checkbox" id="uact" ${u.active?'checked':''}> Account active</label></label>`:`<label for="upw">Temporary password (the user must change it at first sign-in)</label><input class="in" id="upw" type="text" required minlength="10" autocomplete="off">`}
@@ -104,15 +108,21 @@ async function endSess(id){try{await api(`/api/users/${id}/end-sessions`,{});toa
 
 /* ---------------------------------------------------------------- Admin: audit log */
 let AF={job:'',user:'',kind:'',from:'',to:''};
+const AK={job:'Job and intake',data:'Test data',check:'Checks',verify:'Verification',report:'Report',approve:'Approval and release',admin:'Administration',auth:'Sign-in',denied:'Refused',notify:'Notification',ticket:'Ticket',event:'Other'};
 async function auditPage(){const q=new URLSearchParams(Object.entries(AF).filter(([,v])=>v)).toString(),r=await api('/api/audit?'+q);
- const K=['','job','data','check','verify','report','approve','admin','auth','denied','notify','event'];
- $('#app').innerHTML=head('Audit log','Every action with who did it, from which workstation and when. Entries are chained: changing or deleting one breaks the chain.',`<button class="btn g" onclick="chainCheck()">Check the chain</button>`)+
+ const lday=t=>new Date(t-new Date(t).getTimezoneOffset()*6e4).toISOString().slice(0,10),today=lday(Date.now()),yest=lday(Date.now()-864e5),dayName=d=>d==today?'Today':d==yest?'Yesterday':new Date(d+'T12:00').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+ const days=[];r.rows.forEach(a=>{const d=a.at.slice(0,10);if(!days.length||days[days.length-1][0]!=d)days.push([d,[]]);days[days.length-1][1].push(a)});
+ const who=a=>String(a.actor||'System').replace(/\s*\([^)]*\)$/,'');
+ const entry=a=>`<details class="ae${a.kind=='denied'?' den':''}"><summary><span class="at">${esc(a.at.slice(11,16))}</span><span class="aw"><b>${esc(who(a))}</b> ${esc(a.event.replace(/^Refused: /,''))}${a.series?` <a class="lk" style="padding:0" href="#/job/${a.job_id}" onclick="event.stopPropagation()">${esc(a.series)}</a>`:''}</span><span class="rl${a.kind=='denied'?' rf':''}">${esc(AK[a.kind||'event']||a.kind)}</span></summary>
+  <dl class="fb" style="margin:0 0 12px 62px"><dt>Entry</dt><dd>${a.id}</dd><dt>When</dt><dd>${esc(a.at.replace('T',' '))}</dd><dt>Account</dt><dd>${esc(a.actor||'system')}${a.role?' &middot; '+esc(a.role):''}</dd>${a.ip?`<dt>Workstation</dt><dd>${esc(a.ip)}</dd>`:''}<dt>Recorded text</dt><dd>${esc(a.event)}</dd></dl></details>`;
+ $('#app').innerHTML=head('Audit log','Who did what, to which job, and when. Entries are chained: changing or deleting one breaks the chain.',`<button class="btn" onclick="chainCheck()">Check the chain</button>`)+
  `<div class="card"><div class="fbar">
- <div><label for="af_job">Series or job</label><input class="in" id="af_job" value="${esc(AF.job)}"></div><div><label for="af_user">User</label><input class="in" id="af_user" value="${esc(AF.user)}"></div>
- <div><label for="af_kind">Kind</label><select id="af_kind">${K.map(k=>`<option value="${k}" ${AF.kind==k?'selected':''}>${k||'All'}</option>`).join('')}</select></div>
+ <div><label for="af_user">Person</label><input class="in" id="af_user" value="${esc(AF.user)}" placeholder="Name or username"></div><div><label for="af_job">Job</label><input class="in" id="af_job" value="${esc(AF.job)}" placeholder="Series number"></div>
+ <div><label for="af_kind">Action type</label><select id="af_kind">${['',...Object.keys(AK)].map(k=>`<option value="${k}" ${AF.kind==k?'selected':''}>${k?AK[k]:'All actions'}</option>`).join('')}</select></div>
  <div><label for="af_from">From</label><input class="in" type="date" id="af_from" value="${esc(AF.from)}"></div><div><label for="af_to">To</label><input class="in" type="date" id="af_to" value="${esc(AF.to)}"></div>
  <div><label aria-hidden="true">&nbsp;</label><button class="btn" onclick="AF={job:$('#af_job').value,user:$('#af_user').value,kind:$('#af_kind').value,from:$('#af_from').value,to:$('#af_to').value};auditPage()">Filter</button></div></div></div>
- <div class="card"><h2>${r.rows.length}${r.more?'+':''} entr${r.rows.length==1?'y':'ies'}, newest first</h2><div class="scroll"><table class="ut"><thead><tr><th>When</th><th>Who</th><th>Kind</th><th>Job</th><th>What</th></tr></thead><tbody>${r.rows.map(a=>`<tr><td style="white-space:nowrap">${esc(a.at.replace('T',' '))}</td><td>${esc(a.actor||'system')}${a.ip?`<div class="note" style="margin:0">${esc(a.ip)}</div>`:''}</td><td><span class="rl">${esc(a.kind||'event')}</span></td><td>${a.series?`<a class="lk" style="padding:0" href="#/job/${a.job_id}">${esc(a.series)}</a>`:''}</td><td>${esc(a.event)}</td></tr>`).join('')}</tbody></table></div></div>`}
+ <div class="card"><div class="rvh" style="margin-bottom:6px"><h2>${r.rows.length}${r.more?'+':''} entr${r.rows.length==1?'y':'ies'}</h2><span class="note">newest first &middot; open an entry for its technical details</span></div>
+ ${days.map(([d,l])=>`<h3 class="adh">${dayName(d)}</h3>${l.map(entry).join('')}`).join('')||'<p class="note">No entries match these filters.</p>'}</div>`}
 async function chainCheck(){try{const r=await api('/api/audit/verify');r.ok?toast(`Audit chain intact (${r.checked} entries)`):toast(`Audit chain broken at entry ${r.broken_at}: ${r.reason}`,1)}catch(e){toast(e,1)}}
 
 /* ---------------------------------------------------------------- Customer: my jobs */

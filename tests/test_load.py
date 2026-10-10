@@ -1,7 +1,7 @@
 """Several people at once (NEXT_STEPS.md phase 7: "load test with 5+ simultaneous users").
 
 Eight sessions run together against one database: three testers uploading (each to their own job, and all three into one
-shared job, different tests), two verifiers verifying whatever is waiting, a customer reloading the portal and an
+shared job, different tests), two more testers verifying whatever the others uploaded, a customer reloading the portal and an
 administrator reading the audit log. Afterwards: no request failed with a server error, nothing uploaded was lost, every
 section's history is complete, and the audit chain is intact.
 """
@@ -23,7 +23,7 @@ def users():
                 c.execute("INSERT INTO users(username,full_name,employee_id,roles,password_hash,must_change_password,created_at) VALUES(?,?,?,?,?,0,'x')",
                           (f"load.t{n}", f"Load Tester {n}", f"E80{n}", "tester", h))
         if not c.execute("SELECT 1 FROM users WHERE username='load.v1'").fetchone():
-            c.execute("INSERT INTO users(username,full_name,employee_id,roles,password_hash,must_change_password,created_at) VALUES('load.v1','Load Verifier','E809','admin',?,0,'x')", (h,))
+            c.execute("INSERT INTO users(username,full_name,employee_id,roles,password_hash,must_change_password,created_at) VALUES('load.v1','Load Verifier','E809','tester',?,0,'x')", (h,))
 
 
 class Load(Base):
@@ -45,7 +45,7 @@ class Load(Base):
                     if r.status_code == 200:
                         accepted[k] = rnd
                         with lock: n_ok[0] += 1
-                    elif r.status_code != 409:  # 409: a verifier had verified it meanwhile, so it is locked (correct)
+                    elif r.status_code != 409:  # 409: another tester had verified it meanwhile, so it is locked (correct)
                         with lock: errors.append(f"t{n}: import {k} {r.status_code} {r.get_json()}")
                 record(f"t{n}", c.post(f"/api/jobs/{own[n]}/import", json=dict(filename=f"own_{rnd}.json", content={"sc": dict(DEMO["sc"], _round=rnd)})))
                 record(f"t{n}", c.get(f"/api/jobs/{shared}"))
@@ -66,7 +66,7 @@ class Load(Base):
                   [threading.Thread(target=verifier, args=(u,)) for u in ("s.iyer", "load.v1")] + \
                   [threading.Thread(target=reader, args=(signed_in("admin"), "/api/audit", "admin")),
                    threading.Thread(target=reader, args=(signed_in("t.rao"), "/api/my-work", "t.rao")),
-                   threading.Thread(target=reader, args=(signed_in("r.viewer"), "/api/jobs", "approver"))]
+                   threading.Thread(target=reader, args=(signed_in("r.viewer"), "/api/jobs", "r.viewer"))]
         t0 = time.time()
         for t in threads: t.start()
         for t in threads: t.join(timeout=300)
@@ -74,7 +74,7 @@ class Load(Base):
         d = self.get(shared)
         for k in keys:  # every test holds the last upload that was accepted (later ones were refused once it was verified)
             self.assertEqual(d["data"][k].get("_round"), accepted[k], k)
-        self.assertTrue(any(m["state"] == "verified" for m in d["meta"].values()))  # the verifiers really worked alongside
+        self.assertTrue(any(m["state"] == "verified" for m in d["meta"].values()))  # the verifying testers really worked alongside
         with aletheia.db() as c:
             for k in keys:
                 revs = [r[0] for r in c.execute("SELECT revision FROM section_history WHERE job_id=? AND key=? ORDER BY id", (shared, k))]

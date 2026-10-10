@@ -70,7 +70,7 @@ async function custRequestPage(fid){const [F,old]=await Promise.all([api('/api/i
 
 /* the customer's requests, on their "Open requests" page */
 async function custForms(){const l=await api('/api/customer/request-forms'),el=document.createElement('div');
- el.innerHTML=`<div class="card"><div class="wh"><h2 style="margin:0">Test requests</h2><a class="btn" href="#/my/request">New test request</a></div>
+ el.innerHTML=`<div class="card"><div class="wh"><h2 style="margin:0">Test requests</h2></div>
   <p class="note">Fill in the Customer Request Form online; the laboratory receives it and opens the job when your sample arrives.</p>${l.length?l.map(f=>{const [c,t]=QS[f.status]||['uploaded',f.status];
    return `<div class="ps"><span>Request ${f.id} <small class="sby">sent ${esc(f.at.replace('T',' ').slice(0,16))}</small>${f.status=='returned'&&f.note?`<div class="note" style="margin:2px 0 0;color:var(--er)">Reason: ${esc(f.note)}</div>`:''}</span>
     <span style="display:flex;gap:8px;align-items:center"><span class="pst ${c}">${f.status=='used'&&f.series?'Job '+esc(f.series):esc(t)}</span>${f.status=='returned'?`<a class="btn g s" href="#/my/request/${f.id}">Correct and send again</a>`:''}</span></div>`}).join(''):'<div class="empty">No requests yet.</div>'}</div>`;
@@ -94,18 +94,19 @@ const labCollect=F=>({...qCollect(F.lab,'l_'),plan:[...document.querySelectorAll
 
 async function receivePage(fid){const [F,r]=await Promise.all([api('/api/intake/fields'),api(`/api/request-forms/${fid}/read`,{})]);
  const s1=F.fields.filter(f=>f.sheet==1),s2=F.fields.filter(f=>f.sheet==2),v=r.values,open=r.status=='received';
- $('#app').innerHTML=`<button class="back" onclick="go('intake')">&larr; Customer requests</button>`+head(`Customer request ${fid}`,`Sent ${esc(r.at.replace('T',' ').slice(0,16))} and signed by ${esc(v.signed_name||'')}. The customer's answers are shown as sent; the laboratory does not change them.`+(open?'':` Status: <b>${esc(r.status)}</b>.`))+
+ $('#app').innerHTML=`<button class="back" onclick="go('intake')">&larr; Customer requests</button>`+head(`Customer request ${fid}`,`Sent ${esc(r.at.replace('T',' ').slice(0,16))} and signed by ${esc(v.signed_name||'')}. The customer's answers are shown as sent; the laboratory does not change them.`+(open?'':''))+
+  (open?'':`<div class="ib ${r.status=='returned'?'no':'ok'}" style="margin-bottom:16px"><span>${r.status=='used'?`Already accepted${r.job?`: job <b>${esc(r.job.series)}</b>`:''}.`:r.status=='returned'?`Returned to the customer${r.note?`: ${esc(r.note)}`:''}.`:r.status=='replaced'?'Replaced by a corrected request from the customer.':'Status: '+esc(r.status)}</span>${r.job?`<a class="btn g s" href="#/job/${r.job.id}">Open the job</a>`:''}</div>`)+
   (r.problems.length?`<div class="errs"><b>This request has problems the customer must correct</b><ul>${r.problems.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:'')+
   `<div class="qf">${qHead(F,1)}${qFields(s1,v,'v_',true,F,{tests:`<div class="qr"><div class="ql">Tests ticked by the customer</div><div class="qc">:</div><div class="qv">${r.plan.map(k=>esc(F.tests[k]||k)).join(', ')||'-'}</div></div>`})}</div>
   <div class="qf">${qHead(F,2)}${qFields(s2,v,'v_',true,F)}<div class="qsig"><div></div><div style="text-align:right">Customers Name &amp; Signature with Date<br><b>${esc(v.signed_name||'')}</b> &middot; ${esc(String(v.signed_at||r.at).slice(0,10))}</div></div></div>`+
   (open?labBlock(F,{condition:'Suitable for Testing',capability:'Yes'},null,r.plan,true)+
-   `<div id="iv"></div><div class="card" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><button class="btn g" id="iret">Return to the customer</button><span style="display:flex;gap:10px"><button class="btn g" id="ick">Check for problems</button><button class="btn lg" id="isv">Accept and allocate numbers</button></span></div>`:'');
+   `<div id="iv"></div><div class="card" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><button class="btn g" id="iret">Return to the customer</button><span style="display:flex;gap:10px"><button class="btn g" id="ick">Check for problems</button><button class="btn lg" id="isv">Accept request</button></span></div>`:'');
  if(!open)return;qWhen(F.lab,'l_',$('#app'));
  const body=()=>{const b={...labCollect(F),customer_form_id:fid,assign:{}};b.plan.forEach(k=>{if($('#as_'+k)&&$('#as_'+k).checked)b.assign[k]=ME.id});if($('#icw')&&$('#icw').checked)b.confirm_warnings=true;return b};
  const show=x=>{const w=x.warnings||[],e=(x.errors||x.error||[]).filter(m=>!/^Confirm: /.test(m));
   $('#iv').innerHTML=qProblems(e,[],'Nothing missing, nothing wrong.')+(w.length?`<div class="warns"><b>Please confirm</b><ul>${w.map(m=>`<li>${esc(m)}</li>`).join('')}</ul><label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-weight:600"><input type="checkbox" id="icw"> I have checked these with the customer</label></div>`:'')};
  $('#ick').onclick=async()=>{try{show(await api('/api/intake/check',body()))}catch(e){toast(e,1)}};
- $('#isv').onclick=async()=>{const b=body();try{const x=await api('/api/intake',b);toast(`Job ${x.series} created (sample ${x.sample})`);go('job/'+x.id)}
+ $('#isv').onclick=async()=>{const b=body();try{const x=await api('/api/intake',b);toast(`Request accepted: series ${x.series} and sample ${x.sample} assigned`);go('job/'+x.id)}
   catch(e){try{show(await api('/api/intake/check',b))}catch(_){toast(e,1)}scrollTo(0,$('#iv').offsetTop-80)}};
  $('#iret').onclick=async()=>{const why=prompt('What must the customer correct? They see this reason.');if(!why)return;
   try{await api(`/api/request-forms/${fid}/return`,{reason:why});toast('Returned to the customer');go('intake')}catch(e){toast(e,1)}}}

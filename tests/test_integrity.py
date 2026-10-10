@@ -111,11 +111,12 @@ class ReleaseLock(Base):
         rev = before["meta"]["temp"]["revision"]
         for m, path, b in (("POST", "import", dict(filename="x.json", content={"proforma": DEMO["proforma"]})),
                            ("POST", "section", dict(section="temp", data=DEMO["temp"], revision=rev)), ("DELETE", "section/temp", None),
-                           ("POST", "edit", dict(series=before["series"], customer="Changed")), ("POST", "validate", {}), ("POST", "generate", {}),
+                           ("POST", "edit", dict(series=before["series"], customer="Changed")), ("POST", "validate", {}),
                            ("POST", "review", dict(index=0)), ("POST", "sources", up("x.png", b"\x89PNG\r\n\x1a\n...")),
                            ("DELETE", f"imports/{before['imports'][0]['id']}", None)):
             r = self.c.open(f"/api/jobs/{i}/{path}", method=m, json=b)
             self.assertEqual(r.status_code, 409, (path, r.json))
+        self.assertEqual(self.admin.post(f"/api/jobs/{i}/generate", json={}).status_code, 409)
         self.assertEqual(self.c.delete(f"/api/sources/{before['sources'][0]['id']}").status_code, 409)
         self.assertEqual(signed_in("r.viewer").post(f"/api/jobs/{i}/discard").status_code, 409)
         self.assertEqual(self.drop(i).status_code, 409)

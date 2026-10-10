@@ -13,6 +13,9 @@ A = None
 DEFAULTS = {"smtp_host": "", "smtp_port": "587", "smtp_tls": "1", "smtp_user": "",
             "smtp_sender": "", "portal_url": ""}
 CRITICAL = {"returned", "released"}  # always sent; others respect the user's email opt-out
+# kinds that ask the recipient to do something (shown under "Needs your action"); the rest are for information
+ACTION = {"assigned", "returned", "uploaded", "signoff", "approve", "form"}
+COMBINE_MINUTES = 30  # repeats of one kind for one job, still unread, within this time become one row
 
 
 def init_db(c):
@@ -28,6 +31,9 @@ def init_db(c):
         if col not in have: c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
     have = {r[1] for r in c.execute("PRAGMA table_info(users)")}
     if "email_opt_out" not in have: c.execute("ALTER TABLE users ADD COLUMN email_opt_out INTEGER DEFAULT 0")
+    have = {r[1] for r in c.execute("PRAGMA table_info(notifications)")}
+    for col, ddl in (("target", "TEXT"), ("count", "INTEGER DEFAULT 1")):  # target: the page it opens (#/...), kept with it
+        if col not in have: c.execute(f"ALTER TABLE notifications ADD COLUMN {col} {ddl}")
 
 
 def setting(c, k):
@@ -43,9 +49,15 @@ def users_with(c, role, org_id=None):
     return [dict(r) for r in c.execute(q, a)]
 
 
-def notify(c, recipients, job_id, kind, message, section=None, subject=None):
+def target_of(job_id, customer):
+    return (f"my/{job_id}" if customer else f"job/{job_id}") if job_id else None
+
+
+def notify(c, recipients, job_id, kind, message, section=None, subject=None, target=None):
     """One notification per recipient (inside the caller's transaction), plus an email in the outbox for those with an
-    address. recipients: user dicts or ids. The acting user is never notified of their own action."""
+    address. recipients: user dicts or ids. The acting user is never notified of their own action. target: the page the
+    notification opens (without '#/'); by default the job (a customer's own job page for customers). A repeat of the same
+    kind for the same job, still unread and recent, updates that row (count + 1) instead of adding another."""
     me = (auth.current() or {}).get("id") if A and A.has_request_context() else None
     with_email = setting(c, "smtp_host") != ""
     job = c.execute("SELECT series, org_id FROM jobs WHERE id=?", (job_id,)).fetchone() if job_id else None
@@ -55,13 +67,23 @@ def notify(c, recipients, job_id, kind, message, section=None, subject=None):
         if not u.get("id") or u["id"] == me or u["id"] in seen: continue
         seen.add(u["id"])
         mail = with_email and u.get("email") and (kind in CRITICAL or not u.get("email_opt_out"))
-        nid = c.execute("INSERT INTO notifications(user_id,job_id,section_key,kind,message,created_at,email_status) VALUES(?,?,?,?,?,?,?)",
-                        (u["id"], job_id, section, kind, message, A.now(), "queued" if mail else "none")).lastrowid
+        roles = c.execute("SELECT roles FROM users WHERE id=?", (u["id"],)).fetchone()
+        tg = target or target_of(job_id, "customer" in str(roles[0] if roles else "").split(","))
+        since = (dt.datetime.now() - dt.timedelta(minutes=COMBINE_MINUTES)).isoformat(timespec="seconds")
+        old = c.execute("SELECT id FROM notifications WHERE user_id=? AND kind=? AND job_id=? AND read_at IS NULL AND created_at>=? AND kind!='assigned' "
+                        "ORDER BY id DESC LIMIT 1", (u["id"], kind, job_id, since)).fetchone() if job_id else None
+        if old:
+            nid = old[0]
+            c.execute("UPDATE notifications SET message=?, section_key=?, target=?, created_at=?, count=COALESCE(count,1)+1, "
+                      "email_status=CASE WHEN ? THEN 'queued' ELSE email_status END WHERE id=?", (message, section, tg, A.now(), bool(mail), nid))
+        else:
+            nid = c.execute("INSERT INTO notifications(user_id,job_id,section_key,kind,message,created_at,email_status,target) VALUES(?,?,?,?,?,?,?,?)",
+                            (u["id"], job_id, section, kind, message, A.now(), "queued" if mail else "none", tg)).lastrowid
         if mail:
             link = (setting(c, "portal_url") or (request.host_url if A.has_request_context() else "")).rstrip("/")
-            body = (f"{message}\n\nOpen Aletheia to see the details: {link}/#/{'my' if job and job['org_id'] else 'job'}/{job_id}\n\n"
+            body = (f"{message}\n\nOpen Aletheia to see the details: {link}/#/{tg}\n\n"
                     "This message is a notice only; it does not contain test results. The record is in Aletheia.\n"
-                    "CPRI Short Circuit Laboratory") if job_id else f"{message}\n\nCPRI Short Circuit Laboratory"
+                    "CPRI Short Circuit Laboratory") if tg else f"{message}\n\nCPRI Short Circuit Laboratory"
             c.execute("INSERT INTO outbox(notification_id,to_addr,subject,body,created_at,next_try) VALUES(?,?,?,?,?,?)",
                       (nid, u["email"], subject or (f"[{job['series']}] " if job else "") + message[:80], body, A.now(), A.now()))
         n += 1
@@ -75,35 +97,38 @@ def customers_of(c, job_id):
 
 
 def on_uploaded(c, job_id, keys):
+    """Test data uploaded: the testers are asked to verify it (never the one who uploaded it: the actor is skipped). The
+    customer hears nothing until the final report is released."""
     series = c.execute("SELECT series FROM jobs WHERE id=?", (job_id,)).fetchone()[0]
     names = ", ".join(A.NAMES.get(k, k) for k in keys if k in A.NAMES and k != "request")
     if not names: return
-    notify(c, users_with(c, "admin"), job_id, "uploaded", f"{series}: {names} uploaded and waiting for verification")
-    notify(c, customers_of(c, job_id), job_id, "progress", f"{series}: test data received ({names}); pending verification")
+    notify(c, users_with(c, "tester"), job_id, "uploaded", f"{series}: {names} uploaded and waiting for verification")
 
 
 def on_section(c, job_id, key, state, reason=None):
-    series = c.execute("SELECT series FROM jobs WHERE id=?", (job_id,)).fetchone()[0]; name = A.NAMES.get(key, key)
+    series = c.execute("SELECT series FROM jobs WHERE id=?", (job_id,)).fetchone()[0]; name = A.name(key)
     if state == "returned":
         up = c.execute("SELECT uploaded_by FROM sections WHERE job_id=? AND key=?", (job_id, key)).fetchone()
         if up and up[0]: notify(c, [up[0]], job_id, "returned", f"{series}: {name} returned for correction: {reason}", section=key)
-    elif state == "verified":
-        notify(c, customers_of(c, job_id), job_id, "approved", f"{series}: {name} approved; the partial report has been updated", section=key)
+    elif state in ("verified", "na"):
         plan = json.loads(c.execute("SELECT plan FROM jobs WHERE id=?", (job_id,)).fetchone()[0] or "[]")
-        if not A.workflow.ready_for_signoff(c, job_id, A.NAMES, plan):
-            notify(c, users_with(c, "admin"), job_id, "signoff", f"{series}: every test is verified; ready for the verifier's sign-off")
+        if not A.workflow.ready_for_signoff(c, job_id, A.ALL_NAMES, plan):
+            notify(c, users_with(c, "admin"), job_id, "signoff", f"{series}: every test is verified; ready for approval")
 
 
 def on_released(c, job_id, version):
+    """The one notification a customer gets for a job: the final report released (once per released version)."""
     series = c.execute("SELECT series FROM jobs WHERE id=?", (job_id,)).fetchone()[0]
     testers = [r[0] for r in c.execute("SELECT DISTINCT uploaded_by FROM sections WHERE job_id=? AND uploaded_by IS NOT NULL", (job_id,))]
-    notify(c, customers_of(c, job_id), job_id, "released", f"{series}: the final test report (version {version}) has been released")
-    notify(c, testers, job_id, "released", f"{series}: report version {version} released")
+    amended = c.execute("SELECT 1 FROM reports WHERE job_id=? AND approver IS NOT NULL AND version<?", (job_id, version)).fetchone()
+    notify(c, customers_of(c, job_id), job_id, "released", f"Test report {series} is ready" + (f" (corrected version {version})" if amended else "") +
+           ". View and download it here.", subject=f"Test report {series} is ready")
+    notify(c, testers, job_id, "released", f"{series}: report version {version} signed off and released")
 
 
 def on_ready_to_approve(c, job_id):
     series = c.execute("SELECT series FROM jobs WHERE id=?", (job_id,)).fetchone()[0]
-    notify(c, users_with(c, "approver"), job_id, "approve", f"{series}: report generated and waiting for approval")
+    notify(c, users_with(c, "admin"), job_id, "approve", f"{series}: report generated and waiting for sign-off")
 
 
 # ------------------------------------------------------------------ email outbox
@@ -168,11 +193,16 @@ def install(app_module):
     def notifications():
         u = auth.current(); only = request.args.get("unread") == "1"
         with A.db() as c:
-            rows = [dict(r) for r in c.execute("SELECT n.id, n.job_id, j.series, n.section_key, n.kind, n.message, n.created_at, n.read_at, n.email_status "
-                                               "FROM notifications n LEFT JOIN jobs j ON j.id=n.job_id WHERE n.user_id=?" + (" AND n.read_at IS NULL" if only else "") +
-                                               " ORDER BY n.id DESC LIMIT 100", (u["id"],))]
+            lim = min(int(request.args["limit"]), 200) if str(request.args.get("limit", "")).isdigit() else 100
+            rows = [dict(r) for r in c.execute("SELECT n.id, n.job_id, j.series, n.section_key, n.kind, n.message, n.created_at, n.read_at, n.email_status, "
+                                               "n.target, COALESCE(n.count,1) AS count FROM notifications n LEFT JOIN jobs j ON j.id=n.job_id WHERE n.user_id=?"
+                                               + (" AND n.read_at IS NULL" if only else "") + " ORDER BY n.created_at DESC, n.id DESC LIMIT ?", (u["id"], lim))]
             unread = c.execute("SELECT COUNT(*) FROM notifications WHERE user_id=? AND read_at IS NULL", (u["id"],)).fetchone()[0]
-        return jsonify(items=rows, unread=unread)
+            opt = c.execute("SELECT email_opt_out FROM users WHERE id=?", (u["id"],)).fetchone()[0]
+        for r in rows:  # needs action and the page it opens come from the server, not guessed from the text
+            r["action"] = r["kind"] in ACTION
+            r["target"] = r["target"] or target_of(r["job_id"], auth.is_customer(u))
+        return jsonify(items=rows, unread=unread, email_opt_out=bool(opt))
 
     @app.post("/api/notifications/read")
     @auth.require("notifications")

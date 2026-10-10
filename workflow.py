@@ -3,7 +3,7 @@
 Pure functions only (no Flask): app.py calls them from its routes and inside its transactions.
 
 Section states: not_started (no row) -> uploaded -> verified (locked), with side exits returned (needs re-upload, with a
-reason) and na (not applicable, with a reason). A verified section is locked until a verifier reopens it with a reason.
+reason) and na (not applicable, with a reason). A verified section is locked until a tester reopens it with a reason.
 """
 import datetime as dt, json, re
 
@@ -229,12 +229,13 @@ def progress(c, jid, names, plan=None):
 
 
 def ready_for_signoff(c, jid, names, plan):
-    """What still stands between this job and the verifier's whole-job sign-off (empty list = ready)."""
+    """What still stands between this job and the administrator's approval (empty list = ready). names: every display name,
+    including the sample identification record and supplementary records."""
     out = []
     rows = list(c.execute("SELECT key, state FROM sections WHERE job_id=? AND key!='request'", (jid,)))
     for r in rows:
         if r["state"] not in ("verified", "na"):
-            out.append(f"{names.get(r['key'], 'Identifiers on each sheet' if r['key'] == 'ids' else 'Additional log sheets' if r['key'] == 'other' else r['key'])}: {r['state'].replace('_', ' ')}")
+            out.append(f"{names.get(r['key'], r['key'])}: {r['state'].replace('_', ' ')}")
     have = {r["key"] for r in rows}
     for k in plan or []:
         if k not in have: out.append(f"{names.get(k, k)}: not uploaded (upload it, or mark it not applicable)")

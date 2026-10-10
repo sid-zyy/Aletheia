@@ -26,10 +26,16 @@ def load_demo():
 
 app = Flask(__name__, static_folder=os.path.join(HERE, "static"))
 STAGES = ["Request Captured", "Data Imported", "Validated", "Report Generated", "Approved & Exported"]
-NAMES = {"request": "Customer request form", "proforma": "Proforma for transformers", "work": "Work instruction",
-         "losses": "Losses datasheet", "resistance": "Losses logsheet (resistance)", "noload": "Losses logsheet (no-load)",
-         "routine": "Routine test logsheet", "sc": "Short-circuit logsheet", "temp": "Temperature-rise logsheet",
-         "pressure": "Pressure / oil-leakage logsheet"}
+# The formal name of every test record: the one list the pages, notifications, audit entries, Excel titles and the report
+# use. Only display names: the keys stored with the data never change.
+NAMES = {"request": "Customer Request Form", "proforma": "Proforma for Transformers", "work": "Work Instruction",
+         "losses": "Loss Measurement Datasheet", "resistance": "Winding Resistance and Loss Logsheet",
+         "noload": "No-Load Loss and Current Logsheet", "routine": "Routine Test Logsheet",
+         "sc": "Short-Circuit Withstand Test Logsheet", "temp": "Temperature-Rise Test Logsheet",
+         "pressure": "Pressure and Oil-Leakage Test Logsheet"}
+EXTRA_NAMES = {"ids": "Sample Identification Record", "other": "Supplementary Test Records"}
+ALL_NAMES = {**NAMES, **EXTRA_NAMES}
+def name(k): return ALL_NAMES.get(k, k)
 now = lambda: dt.datetime.now().isoformat(timespec="seconds")
 
 # ----------------------------------------------------------------- database
@@ -73,13 +79,16 @@ def init():
                 if col not in have: c.execute(f"ALTER TABLE {t} ADD COLUMN {col} {ddl}")
         integrity.init_db(c)
         # plan: the tests this job needs (JSON list of section keys; empty = whatever is uploaded); intake: the receiving
-        # engineer's record (arrival, opened by, validity, read-back check); signed_off: the verifier's "all data correct"
+        # engineer's record (arrival, opened by, validity, read-back check); signed_off: the administrator's approval (every test verified)
         have = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
         for col, ddl in (("plan", "TEXT"), ("intake", "TEXT"), ("signed_off_by", "INT"), ("signed_off_at", "TEXT")):
             if col not in have: c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
         saved = integrity.migrate(c, DB)
         if saved: print(f"Database migrated to schema {integrity.SCHEMA_VERSION}; backup kept at {saved}")
         integrity.install_triggers(c)
+        clash = auth.migrate_roles(c, log)
+        if clash: raise SystemExit("The verifier and approver roles were removed. These accounts would combine Admin with Tester, which is not "
+                                   "allowed: split each into two accounts, then start again: " + ", ".join(clash))
 
 def actor():
     """(user id, display name, roles, workstation) of whoever is acting; 'system' outside a signed-in request."""
@@ -105,7 +114,7 @@ def getjob(jid, full=True):
         j["assign"] = integrity.assignments(c, jid)
         j["progress"], j["counts"] = workflow.progress(c, jid, NAMES, j["plan"])
         j["signoff"] = {"by": c.execute("SELECT full_name FROM users WHERE id=?", (j["signed_off_by"],)).fetchone()[0], "at": j["signed_off_at"]} if j.get("signed_off_by") else None
-        j["signoff_blockers"] = workflow.ready_for_signoff(c, jid, NAMES, j["plan"])
+        j["signoff_blockers"] = workflow.ready_for_signoff(c, jid, ALL_NAMES, j["plan"])
         j["amend"] = workflow.loads(j.get("amend"), None)
         j["amendments"] = [dict(a) for a in c.execute("SELECT a.id, a.from_version, a.new_version, a.reason, a.sections, a.opened_at, a.closed_at, "
                                                        "o.full_name AS opened_by, s.full_name AS second_signer FROM amendments a LEFT JOIN users o ON o.id=a.opened_by "
@@ -182,14 +191,14 @@ def validate(d, plan=None):
     # 1. identifiers must agree across documents (handwriting: 4 can read as H or 6)
     norm = lambda s: s.upper().replace("H", "4")
     ids = d.get("ids", {})
-    with na('Identifier consistency', "Identifiers on each sheet"):
+    with na('Identifier consistency', name("ids")):
         if "work" in ids:
             ws, wm = norm(ids["work"][0])[-7:], norm(ids["work"][1])[-4:]
             bad = [(k, s, m) for k, (s, m) in ids.items() if (k in d or k == "work") and (norm(s)[-7:] != ws or norm(m)[-4:] != wm)]  # sheets uploaded only
             for k, s, m in bad:
-                add("warn", "Identifier consistency", f"{NAMES.get(k, k)}: transcribed '{s}' / '{m}' but work instruction = {ws} / {wm}. Verify handwriting (4/6/H).",
-                    src=NAMES.get(k, k), found=f"Series {s}, sample {m}", exp=f"Series ...{ws}, sample ...{wm} (as on the work instruction)",
-                    fix=f"Look at the IDs on the scanned {NAMES.get(k, k).lower()}; handwritten 4, 6 and H are easy to confuse. If it was mistyped, correct it under 'Identifiers on each sheet'.")
+                add("warn", "Identifier consistency", f"{name(k)}: transcribed '{s}' / '{m}' but work instruction = {ws} / {wm}. Verify handwriting (4/6/H).",
+                    src=name(k), found=f"Series {s}, sample {m}", exp=f"Series ...{ws}, sample ...{wm} (as on the work instruction)",
+                    fix=f"Look at the IDs on the scanned {name(k).lower()}; handwritten 4, 6 and H are easy to confuse. If it was mistyped, correct it under '{name('ids')}'.")
             if not bad: add("pass", "Identifier consistency", f"Series {ws} / sample {wm} agree in all documents", src="All source documents")
     P = d.get("proforma", {})
     if P:
@@ -402,11 +411,11 @@ def validate(d, plan=None):
     ws_all = norm(str(work_ids[0] or (d.get("work") or {}).get("series") or ""))[-7:]
     wm_all = norm(str(work_ids[1] or (d.get("work") or {}).get("sample") or ""))[-4:]
     for o in (d.get("other") or {}).values():
-        with na("Additional log sheet", "Additional log sheet"):
-            t = str(o.get("title") or "Additional log sheet"); src = f"Additional log sheet: {t}"
+        with na("Supplementary test record", "Supplementary test record"):
+            t = str(o.get("title") or "Supplementary test record"); src = f"Supplementary test record: {t}"
             vals = [f.get("value") for f in o.get("fields") or []] + [c for tb in o.get("tables") or [] for r in tb.get("rows") or [] for c in r]
             empty = sum(v is None or (isinstance(v, str) and not v.strip()) for v in vals)
-            add("warn" if empty or not vals else "pass", f"Additional record: {t}",
+            add("warn" if empty or not vals else "pass", f"Supplementary test record: {t}",
                 f"{len(vals) - empty} of {len(vals)} values recorded" + (f"; {empty} NA" if empty else "") + ". No limits are known for this sheet, so values are reported as recorded.",
                 src=src, found=f"{len(vals) - empty} values recorded, {empty} NA", exp="Every value on the sheet recorded",
                 fix="Fill in the NA values on the sheet's page if they are on the scan, or leave them as NA." if empty else
@@ -444,11 +453,11 @@ def safe_validate(d, plan=None):
     except Exception: F, C = [], {}  # noqa: BLE001
     F = [f for f in F if not (f["check"] == "Completeness of source documents")]
     for k in culprits:
-        name = NAMES.get(k, "Identifiers on each sheet")
-        F.insert(0, dict(level="fail", blocks=True, check=f"Data structure: {name}", source=name,
-                         detail=f"The {name.lower()} is not in the expected layout ({what(err)}), so it could not be checked.",
+        nm = name(k)
+        F.insert(0, dict(level="fail", blocks=True, check=f"Data structure: {nm}", source=nm,
+                         detail=f"The {nm.lower()} is not in the expected layout ({what(err)}), so it could not be checked.",
                          found="Fields or table shape differ from the standard layout", expected="Same layout as the downloadable template",
-                         action=f"Open the {name.lower()} (Edit under Sources) and correct it, re-import it from a corrected file, "
+                         action=f"Open the {nm.lower()} (Edit under Sources) and correct it, re-import it from a corrected file, "
                                 "or remove it from this job (Remove under Sources) if it should not be part of the report."))
     return F, C
 
@@ -553,12 +562,12 @@ def write_check(c, i, keys):
     am = workflow.loads(c.execute("SELECT amend FROM jobs WHERE id=?", (i,)).fetchone()[0], None)
     for k in keys:
         if am and k not in am["sections"] and k != "ids":
-            return f"{NAMES.get(k, k)} is not part of the open amendment (only {', '.join(NAMES.get(x, x) for x in am['sections'])} may change)", 409
+            return f"{name(k)} is not part of the open amendment (only {', '.join(name(x) for x in am['sections'])} may change)", 409
         why = workflow.may_write(c, i, k, u)
-        if why: return f"{NAMES.get(k, k)}: {why}", 403
+        if why: return f"{name(k)}: {why}", 403
         row = c.execute("SELECT state FROM sections WHERE job_id=? AND key=?", (i, k)).fetchone()
         if row and row["state"] == "verified" and k not in workflow.MERGED:
-            return f"{NAMES.get(k, k)} has been verified and is locked; a verifier must reopen it (with a reason) first", 409
+            return f"{name(k)} has been verified and is locked; a tester must reopen it (with a reason) first", 409
     return None
 
 def bay_of(b):
@@ -577,7 +586,7 @@ def manifest(j, version):
     version that read it, who uploaded and verified it, plus the intake, sign-off, signer and software. Its own SHA-256 is
     printed on the report, so a reader can check later that nothing behind the report changed (NEXT_STEPS.md 6.2)."""
     with db() as c:
-        secs = [dict(test=NAMES.get(r["key"], {"ids": "Identifiers on each sheet", "other": "Additional log sheets"}.get(r["key"], r["key"])), key=r["key"],
+        secs = [dict(test=name(r["key"]), key=r["key"],
                      revision=r["revision"], state=r["state"], data_sha256=r["data_sha256"], file=r["fname"], file_sha256=r["fsha"],
                      template=f"{r['tkey']} v{r['tver']}" if r["tkey"] else None, uploaded_by=r["up"], verified_by=r["ver"], bay=r["bay"])
                 for r in c.execute("""SELECT s.*, f.name AS fname, f.sha256 AS fsha, t.key AS tkey, t.version AS tver, u.full_name AS up, v.full_name AS ver
@@ -694,7 +703,7 @@ def create():
                 b["series"] = integrity.allocate(c, "series")
                 if b["sample"] == "NA": b["sample"] = integrity.allocate(c, "sample")
             i = insert_job(c, dict(b, customer=req["customer"], rating=req["rating"], request={}, org_id=f["org_id"]),
-                           "Job opened for the customer's request" + (f" (series {b['series']} allocated)" if auto else ""))
+                           "Job opened for the customer's request" + (f"; series {b['series']} and sample {b['sample']} assigned" if auto else ""))
             use_request(c, i, f, req)
         return jsonify(id=i, series=b["series"], sample=b["sample"]), 201
     except sqlite3.IntegrityError: return jsonify(error=["Series number already exists"]), 409
@@ -847,7 +856,7 @@ def remove_import(i, imp):
         if len(j["imports"]) > 1: return jsonify(error=["This file was imported before the app recorded which documents it contained. "
                                                         "Remove its documents one by one under Sources instead."]), 409
         secs = {k: True for k in j["data"] if k != "request"}  # the only import: everything but the request came from it or was typed
-    what = ', '.join({'ids': 'Identifiers on each sheet', 'other': 'additional log sheets'}.get(k) or NAMES.get(k, k) for k in secs if k != 'request') or 'no documents'
+    what = ', '.join(name(k) for k in secs if k != 'request') or 'no documents'
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         why = write_check(c, i, [k for k in secs if k != "request"])
@@ -879,8 +888,8 @@ def section(i):
             c.execute("BEGIN IMMEDIATE")
             why = write_check(c, i, [k])
             if why: return refuse(c, i, *why)
-            integrity.write_section(c, i, k, b["data"], me(), f"{NAMES.get(k, 'Identifiers')} {how}", expect=expected(c, i, k, b), bay=bay_of(b))
-            after_change(c, i, f"{NAMES.get(k, 'Identifiers')} {how}")
+            integrity.write_section(c, i, k, b["data"], me(), f"{name(k)} {how}", expect=expected(c, i, k, b), bay=bay_of(b))
+            after_change(c, i, f"{name(k)} {how}")
             notify.on_uploaded(c, i, [k])
     except Conflict as e: return conflict(e)
     return jsonify(ok=True)
@@ -909,7 +918,7 @@ def clean_other(o):
         if not width: continue
         cols += [""] * (width - len(cols)); rows = [r + [None] * (width - len(r)) for r in rows]
         tables.append(dict(title=txt(t.get("title")), columns=cols, rows=rows))
-    return dict(title=txt(o.get("title")) or "Additional log sheet", fields=fields, tables=tables)
+    return dict(title=txt(o.get("title")) or "Supplementary test record", fields=fields, tables=tables)
 
 def save_other(j, b):
     if not isinstance(b.get("data"), dict): return jsonify(error=["Provide the sheet's fields"]), 400
@@ -926,8 +935,8 @@ def save_other(j, b):
                 while f"x{n}" in others: n += 1
                 key = f"x{n}"
             others[key] = sheet
-            integrity.write_section(c, i, "other", others, me(), f"Additional log sheet '{sheet['title']}' {how}", expect=exp)
-            after_change(c, i, f"Additional log sheet '{sheet['title']}' {how}")
+            integrity.write_section(c, i, "other", others, me(), f"Supplementary test record '{sheet['title']}' {how}", expect=exp)
+            after_change(c, i, f"Supplementary test record '{sheet['title']}' {how}")
     except Conflict as e: return conflict(e)
     return jsonify(ok=True, key=key)
 
@@ -944,18 +953,18 @@ def remove_section(i, k):
             c.execute("BEGIN IMMEDIATE")
             others = integrity.read_section(c, i, "other") or {}
             if key not in others: return jsonify(error=["This log sheet is not part of the job"]), 404
-            title = others.pop(key).get("title", "Additional log sheet")
-            integrity.write_section(c, i, "other", others or None, me(), f"Additional log sheet '{title}' removed")
-            after_change(c, i, f"Additional log sheet '{title}' removed from the job")
+            title = others.pop(key).get("title", "Supplementary test record")
+            integrity.write_section(c, i, "other", others or None, me(), f"Supplementary test record '{title}' removed")
+            after_change(c, i, f"Supplementary test record '{title}' removed from the job")
         return jsonify(ok=True)
     if k not in set(NAMES) - {"request"} | {"ids"}: return jsonify(error=["This document cannot be removed"]), 400
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         why = write_check(c, i, [k])
         if why: return refuse(c, i, *why)
-        if integrity.write_section(c, i, k, None, me(), f"{NAMES.get(k, 'Identifiers on each sheet')} removed") is None:
+        if integrity.write_section(c, i, k, None, me(), f"{name(k)} removed") is None:
             return jsonify(error=["This document is not part of the job"]), 404
-        after_change(c, i, f"{NAMES.get(k, 'Identifiers on each sheet')} removed from the job")
+        after_change(c, i, f"{name(k)} removed from the job")
     return jsonify(ok=True)
 
 @app.get("/api/jobs/<int:i>/export/<fmt>")
@@ -1070,9 +1079,10 @@ def val(i):
     j = getjob(i)
     if locked(j): return locked(j)
     F, _ = safe_validate(j["data"], j.get("plan")); fails = sum(f["level"] == "fail" for f in F); blocks = len(blocking(F))
-    done = {(f["check"], f["detail"]) for f in j["findings"] if f.get("reviewed")}  # unchanged items keep their review
+    done = {(f["check"], f["detail"]): f.get("note") for f in j["findings"] if f.get("reviewed")}  # unchanged items keep their review
     for f in F:
-        if f["level"] in ("warn", "fail") and not f.get("blocks") and (f["check"], f["detail"]) in done: f["reviewed"] = True
+        if f["level"] in ("warn", "fail") and not f.get("blocks") and (f["check"], f["detail"]) in done:
+            f["reviewed"] = True; f.update({"note": done[(f["check"], f["detail"])]} if done[(f["check"], f["detail"])] else {})
     # only data errors hold the job back; a sample that fails a requirement goes on to a "does not comply" report
     save(i, findings=F, stage=max(j["stage"], 2) if not blocks else min(j["stage"], 1), verdict=verdict_of(F))
     with db() as c: log(c, i, f"Validation run: {sum(f['level'] == 'pass' for f in F)} pass, {sum(f['level'] == 'warn' for f in F)} warn, {fails} fail"
@@ -1089,9 +1099,13 @@ def review(i):
     if not isinstance(n, int) or not 0 <= n < len(F): return jsonify(error=["No such check"]), 400
     if F[n].get("blocks"): return jsonify(error=["This is a data error and cannot be marked as reviewed: correct the data and run the checks again"]), 409
     if F[n]["level"] not in ("warn", "fail"): return jsonify(error=["Only flagged items need review"]), 400
-    F[n]["reviewed"] = bool(b.get("reviewed", True)); save(i, findings=F)
+    F[n]["reviewed"] = bool(b.get("reviewed", True))
+    note = re.sub(r"\s+", " ", str(b.get("note") or "")).strip()[:500]
+    if F[n]["reviewed"] and note: F[n]["note"] = note
+    elif not F[n]["reviewed"]: F[n].pop("note", None)
+    save(i, findings=F)
     what = ("Failure confirmed" if F[n]["reviewed"] else "Failure confirmation withdrawn") if F[n]["level"] == "fail" else ("Reviewed" if F[n]["reviewed"] else "Review withdrawn")
-    with db() as c: log(c, i, f"{what}: {F[n]['check']} - {F[n]['detail'][:90]}", kind="check")
+    with db() as c: log(c, i, f"{what}: {F[n]['check']} - {F[n]['detail'][:90]}" + (f" (note: {note})" if F[n]["reviewed"] and note else ""), kind="check")
     return jsonify(findings=F)
 
 @app.post("/api/jobs/<int:i>/generate")
@@ -1103,7 +1117,7 @@ def gen(i):
     left = [f["check"] for f in j["findings"] if f["level"] in ("warn", "fail") and not f.get("reviewed") and not f.get("advisory")]
     if left: return jsonify(error=[f"Review every flagged item before the report is built ({len(left)} left)"]), 409
     if j["signoff_blockers"]: return jsonify(error=["Every test must be verified (or marked not applicable) first:"] + j["signoff_blockers"]), 409
-    if not j["signoff"]: return jsonify(error=["A verifier must sign off the job ('all data correct') before the report is built"]), 409
+    if not j["signoff"]: return jsonify(error=["An administrator must approve the job (every test verified) before the report is built"]), 409
     t = dt.datetime.now()
     try: v, sha = freeze(j)
     except Exception as e:  # noqa: BLE001
@@ -1118,10 +1132,11 @@ def gen(i):
 @app.post("/api/jobs/<int:i>/approve")
 @auth.require("report.approve")
 def approve(i):
-    """The approver is the signed-in account: name and employee ID come from the user record and are printed on the report.
-    The approver re-enters their password to sign, and must not have imported, entered or checked this job's data."""
+    """Sign off and release. The administrator signing is the signed-in account: name and employee ID come from the user
+    record and are printed on the report ("Approved by"). They re-enter their password to sign, and must not have imported,
+    entered, checked or verified this job's data (an administrator never does; kept as a safeguard)."""
     j = getjob(i); b = body(); u = auth.current()
-    if j["stage"] < 3: return jsonify(error=["Generate the report before approving it"]), 409
+    if j["stage"] < 3: return jsonify(error=["Generate the report before signing it off"]), 409
     if not u.get("employee_id"): return jsonify(error=["Your account has no employee ID; ask an administrator to add it"]), 400
     gaps = workflow.intake_complete(j)
     if gaps: return jsonify(error=gaps + ["Complete the intake (Intake details on the job page) before release: the report is a legal document"]), 409
@@ -1131,11 +1146,11 @@ def approve(i):
     with db() as c:
         touched = c.execute("SELECT 1 FROM audit WHERE job_id=? AND user_id=? AND kind IN ('data','check','verify') LIMIT 1", (i, u["id"])).fetchone()
         if touched:
-            log(c, i, "Approval refused: the approver worked on this job's data or checks", kind="denied")
-            return jsonify(error=["You imported, entered or checked data on this job, so a different person must approve it"]), 403
+            log(c, i, "Release refused: the signing administrator worked on this job's data or checks", kind="denied")
+            return jsonify(error=["You imported, entered, checked or verified data on this job, so a different administrator must sign it off"]), 403
     person = lambda s: re.sub(r"[^a-z]", "", str(s or "").lower())
     if person(u["full_name"]) and person(u["full_name"]) == person((j["data"].get("work") or {}).get("engineer")):
-        return jsonify(error=["The test engineer who prepared this report cannot also approve it; a second person must approve"]), 403
+        return jsonify(error=["The test engineer who prepared this report cannot also sign it off; a second person must sign"]), 403
     name, emp = u["full_name"], u["employee_id"]
     try: v, sha = freeze(dict(j, approver=name, approver_id=emp, stage=4))
     except Exception as e:  # noqa: BLE001
@@ -1147,15 +1162,15 @@ def approve(i):
         notify.on_released(c, i, v)
         if j.get("amend"):
             c.execute("UPDATE amendments SET closed_at=?, new_version=? WHERE job_id=? AND closed_at IS NULL", (now(), v, i))
-        log(c, i, f"Approved by {signed(name, emp)}; released for export (version {v}, SHA-256 {sha[:12]}...)"
+        log(c, i, f"Approved by {signed(name, emp)}: report signed off and released (version {v}, SHA-256 {sha[:12]}...)"
                   + (f"; supersedes the earlier release (amendment: {j['amend']['reason']})" if j.get("amend") else ""), kind="approve")
     return jsonify(ok=True, version=v)
 
 @app.post("/api/jobs/<int:i>/amend")
 @auth.require("report.amend")
 def amend(i):
-    """Correct a released report by superseding it (NEXT_STEPS.md 6.5). An approver and a second approver sign the reason;
-    only the named tests reopen; the usual upload, verify, sign-off and approval give version n+1. The released version
+    """Correct a released report by superseding it (NEXT_STEPS.md 6.5). An administrator and a second administrator sign the
+    reason; only the named tests reopen; the usual upload, verification, approval and sign-off give version n+1. The released version
     stays stored, downloadable and verifiable, marked superseded once the new one is released."""
     j = getjob(i); b = body(); u = auth.current()
     if not j["released"]: return jsonify(error=["Only a released report is amended; an unreleased job is simply corrected"]), 409
@@ -1166,7 +1181,7 @@ def amend(i):
           [f"Unknown test: {k}" for k in keys if k not in NAMES and k not in ("ids", "other")]
     if err: return jsonify(error=err), 400
     if not auth.reauth(b.get("password")): return jsonify(error=["Re-enter your password to sign the amendment"]), 403
-    second, why = auth.second_signer((b.get("second") or {}).get("username"), (b.get("second") or {}).get("password"), "approver")
+    second, why = auth.second_signer((b.get("second") or {}).get("username"), (b.get("second") or {}).get("password"), "admin")
     if not second: return jsonify(error=[why]), 403
     rel = next(r for r in j["reports"] if r["approver"])
     with db() as c:
@@ -1183,7 +1198,7 @@ def amend(i):
             if c.execute("SELECT 1 FROM sections WHERE job_id=? AND key=?", (i, k)).fetchone():
                 integrity.set_state(c, i, k, "returned", u["id"], f"Reopened by amendment: {reason}", note=f"Amendment: {reason}")
         log(c, i, f"Amendment of version {rel['version']} opened by {u['full_name']} with {second['full_name']} as second signer; "
-                  f"tests reopened: {', '.join(NAMES.get(k, k) for k in keys)}; reason: {reason}", kind="approve")
+                  f"tests reopened: {', '.join(name(k) for k in keys)}; reason: {reason}", kind="approve")
     return jsonify(ok=True, from_version=rel["version"])
 
 def latest(i):
@@ -1317,15 +1332,15 @@ def section_action(i, k, state, verb, need_reason=False, need_data=True, allowed
         with db() as c:
             c.execute("BEGIN IMMEDIATE")
             row = c.execute("SELECT * FROM sections WHERE job_id=? AND key=?", (i, k)).fetchone()
-            if need_data and (not row or row["data"] is None): return jsonify(error=[f"{NAMES.get(k, k)} has no data to {verb}"]), 409
-            if row and row["state"] not in allowed_from: return jsonify(error=[f"{NAMES.get(k, k)} is {row['state']}; it cannot be {verb} now"]), 409
+            if need_data and (not row or row["data"] is None): return jsonify(error=[f"{name(k)} has no data to {verb}"]), 409
+            if row and row["state"] not in allowed_from: return jsonify(error=[f"{name(k)} is {row['state']}; it cannot be {verb} now"]), 409
             if row and row["uploaded_by"] == u["id"] and state in ("verified", "returned"):
-                return refuse(c, i, f"you uploaded {NAMES.get(k, k)}, so someone else must {verb} it")
+                return refuse(c, i, f"you uploaded {name(k)}, so another tester must {dict(verified='verify', returned='return').get(state, verb)} it")
             rev = b.get("revision") if isinstance(b.get("revision"), int) and not isinstance(b.get("revision"), bool) else None
             if state in ("verified", "returned") and rev is None: return jsonify(error=["Reload the page: the revision you checked is missing"]), 400
-            integrity.set_state(c, i, k, state, u["id"], f"{NAMES.get(k, k)} {verb}" + (f": {reason}" if reason else ""), note=reason or None, expect=rev)
+            integrity.set_state(c, i, k, state, u["id"], f"{name(k)} {verb}" + (f": {reason}" if reason else ""), note=reason or None, expect=rev)
             c.execute("UPDATE jobs SET signed_off_by=NULL, signed_off_at=NULL, updated=? WHERE id=?", (now(), i))
-            log(c, i, f"{NAMES.get(k, 'Additional log sheets' if k == 'other' else 'Identifiers on each sheet' if k == 'ids' else k)} {verb}"
+            log(c, i, f"{name(k)} {verb}"
                 + (f" (revision {rev})" if rev else "") + (f": {reason}" if reason else ""), kind="verify")
             notify.on_section(c, i, k, state, reason)
     except Conflict as e: return conflict(e)
@@ -1335,7 +1350,8 @@ def section_action(i, k, state, verb, need_reason=False, need_data=True, allowed
 @app.post("/api/jobs/<int:i>/sections/<k>/verify")
 @auth.require("section.verify")
 def verify_section(i, k):
-    """The verifier confirms the data in the app is what is in the source file. revision: the one they looked at."""
+    """A tester (not the one who uploaded it) confirms the data in the app is what is in the source file. revision: the one
+    they looked at."""
     return section_action(i, k, "verified", "verified")
 
 @app.post("/api/jobs/<int:i>/sections/<k>/return")
@@ -1416,18 +1432,19 @@ def notify_assigned(c, uid, jid, series, keys):
     notify.notify(c, [uid], jid, "assigned", f"{series}: {tests} assigned to you", section=sec)
 
 @app.post("/api/jobs/<int:i>/signoff")
-@auth.require("section.verify")
+@auth.require("job.signoff")
 def signoff(i):
-    """The verifier's whole-job 'all data correct' (B5): every test verified or not applicable, checks run without data errors."""
+    """The administrator approves the job: every test verified (by a tester other than its uploader) or not applicable, and
+    the checks run without data errors. Only then can the report be generated, signed off and released."""
     j = getjob(i); u = auth.current()
     if locked(j): return locked(j)
     if j["signoff_blockers"]: return jsonify(error=["Not ready for sign-off:"] + j["signoff_blockers"]), 409
     if j["stage"] < 2: return jsonify(error=["Run the checks (without data errors) before signing off"]), 409
     with db() as c:
         if c.execute("SELECT 1 FROM sections WHERE job_id=? AND uploaded_by=? AND key!='request' AND data IS NOT NULL", (i, u["id"])).fetchone():
-            return refuse(c, i, "you uploaded data on this job, so another verifier must sign it off")
+            return refuse(c, i, "you uploaded data on this job, so another administrator must approve it")
         c.execute("UPDATE jobs SET signed_off_by=?, signed_off_at=?, updated=? WHERE id=?", (u["id"], now(), now(), i))
-        log(c, i, "Job signed off by the verifier: all data checked against the source files", kind="verify")
+        log(c, i, "Job approved by the administrator: every test verified or not applicable", kind="approve")
     return jsonify(ok=True)
 
 # ---- intake (NEXT_STEPS.md section 3.6): a customer's request (CPRI/QAF/01A sheets 1-2), received by the laboratory (sheet 3).
@@ -1492,7 +1509,7 @@ def intake_create():
         rec = intake_record(lab, form=f)
         series, sample = integrity.allocate(c, "series"), integrity.allocate(c, "sample")
         i = insert_job(c, dict(series=series, sample=sample, customer=req["customer"], rating=req["rating"], request={}, org_id=org),
-                       f"Customer request received (intake); series {series} and sample {sample} allocated")
+                       f"Request accepted; series {series} and sample {sample} assigned")
         use_request(c, i, f, req)
         c.execute("UPDATE jobs SET plan=?, intake=? WHERE id=?", (json.dumps(plan), json.dumps(rec), i))
         for k, uid in (b.get("assign") or {}).items():  # at intake an engineer can only take tests themselves
@@ -1551,7 +1568,8 @@ def request_return(fid):
         if f["status"] != "received": return jsonify(error=[f"This request is {f['status']}"]), 409
         c.execute("UPDATE customer_forms SET status='returned', note=? WHERE id=?", (reason, fid))
         log(c, None, f"Customer request {fid} returned to the customer: {reason}", kind="job")
-        notify.notify(c, notify.users_with(c, "customer", f["org_id"]), None, "returned", f"Your test request was returned for correction: {reason}")
+        notify.notify(c, notify.users_with(c, "customer", f["org_id"]), None, "returned", f"Your test request {fid} was returned for correction: {reason}",
+                      target=f"my/request/{fid}")
     return jsonify(ok=True)
 
 @app.get("/api/intake/fields")
@@ -1598,16 +1616,12 @@ def my_work():
             tt = [x for x in str(u.get("test_types") or "").split(",") if x]
             out["available"] = [x for x in unassigned(c, open_jobs) if not tt or x["key"] in tt]
             out["requests"] = q("SELECT f.id, o.name AS org, f.filename, f.at FROM customer_forms f LEFT JOIN orgs o ON o.id=f.org_id WHERE f.status='received' ORDER BY f.id")
-        if "admin" in u["roles"]:  # verification is the administrator's
             out["to_verify"] = q(f"SELECT j.id, j.series, s.key, s.uploaded_at AS at, uu.full_name AS by FROM sections s JOIN jobs j ON j.id=s.job_id LEFT JOIN users uu ON uu.id=s.uploaded_by "
                                 f"WHERE {open_jobs} AND s.state='uploaded' AND s.key!='request' AND s.data IS NOT NULL AND COALESCE(s.uploaded_by,-1)!=? ORDER BY s.uploaded_at", u["id"])
+        if "admin" in u["roles"]:  # the administrator approves, generates and signs off, and sees everything that is waiting
             out["to_signoff"] = [dict(id=j["id"], series=j["series"], at=j["updated"]) for j in
                                  (getjob(r["id"], False) for r in c.execute(f"SELECT j.id FROM jobs j WHERE {open_jobs} AND j.signed_off_by IS NULL AND j.stage>=2"))
                                  if not j["signoff_blockers"]]
-        if "approver" in u["roles"]:
-            out["to_approve"] = q("SELECT j.id, j.series, j.updated AS at FROM jobs j WHERE j.archived=0 AND j.stage=3 AND NOT EXISTS "
-                                  "(SELECT 1 FROM audit a WHERE a.job_id=j.id AND a.user_id=? AND a.kind IN ('data','check','verify')) ORDER BY j.updated", u["id"])
-        if "admin" in u["roles"]:  # the administrator sees everything that is waiting, and on whom
             out["to_approve"] = q("SELECT j.id, j.series, j.customer, j.updated AS at FROM jobs j WHERE j.archived=0 AND j.stage=3 ORDER BY j.updated")
             out["unassigned"] = unassigned(c, open_jobs)
             out["requests"] = q("SELECT f.id, o.name AS org, f.filename, f.at FROM customer_forms f LEFT JOIN orgs o ON o.id=f.org_id WHERE f.status='received' ORDER BY f.id")
@@ -1618,7 +1632,7 @@ def my_work():
                                "WHERE t.status='open' ORDER BY t.updated_at")
     for lst in out.values():
         for x in lst:
-            if "key" in x: x["name"] = NAMES.get(x["key"], "Identifiers on each sheet" if x["key"] == "ids" else "Additional log sheets" if x["key"] == "other" else x["key"])
+            if "key" in x: x["name"] = name(x["key"])
     return jsonify(out)
 
 @app.get("/api/audit/verify")
@@ -1723,6 +1737,7 @@ def attach_demo_scans(i):
             if hashlib.sha256(raw).hexdigest() not in have: insert_source(c, i, f, raw, sec); n += 1
     return n
 
+app.config["TEST_NAMES"] = ALL_NAMES
 auth.setup(app, db, log, os.path.dirname(os.path.abspath(DB)))
 init()
 excel_routes.install(sys.modules[__name__])  # template registry and Excel routes (they use this module's helpers)

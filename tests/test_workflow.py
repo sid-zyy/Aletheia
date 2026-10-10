@@ -12,7 +12,7 @@ def extra_users():
     h = generate_password_hash(PW)
     with aletheia.db() as c:
         for un, name, roles, emp, tests in (("w.das", "W. Das", "tester", "E1003", None), ("sc.only", "S. C. Only", "tester", "E1004", "sc"),
-                                            ("both", "B. Oth", "tester,approver", "E1005", None)):
+                                            ("both", "B. Oth", "tester", "E1005", None)):
             if not c.execute("SELECT 1 FROM users WHERE username=?", (un,)).fetchone():
                 c.execute("INSERT INTO users(username,full_name,employee_id,roles,test_types,password_hash,must_change_password,created_at) VALUES(?,?,?,?,?,?,0,'2026-01-01')",
                           (un, name, emp, roles, tests, h))
@@ -104,7 +104,7 @@ class Intake(Flow):
             if f["level"] == "warn": self.c.post(f"/api/jobs/{i}/review", json=dict(index=n))
         for k, m in self.get(i)["meta"].items():
             if k != "request": self.v.post(f"/api/jobs/{i}/sections/{k}/verify", json=dict(revision=m["revision"]))
-        self.v.post(f"/api/jobs/{i}/signoff"); self.assertEqual(self.c.post(f"/api/jobs/{i}/generate").status_code, 200)
+        self.admin.post(f"/api/jobs/{i}/signoff"); self.assertEqual(self.admin.post(f"/api/jobs/{i}/generate").status_code, 200)
         r = self.approve(i); self.assertEqual(r.status_code, 409); self.assertIn("Intake", " ".join(r.json["error"]))
 
 
@@ -116,7 +116,9 @@ class Sections(Flow):
         b = signed_in("both"); i = self.job()
         b.post(f"/api/jobs/{i}/import", json=dict(filename="sc.json", content={"sc": DEMO["sc"]}))
         r = b.post(f"/api/jobs/{i}/sections/sc/verify", json=dict(revision=1)); self.assertEqual(r.status_code, 403)
-        self.assertIn("does not allow", r.json["error"][0])  # testers never verify; verification is the administrator's
+        self.assertIn("another tester must verify it", r.json["error"][0])  # a tester verifies a colleague's upload, never their own
+        r = self.admin.post(f"/api/jobs/{i}/sections/sc/verify", json=dict(revision=1)); self.assertEqual(r.status_code, 403)
+        self.assertIn("does not allow", r.json["error"][0])  # the administrator never verifies
         self.assertEqual(self.v.post(f"/api/jobs/{i}/sections/sc/verify", json=dict(revision=1)).status_code, 200)
         m = self.get(i)["meta"]["sc"]; self.assertEqual((m["state"], m["verified_by"], m["revision"]), ("verified", "S. Iyer", 2))
 
@@ -169,26 +171,30 @@ class Sections(Flow):
         i = self.receive()  # plan: proforma, temp, sc
         self.c.post(f"/api/jobs/{i}/import", json=dict(filename="d.json", content={k: PARTS[k] for k in ("proforma", "temp")}))
         self.c.post(f"/api/jobs/{i}/validate")
-        r = self.v.post(f"/api/jobs/{i}/signoff"); self.assertEqual(r.status_code, 409)
-        errs = " ".join(r.json["error"]); self.assertIn("Short-circuit logsheet: not uploaded", errs); self.assertIn("Proforma for transformers: uploaded", errs)
+        r = self.admin.post(f"/api/jobs/{i}/signoff"); self.assertEqual(r.status_code, 409)
+        errs = " ".join(r.json["error"]); self.assertIn("Short-Circuit Withstand Test Logsheet: not uploaded", errs); self.assertIn("Proforma for Transformers: uploaded", errs)
         self.assertEqual(self.v.post(f"/api/jobs/{i}/sections/sc/na", json={}).status_code, 400)
         self.assertEqual(self.v.post(f"/api/jobs/{i}/sections/sc/na", json=dict(reason="customer withdrew the SC test")).status_code, 200)
         for k in ("proforma", "temp"): self.v.post(f"/api/jobs/{i}/sections/{k}/verify", json=dict(revision=self.get(i)["meta"][k]["revision"]))
         for n, f in enumerate(self.get(i)["findings"]):
             if f["level"] in ("warn", "fail"): self.c.post(f"/api/jobs/{i}/review", json=dict(index=n))
-        r = self.c.post(f"/api/jobs/{i}/generate"); self.assertEqual(r.status_code, 409); self.assertIn("A verifier must sign off", r.json["error"][0])
-        self.assertEqual(self.v.post(f"/api/jobs/{i}/signoff").status_code, 200)
-        self.assertEqual(self.get(i)["signoff"]["by"], "S. Iyer")
+        r = self.admin.post(f"/api/jobs/{i}/generate"); self.assertEqual(r.status_code, 409); self.assertIn("An administrator must approve", r.json["error"][0])
+        self.assertEqual(self.v.post(f"/api/jobs/{i}/signoff").status_code, 403)  # a tester does not approve the job
+        self.assertEqual(self.admin.post(f"/api/jobs/{i}/signoff").status_code, 200)
+        self.assertEqual(self.get(i)["signoff"]["by"], "Lab Admin")
+        n = [x for x in self.admin.get("/api/notifications").json["items"] if x["kind"] == "signoff"]
+        self.assertTrue(n and n[0]["action"] and n[0]["target"] == f"job/{i}", n)  # "ready for approval" asks the administrator to act
         p = {x["key"]: x["state"] for x in self.get(i)["progress"]}; self.assertEqual(p, {"proforma": "verified", "temp": "verified", "sc": "na"})
         self.c.post(f"/api/jobs/{i}/import", json=dict(filename="ids.json", content={"ids": {"work": DEMO["ids"]["work"]}}))
         self.assertIsNone(self.get(i)["signoff"])  # new data: the sign-off is void
 
-    def test_uploader_cannot_sign_off(self):
+    def test_only_an_administrator_approves_the_job(self):
         b = signed_in("both"); i = self.job()
         b.post(f"/api/jobs/{i}/import", json=dict(filename="sc.json", content={"sc": DEMO["sc"]}))
         self.v.post(f"/api/jobs/{i}/sections/sc/verify", json=dict(revision=1)); b.post(f"/api/jobs/{i}/validate")
         self.assertEqual(b.post(f"/api/jobs/{i}/signoff").status_code, 403)
-        self.assertEqual(self.v.post(f"/api/jobs/{i}/signoff").status_code, 200)
+        self.assertEqual(self.v.post(f"/api/jobs/{i}/signoff").status_code, 403)
+        self.assertEqual(self.admin.post(f"/api/jobs/{i}/signoff").status_code, 200)
 
 
 class Assignment(Flow):
@@ -211,14 +217,14 @@ class Assignment(Flow):
         i = self.planned(); self.c.post(f"/api/jobs/{i}/assign", json=dict(key="temp"))  # T. Rao took temp himself
         r_at = aletheia.now()
         r = self.admin.post(f"/api/jobs/{i}/assign", json=dict(all=True, user_id=uid("w.das"))).json
-        self.assertEqual(sorted(r["assigned"]), ["proforma", "sc"]); self.assertIn("Temperature-rise logsheet (already assigned)", r["skipped"])
+        self.assertEqual(sorted(r["assigned"]), ["proforma", "sc"]); self.assertIn("Temperature-Rise Test Logsheet (already assigned)", r["skipped"])
         self.assertEqual(self.c.post(f"/api/jobs/{i}/assign", json=dict(all=True, user_id=uid("t.rao"))).status_code, 403)
         self.assertEqual(self.admin.post(f"/api/jobs/{i}/assign", json=dict(key="temp", user_id=uid("w.das"))).status_code, 200)
         self.assertEqual(self.get(i)["assign"]["temp"]["name"], "W. Das")
         with aletheia.db() as c: c.execute("UPDATE notifications SET read_at='x' WHERE created_at < ?", (r_at,))
         notes = [n["message"] for n in signed_in("w.das").get("/api/notifications?unread=1").json["items"] if n["kind"] == "assigned"]
         self.assertEqual(len(notes), 2, notes)  # one for the whole job (two tests), one for the reassigned test
-        self.assertIn("Proforma for transformers, Short-circuit logsheet assigned to you", notes[-1])
+        self.assertIn("Proforma for Transformers, Short-Circuit Withstand Test Logsheet assigned to you", notes[-1])
 
     def test_same_test_on_several_jobs_at_once_gives_one_notification(self):
         with aletheia.db() as c: c.execute("DELETE FROM notifications")
@@ -226,7 +232,7 @@ class Assignment(Flow):
         for i in (a, b): self.assertEqual(self.admin.post(f"/api/jobs/{i}/assign", json=dict(key="sc", user_id=uid("w.das"))).status_code, 200)
         notes = [n["message"] for n in signed_in("w.das").get("/api/notifications").json["items"] if n["kind"] == "assigned"]
         self.assertEqual(len(notes), 1, notes)
-        self.assertEqual(notes[0], f"{self.get(a)['series']}, {self.get(b)['series']}: Short-circuit logsheet assigned to you")
+        self.assertEqual(notes[0], f"{self.get(a)['series']}, {self.get(b)['series']}: Short-Circuit Withstand Test Logsheet assigned to you")
 
     def test_checks_expect_only_the_required_tests(self):
         i = self.receive(plan=("sc",))  # the customer asked for the short-circuit test only
@@ -251,9 +257,13 @@ class Queues(Flow):
         a = self.job(); self.c.post(f"/api/jobs/{a}/import", json=dict(filename="a.json", content={"sc": DEMO["sc"]}))
         b = self.job("CPRIBLRSCL25T1700"); self.c.post(f"/api/jobs/{b}/import", json=dict(filename="b.json", content={"temp": DEMO["temp"]}))
         w = self.v.get("/api/my-work").json
-        self.assertEqual([(x["series"], x["name"]) for x in w["to_verify"]], [("CPRIBLRSCL25T1654", "Short-circuit logsheet"), ("CPRIBLRSCL25T1700", "Temperature-rise logsheet")])
-        self.assertIn("to_approve", w)  # the administrator verifies and also sees what waits for approval
+        self.assertEqual([(x["series"], x["name"]) for x in w["to_verify"]], [("CPRIBLRSCL25T1654", "Short-Circuit Withstand Test Logsheet"), ("CPRIBLRSCL25T1700", "Temperature-Rise Test Logsheet")])
+        self.assertNotIn("to_approve", w)  # a tester verifies; approving is the administrator's
         t = self.c.get("/api/my-work").json; self.assertEqual(len(t["uploaded"]), 2); self.assertEqual(len(t["intake"]), 2)
+        self.assertEqual(t["to_verify"], [])  # never your own uploads
+        a_w = self.admin.get("/api/my-work").json
+        for k in ("to_signoff", "to_approve", "awaiting_verification", "unassigned", "requests"): self.assertIn(k, a_w)
+        self.assertNotIn("to_verify", a_w)
         self.admin.post(f"/api/jobs/{b}/assign", json=dict(key="sc", user_id=uid("w.das")))
         self.assertEqual(signed_in("w.das").get("/api/my-work").json["assigned"][0]["series"], "CPRIBLRSCL25T1700")
         i = self.c.post("/api/demo").json["id"]; self.c.post(f"/api/jobs/{i}/validate"); self.gen(i)

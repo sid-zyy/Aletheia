@@ -23,8 +23,8 @@ Choose the bay on the job page before uploading (the PC remembers it). *Aletheia
 and the dashboard shows what is outstanding and whose it is.
 
 ## 5. Verify during the day, not at the end
-Verifiers clear "My work" at fixed times (e.g. 11:00, 14:00, 16:30), so tests do not wait for the end of the day.
-*Aletheia:* the verification queue is sorted oldest first, verifiers are notified of every upload, and a test can be verified
+Testers clear their "To verify" queue at fixed times (e.g. 11:00, 14:00, 16:30), so tests do not wait for the end of the day.
+*Aletheia:* the verification queue is sorted oldest first, testers are notified of every upload by a colleague, and a test can be verified
 while others are still being tested.
 
 ## 6. Customers raise their request online
@@ -49,7 +49,7 @@ administrator makes a new template version, tests it on a sample and on past upl
 activates it. *Aletheia:* a template version that has read data is never changed; old jobs keep the version that read them.
 
 ## 10. Corrections after release
-Never re-issue a report by editing it. An approver and a second approver open an amendment with the reason; only the named
+Never re-issue a report by editing it. An administrator and a second administrator open an amendment with the reason; only the named
 tests are corrected and re-verified; the new version supersedes the old one, which stays verifiable.
 
 ## 11. Daily routine for the administrator

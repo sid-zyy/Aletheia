@@ -22,7 +22,7 @@ class Manifest(Released):
         i = self.released(); r = self.get(i)["reports"][0]
         v = self.c.get("/api/verify/" + r["token"]).json
         self.assertTrue(v["manifest_ok"]); self.assertEqual(v["manifest_sha256"], r["manifest_sha256"])
-        temp = next(s for s in v["sections"] if s["test"] == "Temperature-rise logsheet")
+        temp = next(s for s in v["sections"] if s["test"] == "Temperature-Rise Test Logsheet")
         self.assertEqual((temp["uploaded_by"], temp["verified_by"]), ("T. Rao", "S. Iyer")); self.assertEqual(len(temp["data_sha256"]), 64)
         text = pdf_text(self.c.get(f"/api/jobs/{i}/report.pdf").data)
         self.assertIn("Traceability of this report", text); self.assertIn(r["manifest_sha256"][:40], text.replace(" ", ""))
@@ -35,7 +35,7 @@ class Amendment(Released):
         i = self.released(); ap = signed_in("r.viewer")
         base = dict(reason="Hot resistance HV misread at hour 12", sections=["temp"], password=PW, second=dict(username="p.naveen", password=PW))
         for change, status in ((dict(reason="typo"), 400), (dict(sections=[]), 400), (dict(password="wrong password"), 403),
-                               (dict(second=dict(username="r.viewer", password=PW)), 403), (dict(second=dict(username="s.iyer", password=PW)), 403),
+                               (dict(second=dict(username="r.viewer", password=PW)), 403), (dict(second=dict(username="s.iyer", password=PW)), 403),  # a tester cannot second-sign
                                (dict(second=dict(username="p.naveen", password="nope nope")), 403)):
             self.assertEqual(ap.post(f"/api/jobs/{i}/amend", json=dict(base, **change)).status_code, status, change)
         self.assertEqual(self.c.post(f"/api/jobs/{i}/amend", json=base).status_code, 403)  # testers cannot amend
@@ -83,7 +83,7 @@ class Amendment(Released):
         self.c.post(f"/api/jobs/{i}/validate")
         for n, f in enumerate(self.get(i)["findings"]):
             if f["level"] == "warn" and not f.get("advisory"): self.c.post(f"/api/jobs/{i}/review", json=dict(index=n))
-        signed_in("s.iyer").post(f"/api/jobs/{i}/signoff"); self.assertEqual(self.c.post(f"/api/jobs/{i}/generate").status_code, 200)
+        self.admin.post(f"/api/jobs/{i}/signoff"); self.assertEqual(self.admin.post(f"/api/jobs/{i}/generate").status_code, 200)
         r = self.approve(i); self.assertEqual(r.status_code, 409); self.assertIn("checked against", " ".join(r.json["error"]))  # intake not read back
         self.c.post(f"/api/jobs/{i}/intake/checked"); self.assertEqual(self.approve(i).status_code, 200)
         cust = signed_in("ap.c2").get(f"/api/jobs/{i}").json

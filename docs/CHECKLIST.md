@@ -4,10 +4,10 @@ Status 2026-10-10 (evening). Ticked items are implemented and covered by tests (
 
 **Login and roles**
 - [x] Users table, first-run admin setup, login/logout, session timeout, lockout after failed attempts
-- [x] Roles: Admin, Tester, Verifier, Approver, Customer
+- [x] Roles: Admin, Tester, Customer (Verifier and Approver removed 2026-10-11; old accounts converted on start-up)
 - [x] Permission check on every route (server-side), plus a test that runs every route against every role
-- [x] Approver identity comes from the login, not typed name/ID
-- [x] Same person cannot upload and verify, or verify and approve, on one job
+- [x] The signing administrator's identity comes from the login, not typed name/ID
+- [x] A tester never verifies their own upload; an administrator who touched a job's data cannot sign it off
 - [x] Admin manages users but cannot edit, verify or approve test data
 
 **Customer request and intake**
@@ -16,13 +16,13 @@ Status 2026-10-10 (evening). Ticked items are implemented and covered by tests (
 - [x] Required fields enforced, no "NA" except where the form allows it with a reason (PIN code = 6 digits, valid email and phone)
 - [x] The laboratory receives the request (inbox), sees it as sent and never edits it; records sheet 3 and the test plan
 - [x] A request with something missing or wrong is returned with the reason; the customer corrects it and sends it again
-- [x] Series and sample number allocated automatically, only once everything is complete, safe with simultaneous users
+- [x] Series and sample number assigned automatically, only once everything is complete, safe with simultaneous users
 - [x] Record arrival time and who received the product
 
 **Shared report, many testers**
 - [x] One record per test section (not one JSON blob), so simultaneous uploads never overwrite each other
 - [x] Each section stores uploader, test bay, time, file name and file hash
-- [x] Each section stores verifier and time
+- [x] Each section stores who verified it and when
 - [x] Sections can be done in any order
 - [x] Section states: Not started, Uploaded, Returned, Verified (locked)
 

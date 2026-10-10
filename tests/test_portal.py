@@ -64,12 +64,37 @@ class Notifications(Portal):
     def test_who_hears_about_what(self):
         i = self.job_for_customer()
         self.assertTrue([n for n in self.notes("s.iyer", "uploaded") if "waiting for verification" in n["message"]])
-        self.assertTrue(self.notes("ap.portal", "progress")); self.assertFalse(self.notes("t.rao", "uploaded"))  # not about one's own upload
+        self.assertFalse(self.notes("t.rao", "uploaded"))  # not about one's own upload
+        self.assertEqual({n["kind"] for n in self.notes("ap.portal")}, {"progress"})  # only "your request was received": no progress notices
         self.v.post(f"/api/jobs/{i}/sections/temp/return", json=dict(revision=self.get(i)["meta"]["temp"]["revision"], reason="hour 7 top oil differs"))
         self.assertIn("hour 7 top oil differs", self.notes("t.rao", "returned")[0]["message"])
-        self.verify(i, "sc"); self.assertTrue(self.notes("ap.portal", "approved"))
+        self.verify(i, "sc"); self.assertFalse(self.notes("ap.portal", "approved"))  # an approved test is not announced to the customer
         n = self.c.get("/api/notifications").json; self.assertGreaterEqual(n["unread"], 1)
+        r = next(x for x in n["items"] if x["kind"] == "returned"); self.assertTrue(r["action"]); self.assertEqual(r["target"], f"job/{i}")
         self.c.post("/api/notifications/read", json=dict(all=True)); self.assertEqual(self.c.get("/api/notifications").json["unread"], 0)
+
+    def test_customer_hears_once_when_the_report_is_released(self):
+        i = self.job_for_customer(); self.c.post(f"/api/jobs/{i}/validate"); self.assertEqual(self.gen(i).status_code, 200)
+        self.assertFalse(self.notes("ap.portal", "released"))  # generated, not yet signed off: not complete
+        self.assertTrue(self.notes("r.viewer", "approve"))  # the other administrators are asked to sign it off
+        self.assertEqual(self.approve(i).status_code, 200)
+        rel = [x for x in self.cust.get("/api/notifications").json["items"] if x["kind"] == "released"]
+        self.assertEqual(len(rel), 1); self.assertEqual(rel[0]["target"], f"my/{i}"); self.assertFalse(rel[0]["action"])
+        self.assertIn(f"Test report {self.get(i)['series']} is ready", rel[0]["message"])
+
+    def test_new_request_notification_opens_the_request(self):
+        fid = self.request()
+        n = next(x for x in self.admin.get("/api/notifications").json["items"] if x["kind"] == "form")
+        self.assertEqual(n["target"], f"intake/r{fid}"); self.assertTrue(n["action"])
+        self.assertEqual(self.admin.post("/api/notifications/read", json=dict(ids=[n["id"]])).status_code, 200)
+        self.c.post("/api/intake", json=dict(LAB, customer_form_id=fid, plan=["proforma", "temp", "sc"]))  # accepted by someone else meanwhile
+        r = self.admin.post(f"/api/request-forms/{fid}/read", json={}); self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json["status"], "used"); self.assertTrue(r.json["job"]["series"].startswith("CPRIBLRSCL"))
+
+    def test_repeats_for_one_job_become_one_row(self):
+        i = self.job_for_customer(); before = self.notes("s.iyer", "uploaded")
+        self.c.post(f"/api/jobs/{i}/section", json=dict(section="temp", data=dict(DEMO["temp"], tap="X"), revision=self.get(i)["meta"]["temp"]["revision"]))
+        after = self.notes("s.iyer", "uploaded"); self.assertEqual(len(after), len(before)); self.assertEqual(after[-1]["count"], 2)
 
     def test_email_outbox_sends_retries_and_never_blocks(self):
         self.admin.post("/api/settings", json=dict(smtp_host="mail.lab.local", smtp_sender="aletheia@lab.local"))

@@ -42,6 +42,7 @@ def init_db(c):
 def row(r, full=False):
     d = {k: r[k] for k in r.keys() if k not in ("mapping", "sample")}
     m = json.loads(r["mapping"]); d["fields"] = len(m.get("fields") or []); d["has_sample"] = r["sample"] is not None
+    d["title"] = A.name(r["section"]) if A and r["kind"] == "logsheet" else r["name"]  # the formal name, shown on the page
     if full: d["mapping"] = m
     return d
 
@@ -50,8 +51,16 @@ def active(c, kind=None, section=None):
     q, a = "SELECT * FROM templates WHERE status='active'", []
     if kind: q += " AND kind=?"; a.append(kind)
     if section: q += " AND section=?"; a.append(section)
-    return [dict(id=r["id"], key=r["key"], version=r["version"], name=r["name"], section=r["section"], mapping=json.loads(r["mapping"]))
+    return [dict(id=r["id"], key=r["key"], version=r["version"], name=r["name"], section=r["section"], mapping=titled(json.loads(r["mapping"]), r["kind"], r["section"]))
             for r in c.execute(q + " ORDER BY key", a)]
+
+
+def titled(m, kind, section):
+    """A logsheet is drawn under the test's formal name (app.NAMES), whatever name its template version was stored with.
+    The sheet tab is limited to 31 characters, so a long name drops its trailing 'Logsheet' there."""
+    if kind != "logsheet" or not A or section not in A.NAMES: return m
+    n = A.NAMES[section]
+    return dict(m, title=n, sheet_title=n if len(n) <= 31 else n.removesuffix(" Logsheet")[:31])
 
 
 def template(c, tid):

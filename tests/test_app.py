@@ -27,8 +27,10 @@ def pdf_text(data):
 
 
 PW = "lab-test-password-1"
-STAFF = {"t.rao": ("T. Rao", "tester", "E1001"), "s.iyer": ("S. Iyer", "admin", "E1002"), "r.viewer": ("R. Viewer", "approver", "E2001"),
-         "p.naveen": ("P. Naveenkumar", "approver", "E2002"), "admin": ("Lab Admin", "admin", "E0001")}
+# t.rao uploads and checks; s.iyer is the second tester who verifies; admin approves the job and generates the report;
+# r.viewer and p.naveen are administrators who sign off and release (and second-sign amendments)
+STAFF = {"t.rao": ("T. Rao", "tester", "E1001"), "s.iyer": ("S. Iyer", "tester", "E1002"), "r.viewer": ("R. Viewer", "admin", "E2001"),
+         "p.naveen": ("P. Naveenkumar", "admin", "E2002"), "admin": ("Lab Admin", "admin", "E0001")}
 _HASH = None
 
 
@@ -115,7 +117,7 @@ class Base(unittest.TestCase):
 
     def gen(self, i):
         """The whole route to a report, in order: intake completed (if it was not), checks run, every flagged item reviewed
-        by the engineer, every section verified and the job signed off by a verifier, then the report built."""
+        by the engineer, every section verified by a second tester, the job approved and the report built by an administrator."""
         j = self.get(i)
         if not j["intake"].get("checked_by"):
             ran = j["stage"] >= 2; self.intake(i)
@@ -126,8 +128,8 @@ class Base(unittest.TestCase):
         for k, m in j["meta"].items():
             if k != "request" and m["state"] in ("uploaded", "returned") and k in j["data"]:
                 r = v.post(f"/api/jobs/{i}/sections/{k}/verify", json=dict(revision=m["revision"])); self.assertEqual(r.status_code, 200, (k, r.json))
-        if j["stage"] >= 2: v.post(f"/api/jobs/{i}/signoff")
-        return self.c.post(f"/api/jobs/{i}/generate")
+        if j["stage"] >= 2: self.admin.post(f"/api/jobs/{i}/signoff")
+        return self.admin.post(f"/api/jobs/{i}/generate")
 
     def job(self, series="CPRIBLRSCL25T1654"):
         r = self.c.post("/api/jobs", json=dict(series=series, sample="HVD25S0847", customer_form_id=self.request()))
@@ -249,7 +251,7 @@ class ImportFormats(Base):
         o = self.get(i)["data"]["other"][key]
         self.assertEqual(len(o["fields"]), 2); self.assertEqual(o["tables"][0]["rows"], [[1, 52.1], [2, None]])  # empty rows dropped, short rows padded
         f = self.c.post(f"/api/jobs/{i}/validate").json["findings"]
-        self.assertTrue([x for x in f if x["check"] == "Additional record: Noise level test" and x["level"] == "warn"])
+        self.assertTrue([x for x in f if x["check"] == "Supplementary test record: Noise level test" and x["level"] == "warn"])
         self.assertTrue([x for x in f if x["check"] == "Identifier consistency" and "Noise level test" in x["detail"]])  # 25T1656 vs 25T1654
         self.assertEqual(self.gen(i).status_code, 200)
         j2 = self.job("CPRIBLRSCL25T1999")  # exported CSV, including the extra sheet, imports into another job unchanged
@@ -283,9 +285,9 @@ class ImportFormats(Base):
     def test_review_one_by_one_before_the_report(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
         F = self.c.post(f"/api/jobs/{i}/validate").json["findings"]; warns = [n for n, f in enumerate(F) if f["level"] == "warn" and not f.get("advisory")]
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/generate").status_code, 409)  # nothing reviewed yet
+        self.assertEqual(self.admin.post(f"/api/jobs/{i}/generate").status_code, 409)  # nothing reviewed yet
         self.c.post(f"/api/jobs/{i}/review", json=dict(index=warns[0]))
-        self.assertIn(f"{len(warns) - 1} left", self.c.post(f"/api/jobs/{i}/generate").json["error"][0])
+        self.assertIn(f"{len(warns) - 1} left", self.admin.post(f"/api/jobs/{i}/generate").json["error"][0])
         F = self.c.post(f"/api/jobs/{i}/validate").json["findings"]  # unchanged items keep their review
         self.assertTrue(F[warns[0]].get("reviewed"))
         passed = [n for n, f in enumerate(F) if f["level"] == "pass"][0]
@@ -296,7 +298,7 @@ class ImportFormats(Base):
         F = self.c.post(f"/api/jobs/{j}/validate").json["findings"]; fail = [n for n, f in enumerate(F) if f["level"] == "fail"][0]
         self.assertFalse(F[fail].get("blocks"))  # a sample failing a limit is a result, not a data error
         self.assertEqual(self.get(j)["stage"], 2)
-        self.assertEqual(self.c.post(f"/api/jobs/{j}/generate").status_code, 409)  # the failure must be confirmed first
+        self.assertEqual(self.admin.post(f"/api/jobs/{j}/generate").status_code, 409)  # the failure must be confirmed first
         self.assertEqual(self.c.post(f"/api/jobs/{j}/review", json=dict(index=fail)).status_code, 200)
 
     def test_failing_sample_gets_a_does_not_comply_report(self):
@@ -331,7 +333,7 @@ class ImportFormats(Base):
         F = self.c.post(f"/api/jobs/{j}/validate").json["findings"]; bad = [n for n, f in enumerate(F) if f.get("blocks")]
         self.assertTrue(bad, F[:3]); self.assertEqual(self.get(j)["stage"], 1); self.assertIsNone(self.get(j)["verdict"])
         self.assertEqual(self.c.post(f"/api/jobs/{j}/review", json=dict(index=bad[0])).status_code, 409)
-        self.assertEqual(self.c.post(f"/api/jobs/{j}/generate").status_code, 409)
+        self.assertEqual(self.admin.post(f"/api/jobs/{j}/generate").status_code, 409)
 
     def test_summary_never_passes_a_test_that_was_not_fully_evaluated(self):
         d = json.loads(json.dumps(DEMO)); d["sc"]["shots"][3][7] = None; d["noload"]["rows"][2][4] = None; d["losses"]["rows"][0][13] = None
@@ -375,7 +377,7 @@ class ImportFormats(Base):
         self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/temp").status_code, 404)
         self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/request").status_code, 400)
         f = self.c.post(f"/api/jobs/{i}/validate").json["findings"]
-        self.assertIn("Temperature-rise logsheet", [x for x in f if x["check"] == "Completeness of source documents"][0]["detail"])
+        self.assertIn("Temperature-Rise Test Logsheet", [x for x in f if x["check"] == "Completeness of source documents"][0]["detail"])
 
     def test_only_series_is_required(self):
         self.assertEqual(self.c.post("/api/jobs", json=dict(series="CPRIBLRSCL25T1999")).status_code, 400)  # only for a customer's request

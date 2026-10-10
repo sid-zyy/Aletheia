@@ -2,8 +2,8 @@
 
 Web application for the CPRI Short Circuit Laboratory. Customers raise their test request online on the **Customer Request
 Form CPRI/QAF/01A**; test engineers receive it when the sample arrives, upload each test's **Excel logsheet** (several testers
-on one job, in any order), verifiers check every value against its source cell, and an approver releases a
-signed, hash-verifiable PDF test report in the lab's **Transformer Test report format**. Customers follow their jobs in a
+on one job, in any order) and a second tester checks every value against its source cell; the administrator then
+approves the job, generates and signs off a signed, hash-verifiable PDF test report in the lab's **Transformer Test report format**. Customers follow their jobs in a
 portal (what is approved, what is pending, a partial report built from approved tests only) and raise **tickets** to the
 laboratory's administrators.
 
@@ -33,14 +33,14 @@ Set `ALETHEIA_PASSWORDS=1` to switch every password rule back on (temporary pass
 
 | Role | Does | Cannot |
 |---|---|---|
-| **Admin** | receives (captures) customer requests like a test engineer; assigns tests (or a whole job) to test engineers; answers and closes **customer tickets**; users, customer organisations, Excel templates, settings, backups, audit log; sees what waits for approval | enter or verify data, sign reports |
-| **Tester** (test engineer) | intake: receives a customer's request (records sheet 3 of the form, the test plan; series/sample numbers are allocated) or returns it to the customer with the reason; takes unassigned tests, uploads the logsheets of their tests, corrects returned tests | raise or change a customer's request, take a test assigned to someone else, verify their own upload, sign off or approve a job they worked on |
-| **Verifier** | checks each uploaded test against its source cells: verify, return (with reason), reopen, not applicable; signs the job off ("all data correct") | verify their own upload |
-| **Approver** | approves and releases the report (re-enters password); with a second approver, amends a released report | approve a job they uploaded, entered or verified data on |
+| **Admin** | **approves** a job once every test is verified or not applicable, **generates** the report and **signs it off** (releases it, re-entering the password); with a second administrator, amends a released report; receives customer requests like a test engineer; assigns tests (or a whole job); answers customer tickets; users, customer organisations, Excel templates, settings, backups, audit log | enter, check or verify data; sign off a job whose data they touched |
+| **Tester** (test engineer) | intake: receives a customer's request (records sheet 3 of the form, the test plan; series and sample numbers are assigned) or returns it with the reason; takes unassigned tests, uploads the logsheets of their tests, corrects returned tests; **runs the checks**, marks flagged items reviewed; **verifies** colleagues' tests: verify, return (with reason), reopen, not applicable | raise or change a customer's request, take a test assigned to someone else, **verify their own upload**, approve, generate or sign off |
 | **Customer** | the only one who raises a test request: fills in the Customer Request Form (CPRI/QAF/01A, sheets 1-2) online and corrects it when returned; raises **tickets** to the laboratory (questions or problems, optionally about a job); sees their organisation's jobs: progress, approved values, partial report, released reports | see other customers' jobs, values of tests not yet approved, staff names |
 
-Tester, Verifier and Approver may be combined on one account; the rules above still apply per job. Admin and Customer
-accounts stand alone. Every rule is enforced by the server (a route without a permission rule is refused) and every refusal
+Each account has one role: Admin, Tester or Customer (the Verifier and Approver roles were removed; on the first start an
+old Verifier becomes a Tester and an old Approver an Admin, and an account that would combine Admin with Tester stops the
+start-up with a list, to be split into two accounts). Because nobody verifies their own upload, a laboratory needs **at
+least two testers**; because an amendment needs a second signature, it needs **at least two administrators**. Every rule is enforced by the server (a route without a permission rule is refused) and every refusal
 is recorded in the audit log.
 
 ## Workflow
@@ -54,27 +54,28 @@ is recorded in the audit log.
 2. **Intake** (Tester): when the sample arrives the engineer opens the request (shown exactly as the customer sent it; the
    laboratory never edits it), records **sheet 3** (physical condition on receipt, the customer's concurrence if not
    suitable, capability, externally provided products/services; later the deviations noticed during testing), chooses the
-   test plan and may take tests. Accepting allocates the series and sample numbers; a request with something missing or
+   test plan and may take tests. *Accept request* assigns the series and sample numbers; a request with something missing or
    wrong is **returned** to the customer with the reason, and they correct it and send it again.
 3. **Assignment and testing**: the administrator assigns tests (or the whole job), or an engineer takes an unassigned
    test. The engineer gets one notification per assignment, however many tests it covers; the same test assigned on several
    jobs at once is one notification listing the jobs. Testers, in any order, upload each test's Excel logsheet (or CSV). The upload preview shows every value with
    the cell it was read from; a required empty cell blocks the test (never stored as NA). Each test keeps its full history.
-4. **Verification** (Verifier): compare each test's values with its source file, then verify, or return it with a reason.
-   A verified test is locked. Checks (`validate`) run on the data; recomputations of logged figures are advisory only.
-5. **Sign-off and report** (Verifier, then Tester): when every planned test is verified or not applicable, the verifier signs
-   the job off; the report is generated as a numbered, hashed version with a printed manifest of everything it was built from.
-6. **Approval** (Approver): re-enter the password to sign; the report is released, locked (also in the database) and the
-   customer is notified. Corrections after release are **amendments**: a new version that supersedes the old one, which stays
+4. **Checks and verification** (Testers): the checks (`validate`) run on the data (recomputations of logged figures are
+   advisory only) and flagged items are reviewed in place, with an optional note. A second tester compares each test's
+   values with its source file, then verifies it, or returns it with a reason. A verified test is locked.
+5. **Approval and report** (Admin): when every planned test is verified or not applicable, the administrator **approves** the
+   job, then **generates** the report: a numbered, hashed version with a printed manifest of everything it was built from.
+6. **Sign-off and release** (Admin): re-enter the password to sign; the report is released, locked (also in the database)
+   and the customer is notified, once. Corrections after release are **amendments**: a new version that supersedes the old one, which stays
    verifiable.
 
-Pages for staff: **Dashboard** (each person's tasks: what to test, take, verify, approve; for Admin what waits for approval,
-what is not assigned and the customer tickets to answer), **My work** (what waits on you, oldest first), **Customer requests**
+Pages for staff: **Dashboard** (each person's tasks: for testers what to verify, test or take; for Admin what is ready to
+approve, ready for sign-off, not assigned, and the customer tickets to answer), **My work** (what waits on you, oldest first), **Customer requests**
 (test engineers and the admin: the intake inbox), **Report Workflow**, **Records & Search** (with Excel export of many jobs), **Report
 Preview**; for Admin also **Users & customers**, **Templates**, **Audit log**, **Customer tickets**, **Backups**, **Settings**.
 The job page lists only the source documents the job needs: the request, the tests in its plan, and anything uploaded.
 Every file is uploaded from the row of the test it belongs to (*Upload* on that row): a data file only fills that test,
-a scan is attached to that test. Nothing is allocated by itself (no general drop area, no workbook routed to several jobs).
+a scan is attached to that test. Nothing is assigned to a test by itself (no general drop area, no workbook routed to several jobs).
 Pages for customers: **Open requests** (their jobs and their test requests, *New test request*), **Tickets**, **Notifications**.
 Required fields on every form are marked with a red asterisk.
 
@@ -82,11 +83,29 @@ Required fields on every form are marked with a red asterisk.
 
 | Show | Steps |
 |---|---|
-| Whole chain | Sign in as a customer: *New test request*, fill in the form, send it. Sign in as a tester: *Customer requests*, open it, record sheet 3, accept; take each test, upload its logsheet (`sample_data/`), run checks, review flagged items. Sign in as a verifier: verify each test, sign off. Tester: generate. Sign in as an approver (not anyone who uploaded or verified): approve. |
+| Whole chain | Sign in as a customer: *New test request*, fill in the form, send it. Sign in as a tester: *Customer requests*, open it, record sheet 3, accept; take each test, upload its logsheet (`sample_data/`), run checks, review flagged items. Sign in as a second tester: verify each test. Sign in as the admin: *Approve*, *Generate report*, then *Sign off and release*. |
 | Excel logsheets | Job page -> *This job as filled logsheets*, or a test's blank logsheet from Templates (Admin): drop the workbook on a job to see the preview with source cells |
 | Failing sample | `test-files/3 - failing job (top-oil rise over limit).csv`: the logged top-oil rise is over its limit, so the report says the sample does NOT comply |
 | Customer | Create a customer account for the job's organisation, sign in: progress, approved values, partial report |
 | Tickets | As the customer: *Tickets* -> *Raise a ticket*. As the admin: *Customer tickets*, answer, close |
+
+## Notifications
+
+Every notification opens the job, test or request it is about (the target is stored with it) and is marked read when
+clicked. The **Notifications** page shows *Needs your action* (a test assigned or returned to you, a test to verify, a
+request to accept, a job to approve, a report to sign off) above *For information*, grouped by day, with the tabs Unread
+(default), Needs action and All. The bell shows the latest five unread. Repeats of one kind for one job within 30 minutes
+become one row ("3 updates"). **Customers** hear only: request received, request returned for correction, and the final
+report released (once per released version, with a link to it); nothing while the tests are in progress. *Only email me
+about important notices* on the Notifications page limits email to returned work and released reports.
+
+## Test names
+
+One list (`NAMES` and `EXTRA_NAMES` in `app.py`) names every test record on every page, in notifications, audit entries,
+Excel titles and the report: Customer Request Form, Proforma for Transformers, Work Instruction, Loss Measurement Datasheet,
+Winding Resistance and Loss Logsheet, No-Load Loss and Current Logsheet, Routine Test Logsheet, Short-Circuit Withstand Test
+Logsheet, Temperature-Rise Test Logsheet, Pressure and Oil-Leakage Test Logsheet, Sample Identification Record,
+Supplementary Test Records. Only display names: stored keys never change, and older audit entries keep their wording.
 
 ## Customer tickets
 

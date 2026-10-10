@@ -5,10 +5,8 @@ One Flask process and one SQLite database on a lab PC; browsers on the lab netwo
 ```mermaid
 flowchart LR
     subgraph People
-        T[Test engineer: receives requests, takes tests, uploads]
-        V[Verifier: verify, sign off]
-        AP[Approver: release, amend]
-        AD[Admin: assigns tests, answers tickets, users, templates, backups]
+        T[Test engineer: receives requests, takes tests, uploads, runs checks, verifies colleagues' tests]
+        AD[Admin: approves jobs, generates and signs off reports, amends with a second admin, assigns tests, answers tickets, users, templates, backups]
         CU[Customer: raises requests and tickets, portal]
     end
     subgraph Gate["auth.py"]
@@ -102,7 +100,7 @@ previous one by hash.
 | Test engineer | Take a planned test nobody is assigned to and nobody has started, choosing the bay; give it back before starting. At intake, tick the tests they will do themselves |
 
 Uploads without a bay use the bay of the assignment. Each person's dashboard lists their tasks: engineers what to test and what is
-free to take, verifiers what to verify and sign off, approvers what to approve, the administrator what waits for approval,
+free to take and what colleagues uploaded for them to verify; the administrator what is ready to approve and to sign off,
 tests not assigned, customer requests waiting, customer tickets to answer, and locked accounts.
 
 ## Job lifecycle
@@ -110,11 +108,11 @@ tests not assigned, customer requests waiting, customer tickets to answer, and l
 | Stage | Reached when |
 |---|---|
 | (before) Request | The customer fills in the Customer Request Form online; it waits in the intake inbox, or is returned to them with the reason |
-| 0 Request captured | The laboratory received the request: sheet 3 recorded, numbers allocated |
+| 0 Request captured | The laboratory accepted the request: sheet 3 recorded, series and sample numbers assigned |
 | 1 Data imported | Any test data uploaded or changed (also voids the sign-off) |
 | 2 Validated | Checks run without data-layout errors |
-| 3 Report ready | Flagged items reviewed, every planned test verified or not applicable, job signed off, report generated |
-| 4 Released | Approved by an approver who did not work on the data, with a complete, checked intake |
+| 3 Report ready | Flagged items reviewed, every planned test verified (by a tester other than its uploader) or not applicable, job approved by an administrator, report generated |
+| 4 Released | Signed off by an administrator who did not work on the data, with a complete, checked intake |
 
 A released job changes only through an **amendment** (back to stage 1 for the named tests only; the released version stays
 valid until version n+1 is released). Historical records from registers (`archived = 1`) stay out of the pipeline.

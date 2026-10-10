@@ -26,7 +26,7 @@ input.in,select{height:46px;box-sizing:border-box}
 `;document.head.append(s)})();
 
 /* ---------------------------------------------------------------- user menu */
-const ROLE_COL={admin:'#7c3aed',tester:'#1c4f9c',verifier:'#0f766e',approver:'#b45309',customer:'#be123c'};
+const ROLE_COL={admin:'#7c3aed',tester:'#1c4f9c',customer:'#be123c'};
 const initials=n=>String(n||'?').replace(/^(dr|mr|mrs|ms|prof|sh|smt)\.?\s+/i,'').split(/[\s.]+/).filter(Boolean).slice(0,2).map(x=>x[0].toUpperCase()).join('')||'?';
 function userChip(){if(!ME)return'';const c=ROLE_COL[ME.roles[0]]||'#1c4f9c',r=ME.roles.map(x=>ROLE_LBL[x]).join(', ');
  return `<div class="um"><button class="umb" id="umb" aria-haspopup="true" aria-expanded="false" onclick="umToggle(event)"><span class="av" style="background:${c}">${esc(initials(ME.full_name))}</span><span class="umt"><b>${esc(ME.full_name)}</b><small>${esc(r)}</small></span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
@@ -47,15 +47,13 @@ async function dashTasks(){if(!ME||isCust())return;const h=$('#app .hero');if(!h
  const take=x=>Object.assign(x,{_btn:`<button class="btn g s" onclick='takeTest(${x.id},"${x.key}",${JSON.stringify(x.name)})'>Take</button>`});
  const assign=x=>Object.assign(x,{_btn:`<a class="btn g s" href="#/job/${x.id}">Assign</a>`});
  let g='';
- if(ME.roles.includes('admin'))g+=G('Reports to approve',w.to_approve,x=>`${esc(x.customer||'')} &middot; report generated ${ago(x.at)}`,1)+G('Tests not assigned',(w.unassigned||[]).map(assign),x=>'',0,'dashboard')+
+ if(ME.roles.includes('admin'))g+=G('Ready to approve',w.to_signoff,x=>'every test verified &middot; approve, then generate the report',1)+G('Ready for sign-off and release',w.to_approve,x=>`${esc(x.customer||'')} &middot; report generated ${ago(x.at)}`,1)+G('Tests not assigned',(w.unassigned||[]).map(assign),x=>'',0,'dashboard')+
   G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:'Request '+x.id,href:'#/intake/r'+x.id})),x=>ago(x.at))+G('Awaiting verification',w.awaiting_verification,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`)+
   G('Locked accounts',(w.locked_accounts||[]).map(x=>({...x,href:'#/users'})),x=>`until ${esc((x.at||'').slice(11,16))}`,1)+
   G('Customer tickets to answer',(w.tickets||[]).map(x=>({...x,href:'#/tickets/'+x.id})),x=>ago(x.at),1,'tickets');
- if(ME.roles.includes('tester'))g+=G('Returned to you',w.returned,x=>`<span style="color:var(--er)">${esc(x.note||'')}</span>`,1)+G('To test',w.assigned,x=>'assigned '+ago(x.at),1)+
+ if(ME.roles.includes('tester'))g+=G('To verify',w.to_verify,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`,1)+G('Returned to you',w.returned,x=>`<span style="color:var(--er)">${esc(x.note||'')}</span>`,1)+G('To test',w.assigned,x=>'assigned '+ago(x.at),1)+
   G('Available to take',(w.available||[]).map(take),x=>'not assigned')+G('Intake to complete',w.intake,x=>'intake not confirmed against the original')+
   G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:'Request '+x.id,href:'#/intake/r'+x.id})),x=>ago(x.at)+' &middot; open it when the sample arrives');
- if(ME.roles.includes('admin'))g+=G('To verify',w.to_verify,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`,1)+G('Ready for your sign-off',w.to_signoff,x=>'every test verified');
- if(ME.roles.includes('approver')&&!ME.roles.includes('admin'))g+=G('Reports to approve',w.to_approve,x=>'report generated '+ago(x.at),1);
  const c=document.createElement('div');c.className='card';c.id='tasks';
  c.innerHTML=`<div class="wh"><h2 style="margin:0">Your tasks</h2>${ME.roles.includes('admin')?'':'<a class="lk" href="#/mywork">Open My work</a>'}</div>${g?`<div class="tasks">${g}</div>`:'<p class="note">Nothing is waiting on you right now.</p>'}`;
  h.after(c)}

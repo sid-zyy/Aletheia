@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_app import Base, DEMO, PW, STAFF, aletheia, ensure_users, raw, signed_in, up  # noqa: E402  (same temporary database)
 import auth  # noqa: E402
 
-ROLE_USER = {"tester": "t.rao", "approver": "r.viewer", "admin": "admin"}
+ROLE_USER = {"tester": "t.rao", "admin": "admin"}
 
 
 class RoutePolicy(Base):
@@ -99,7 +99,7 @@ class Login(Base):
     def test_admin_creates_user_who_must_change_password(self):
         bad = self.admin.post("/api/users", json=dict(username="New User", full_name="", roles=["tester", "admin"], password="short"))
         self.assertEqual(bad.status_code, 400); self.assertGreaterEqual(len(bad.json["error"]), 4)
-        r = self.admin.post("/api/users", json=dict(username="k.das", full_name="K. Das", employee_id="e3001", roles=["tester", "approver"],
+        r = self.admin.post("/api/users", json=dict(username="k.das", full_name="K. Das", employee_id="e3001", roles=["tester"],
                                                     password="temporary-pass-1", test_types=["sc", "temp"]))
         self.assertEqual(r.status_code, 201, r.json)
         self.assertEqual(self.admin.post("/api/users", json=dict(username="k.das", full_name="K", employee_id="E3", roles=["tester"],
@@ -113,25 +113,30 @@ class Login(Base):
         self.assertEqual(c.post("/api/password", json=dict(old="temporary-pass-1", new="a-good-long-phrase")).status_code, 200)
         c.environ_base["HTTP_X_CSRF_TOKEN"] = c.get("/api/me").json["csrf"]
         self.assertEqual(c.get("/api/jobs").status_code, 200)
-        me = c.get("/api/me").json; self.assertEqual(me["user"]["roles"], ["approver", "tester"]); self.assertEqual(me["user"]["employee_id"], "E3001")
-        self.assertNotIn("section.verify", me["perms"]); self.assertIn("report.approve", me["perms"])
+        me = c.get("/api/me").json; self.assertEqual(me["user"]["roles"], ["tester"]); self.assertEqual(me["user"]["employee_id"], "E3001")
+        self.assertIn("section.verify", me["perms"]); self.assertIn("data.check", me["perms"]); self.assertNotIn("report.approve", me["perms"])
+        self.assertEqual(me["names"]["sc"], "Short-Circuit Withstand Test Logsheet")  # the one list of formal names, for every page
+        for gone in ("verifier", "approver"):
+            self.assertEqual(self.admin.post("/api/users", json=dict(username="x." + gone, full_name="X", employee_id="E31", roles=[gone],
+                                                                     password="temporary-pass-1")).status_code, 400, gone)
 
     def test_disabling_or_role_change_ends_sessions(self):
         c = signed_in("s.iyer"); uid = self.uid("s.iyer")
-        self.assertEqual(self.admin.post(f"/api/users/{uid}", json=dict(roles=["approver"])).status_code, 200)
+        self.assertEqual(self.admin.post(f"/api/users/{uid}", json=dict(roles=["admin"])).status_code, 200)
         self.assertEqual(c.get("/api/jobs").status_code, 401)  # signed out by the change
         c = signed_in("s.iyer"); self.assertIn("report.approve", c.get("/api/me").json["perms"])
         self.admin.post(f"/api/users/{uid}", json=dict(active=False))
         self.assertEqual(c.get("/api/jobs").status_code, 401)
         self.assertEqual(aletheia.app.test_client().post("/api/login", json=dict(username="s.iyer", password=PW)).status_code, 401)
-        self.admin.post(f"/api/users/{uid}", json=dict(active=True, roles=["admin"]))
+        self.admin.post(f"/api/users/{uid}", json=dict(active=True, roles=["tester"]))
 
     def test_last_admin_cannot_be_removed_and_admin_is_not_a_tester(self):
-        uid = self.uid("admin"); other = self.uid("s.iyer")  # S. Iyer is an administrator too (verification)
-        with aletheia.db() as c: c.execute("UPDATE users SET active=0 WHERE id=?", (other,))
+        uid = self.uid("admin"); others = [self.uid(u) for u in ("r.viewer", "p.naveen")]  # the other administrators
+        with aletheia.db() as c: c.executemany("UPDATE users SET active=0 WHERE id=?", [(o,) for o in others])
         try: self.assertEqual(self.admin.post(f"/api/users/{uid}", json=dict(roles=["tester"])).status_code, 409)
         finally:
-            with aletheia.db() as c: c.execute("UPDATE users SET active=1 WHERE id=?", (other,))
+            with aletheia.db() as c: c.executemany("UPDATE users SET active=1 WHERE id=?", [(o,) for o in others])
+        self.assertEqual(self.admin.post(f"/api/users/{uid}", json=dict(roles=["admin", "tester"])).status_code, 400)
         self.assertEqual(self.admin.post(f"/api/users/{uid}", json=dict(roles=["admin", "approver"])).status_code, 400)
         self.assertEqual(self.admin.post("/api/users", json=dict(username="mix", full_name="Mix", roles=["customer", "tester"], employee_id="E1",
                                                                  password="a-good-long-phrase")).status_code, 400)
@@ -171,28 +176,42 @@ class SeparationOfDuties(Base):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
         self.c.post(f"/api/jobs/{i}/validate"); self.gen(i); return i
 
-    def test_admin_cannot_touch_test_data_or_sign(self):
+    def test_admin_cannot_touch_test_data_or_verify(self):
         i = self.ready()
-        for path in ("import", "approve"):  # the administrator verifies, runs checks and generates, but never enters data or signs
+        for path in ("import", "validate", "sections/temp/verify", "sections/temp/return"):  # the administrator approves, generates and signs off only
             self.assertEqual(self.admin.post(f"/api/jobs/{i}/{path}", json={}).status_code, 403, path)
-        with aletheia.db() as c: self.assertGreaterEqual(c.execute("SELECT COUNT(*) FROM audit WHERE kind='denied' AND job_id=?", (i,)).fetchone()[0], 2)
+        with aletheia.db() as c: self.assertGreaterEqual(c.execute("SELECT COUNT(*) FROM audit WHERE kind='denied' AND job_id=?", (i,)).fetchone()[0], 4)
+        for path in ("signoff", "generate"):  # and a tester cannot approve the job or build the report
+            self.assertEqual(self.c.post(f"/api/jobs/{i}/{path}", json={}).status_code, 403, path)
 
     def test_someone_who_worked_on_the_data_cannot_approve(self):
         i = self.ready()
         uid = Login.uid(self, "s.iyer")
-        self.admin.post(f"/api/users/{uid}", json=dict(roles=["tester", "approver"]))
+        self.admin.post(f"/api/users/{uid}", json=dict(roles=["admin"]))  # S. Iyer verified this job's tests, then became an administrator
         try:
-            v = signed_in("s.iyer"); v.post(f"/api/jobs/{i}/validate")  # the verifier ran the checks on this job
-            r = v.post(f"/api/jobs/{i}/approve", json=dict(password=PW)); self.assertEqual(r.status_code, 403)
-            self.assertIn("different person", r.json["error"][0])
+            r = signed_in("s.iyer").post(f"/api/jobs/{i}/approve", json=dict(password=PW)); self.assertEqual(r.status_code, 403)
+            self.assertIn("different administrator", r.json["error"][0])
             self.assertEqual(self.approve(i).status_code, 200)  # someone who did not
         finally:
-            self.admin.post(f"/api/users/{uid}", json=dict(roles=["admin"]))
+            self.admin.post(f"/api/users/{uid}", json=dict(roles=["tester"]))
 
     def test_typed_name_no_longer_gets_around_it(self):
         i = self.ready()
         r = signed_in("p.naveen").post(f"/api/jobs/{i}/approve", json=dict(name="Somebody Else", password=PW))
         self.assertEqual(r.status_code, 403)  # P. Naveenkumar is the engineer on the work instruction, whatever is typed
+
+
+class RoleMigration(Base):
+    def test_old_roles_convert_and_mixed_accounts_stop_the_migration(self):
+        with aletheia.db() as c:
+            c.execute("INSERT INTO users(username,full_name,roles,password_hash,created_at) VALUES('old.v','Old V','verifier','x','x'),('old.a','Old A','approver','x','x')")
+            self.assertEqual(auth.migrate_roles(c, aletheia.log), [])
+            self.assertEqual({r[0]: r[1] for r in c.execute("SELECT username, roles FROM users WHERE username LIKE 'old.%'")}, {"old.v": "tester", "old.a": "admin"})
+            c.execute("INSERT INTO users(username,full_name,roles,password_hash,created_at) VALUES('old.m','Old M','approver,tester','x','x')")
+            self.assertEqual(auth.migrate_roles(c), ["old.m (approver,tester)"])  # listed, nothing changed
+            self.assertEqual(c.execute("SELECT roles FROM users WHERE username='old.m'").fetchone()[0], "approver,tester")
+            c.execute("DELETE FROM users WHERE username LIKE 'old.%'")
+        self.assertTrue(self.admin.get("/api/audit/verify").json["ok"])  # the chain still checks out
 
 
 class Customers(Base):

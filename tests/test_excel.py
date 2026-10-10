@@ -205,7 +205,7 @@ class Registry(Base):
     def test_admin_tools_grid_and_sample(self):
         tid = self.tid("temp-std")
         g = self.admin.post("/api/templates/grid", json=up("t.xlsx", filled(["temp"]))).json["sheets"][0]
-        self.assertEqual(g["rows"][0][0], "Temperature-rise logsheet"); self.assertIn("tr_rhv_cold", g["names"])
+        self.assertEqual(g["rows"][0][0], "Temperature-Rise Test Logsheet"); self.assertIn("tr_rhv_cold", g["names"])
         d = self.admin.post("/api/templates", json=dict(from_id=tid)).json["id"]
         self.assertEqual(self.admin.post(f"/api/templates/{d}/sample", json=up("t.xlsx", filled(["temp"]))).status_code, 200)
         r = self.admin.post("/api/templates/test", json=dict(template_id=d, mapping=self.admin.get(f"/api/templates/{d}").json["mapping"])).json

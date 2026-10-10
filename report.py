@@ -530,8 +530,8 @@ def _render(A, t, j, F, C, version, verify_url, manifest, partial, prev, seen):
     if others:
         R += [PageBreak(), mark("annex"), P_(hd["annex"], H1)]
         for o in others:
-            with part("Additional log sheet"):
-                R.append(P_(f"{o.get('title', 'Additional log sheet')} (recorded values; no limits evaluated)", H3))
+            with part(A.name("other")):
+                R.append(P_(f"{o.get('title') or 'Supplementary test record'} (recorded values; no limits evaluated)", H3))
                 if o.get("fields"): R.append(kv([(f.get("label") or "-", s(f.get("value"))) for f in o["fields"]]))
                 for tb in o.get("tables") or []:
                     if tb.get("title"): R.append(P_(tb["title"], SMALL))
