@@ -4,7 +4,7 @@
 (()=>{
 const box=document.createElement('div');box.id='cb';
 box.innerHTML=`<button class="cbf" id="cbo" aria-expanded="false" aria-controls="cbp" aria-label="Open the assistant">
- <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 11h.01M12 11h.01M15.5 11h.01"/></svg></button>
+ <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/><path d="M8 12h.01M12 12h.01M16 12h.01" stroke-width="2.6"/></svg></button>
  <section class="cbp" id="cbp" role="dialog" aria-label="Aletheia assistant" hidden>
   <header><div><b>Aletheia assistant</b><span>Reports, records and help</span></div><button class="cbx" id="cbc" aria-label="Close the assistant">&times;</button></header>
   <div class="cbl" id="cbl" aria-live="polite"></div>
@@ -50,18 +50,20 @@ async function search(term){
  const l=await api('/api/jobs?q='+encodeURIComponent(term));
  if(!l.length){say(`No records match <b>${esc(term)}</b>.`);return chips([['New report','new'],['Search again','search'],['Import an old register','register']])}
  say(`${l.length} record${l.length==1?'':'s'} match <b>${esc(term)}</b>:`+jobList(l,'all:'+term));chips(MAIN)}
-async function pending(){const l=(await api('/api/jobs')).filter(j=>j.stage<4);
+async function pending(){const l=(await api('/api/jobs')).filter(j=>j.stage<4&&!j.archived);
  if(!l.length){say('Nothing is in progress: every record has been approved.');return chips(MAIN)}
  say(`${l.length} report${l.length==1?' is':'s are'} still in progress (most recently updated first):`+jobList(l,'records'));chips(MAIN)}
 async function status(){const s=await api('/api/stats');
  if(!s.total){say('There are no records yet. Start a new report, or load the demo job to try things out.');return chips([['New report','new'],['Load demo job','demo'],['How it works','how']])}
  say(`<b>${s.total}</b> record${s.total==1?'':'s'} in total:<dl class="cbs">${ST.map((n,i)=>`<dt>${esc(n)}</dt><dd>${s.by_stage[i]}</dd>`).join('')}</dl>`+
-  (s.avg_gen_ms!=null?`Reports take about ${s.avg_gen_ms} ms to generate.`:''));chips(MAIN)}
+  (s.historical?`Plus <b>${s.historical}</b> historical record${s.historical==1?'':'s'} imported from registers. `:'')+
+  (s.turnaround_h?`From request to release takes ${dur(s.turnaround_h.avg)} on average (${s.turnaround_h.n} released). `:'')+
+  (s.avg_gen_ms!=null?`Building the PDF itself takes about ${s.avg_gen_ms} ms.`:''));chips(MAIN)}
 const HELP={
- how:`A report goes through five steps:<ol class="cbo"><li><b>Request captured</b>: series, sample, customer and rating.</li><li><b>Data imported</b>: log sheets as CSV, Excel, JSON or a database, or scans read and checked by hand.</li><li><b>Validated</b>: the checks compare every value with IS 1180 limits and the proforma.</li><li><b>Report ready</b>: once every flagged item is reviewed, the PDF is generated.</li><li><b>Approved</b>: a reviewer approves and releases it, giving their name and employee ID.</li></ol>`,
+ how:`A report goes through five steps:<ol class="cbo"><li><b>Request captured</b>: series, sample, customer and rating.</li><li><b>Data imported</b>: log sheets as CSV, Excel, JSON or a database, or scans read and checked by hand.</li><li><b>Validated</b>: the checks compare every value with the documented limits (IS 1180 / IS 2026 references) and the proforma.</li><li><b>Report ready</b>: once every flagged item is reviewed, the PDF is generated.</li><li><b>Approved</b>: a reviewer approves and releases it, giving their name and employee ID.</li></ol>`,
  import:`Open the job and drop its files on the upload area. Data files (CSV, Excel, JSON, SQLite) are imported directly. PDFs and photos are attached as source documents; you can type their values in, or ask the scan reader for a proposal you check before saving. A blank template is under <b>Records &amp; Search</b>.`,
- checks:`<b>Run checks</b> compares the data with the limits. <b>Failed</b> items block the report until the data is corrected. <b>Review</b> items must each be marked as reviewed, one by one, before the report can be built. They are listed in the report.`,
- approve:`When the report is generated, open the job, check the preview, enter your name and <b>employee ID</b> (both are required and are printed on the report) and click <b>Approve and release</b>. Every step is recorded in the job history.`,
+ checks:`<b>Run checks</b> compares the data with the limits. A <b>data error</b> (for example an average that does not match its readings) blocks the report until it is corrected. A <b>requirement not met</b> is a result: confirm the reading and the report states that the sample does not comply. <b>Review</b> items must each be marked as reviewed, one by one, before the report can be built. They are listed in the report.`,
+ approve:`When the report is generated, open the job, check the preview, enter your name and <b>employee ID</b> (both are required and are printed on the report) and click <b>Approve and release</b>. The test engineer named on the report cannot approve it. Then copy the customer link or email it: the customer can verify and download the report. Every step is recorded in the job history.`,
  verify:`Each approved report carries a verification link and code. Opening it shows whether the PDF matches the one the lab issued, so changed copies can be detected.`,
  register:`Under <b>Records &amp; Search</b>, use <b>Import existing register</b> to bring in older records from a CSV, Excel or SQLite file. Download the register template there to see the expected columns.`,
  help:`I can help you:<ul class="cbo"><li>start a <b>new report</b> request</li><li><b>search</b> records by series, sample code, customer or rating</li><li>list reports <b>in progress</b> and give a <b>status summary</b></li><li>explain importing, checks, approval and verification</li><li>open a page: dashboard, records, preview or architecture</li></ul>I match keywords rather than understanding full sentences, so short requests work best.`};
@@ -107,6 +109,8 @@ function toggle(open){panel.hidden=!open;opener.setAttribute('aria-expanded',ope
  if(open)inp.focus();else opener.focus()}
 
 opener.onclick=()=>toggle(panel.hidden);$('#cbc').onclick=()=>toggle(false);
+/* a press anywhere outside the assistant minimises it; pointerdown runs before the chat re-renders its own buttons */
+document.addEventListener('pointerdown',e=>{if(!panel.hidden&&!box.contains(e.target))toggle(false)});
 panel.addEventListener('keydown',e=>{if(e.key=='Escape'&&!$('#ov')){e.stopPropagation();toggle(false)}});
 $('#cbf').onsubmit=e=>{e.preventDefault();const t=inp.value.trim();if(!t)return;inp.value='';say(esc(t),'me');send(t)};
 panel.addEventListener('click',e=>{const j=e.target.closest('[data-job]'),a=e.target.closest('[data-a]');

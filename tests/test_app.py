@@ -15,6 +15,13 @@ up = lambda name, data: dict(filename=name, b64=base64.b64encode(data).decode())
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
 
+def pdf_text(data):
+    import pypdfium2
+    doc = pypdfium2.PdfDocument(data)
+    try: return " ".join(" ".join(p.get_textpage().get_text_range() for p in doc).split())  # line wrapping removed
+    finally: doc.close()
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         with aletheia.db() as c:
@@ -83,6 +90,14 @@ class ImportFormats(Base):
             with sqlite3.connect(path) as c:
                 for t in ("jobs", "reports"): self.assertIn("approver_id", [r[1] for r in c.execute(f"PRAGMA table_info({t})")], t)
         finally: aletheia.DB = old
+
+    def test_csv_saved_with_windows_line_endings(self):
+        # Excel on Windows saves CRLF. The CSV sniffer then guessed "no doubled quotes", so an empty note written as """"""
+        # arrived as the text """" and every normal short-circuit shot was skipped (SC current "not evaluated").
+        body = raw("AP_Transformers_25T1654.csv").decode("utf-8-sig").replace("\r\n", "\n")
+        for nl in ("\n", "\r\n"):
+            d = importers.load_test_data("x.csv", ("﻿" + body.replace("\n", nl)).encode("utf-8"))[0]
+            self.assertEqual(d, DEMO, repr(nl))
 
     def test_semicolon_csv_and_series_column(self):
         text = "series;section;field;value\nCPRIBLRSCL25T1654;proforma;kva;250\nCPRIBLRSCL25T9999;proforma;kva;999\nCPRIBLRSCL25T1654;proforma;limits.oil;35\n"
@@ -182,7 +197,40 @@ class ImportFormats(Base):
         d = json.loads(json.dumps(DEMO)); d["temp"]["hours"][-1][1] = 65.2  # top-oil rise over the limit: a failed check
         j = self.job("CPRIBLRSCL25T1998"); self.c.post(f"/api/jobs/{j}/import", json=up("f.json", json.dumps(d).encode()))
         F = self.c.post(f"/api/jobs/{j}/validate").json["findings"]; fail = [n for n, f in enumerate(F) if f["level"] == "fail"][0]
-        self.assertEqual(self.c.post(f"/api/jobs/{j}/review", json=dict(index=fail)).status_code, 409)
+        self.assertFalse(F[fail].get("blocks"))  # a sample failing a limit is a result, not a data error
+        self.assertEqual(self.get(j)["stage"], 2)
+        self.assertEqual(self.c.post(f"/api/jobs/{j}/generate").status_code, 409)  # the failure must be confirmed first
+        self.assertEqual(self.c.post(f"/api/jobs/{j}/review", json=dict(index=fail)).status_code, 200)
+
+    def test_failing_sample_gets_a_does_not_comply_report(self):
+        d = json.loads(json.dumps(DEMO)); d["temp"]["hours"][-1][1] = 65.2
+        j = self.job(); self.c.post(f"/api/jobs/{j}/import", json=up("f.json", json.dumps(d).encode()))
+        self.c.post(f"/api/jobs/{j}/validate"); self.assertEqual(self.get(j)["verdict"], "Does not comply")
+        for n, f in enumerate(self.get(j)["findings"]):
+            if f["level"] == "fail": self.c.post(f"/api/jobs/{j}/review", json=dict(index=n))
+        self.assertEqual(self.gen(j).status_code, 200)
+        text = pdf_text(self.c.get(f"/api/jobs/{j}/report.pdf").data)
+        self.assertIn("does NOT comply", text); self.assertIn("Top-oil temperature rise", text)
+        self.assertEqual(self.c.post(f"/api/jobs/{j}/approve", json=dict(name="R. Viewer", employee_id="E2001")).status_code, 200)
+        self.assertEqual([x["series"] for x in self.c.get("/api/jobs?verdict=not").json], ["CPRIBLRSCL25T1654"])
+
+    def test_data_error_still_blocks_the_report(self):
+        d = json.loads(json.dumps(DEMO)); d["noload"]["rows"][0][4] = 9.99  # logged average does not match its readings
+        j = self.job(); self.c.post(f"/api/jobs/{j}/import", json=up("f.json", json.dumps(d).encode()))
+        F = self.c.post(f"/api/jobs/{j}/validate").json["findings"]; bad = [n for n, f in enumerate(F) if f.get("blocks")]
+        self.assertTrue(bad); self.assertEqual(self.get(j)["stage"], 1); self.assertIsNone(self.get(j)["verdict"])
+        self.assertEqual(self.c.post(f"/api/jobs/{j}/review", json=dict(index=bad[0])).status_code, 409)
+        self.assertEqual(self.c.post(f"/api/jobs/{j}/generate").status_code, 409)
+
+    def test_summary_never_passes_a_test_that_was_not_fully_evaluated(self):
+        d = json.loads(json.dumps(DEMO)); d["sc"]["shots"][3][7] = None; d["noload"]["rows"][2][4] = None; d["losses"]["rows"][0][13] = None
+        j = self.job(); self.c.post(f"/api/jobs/{j}/import", json=up("f.json", json.dumps(d).encode()))
+        self.c.post(f"/api/jobs/{j}/validate"); self.assertEqual(self.gen(j).status_code, 200)
+        text = pdf_text(self.c.get(f"/api/jobs/{j}/report.pdf").data)
+        self.assertNotIn("None", text)
+        self.assertIn("NOT FULLY", text)  # short circuit and no-load: some checks passed, one could not run
+        self.assertIn("checks with NA values", text); self.assertIn("SC current", text.split("Statement of conformity")[1])
+        self.assertEqual(self.get(j)["verdict"], "Complies (partly evaluated)")
 
     def test_remove_a_document(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
@@ -234,6 +282,20 @@ class Register(Base):
         self.assertEqual(again["created"], 0)
         hits = self.c.get("/api/jobs?q=Kaveri").json; self.assertEqual(len(hits), 2)
         self.assertEqual(self.get(hits[0]["id"])["data"]["request"]["criteria"], "IS 1180")
+        # historical records are searchable but are not jobs in progress
+        self.assertTrue(all(j["archived"] for j in self.c.get("/api/jobs").json))
+        s = self.c.get("/api/stats").json; self.assertEqual((s["total"], s["historical"]), (0, 7))
+        self.assertEqual(len(self.c.get("/api/jobs?stage=0").json), 0); self.assertEqual(len(self.c.get("/api/jobs?stage=h").json), 7)
+
+    def test_register_reads_result_and_test_date(self):
+        csv = (b"Test Series No,Customer Name,Test Date,Result\n"
+               b"CPRIBLRSCL24T1102,Southern Electricals,18-03-2024,Passed\nCPRIBLRSCL24T1103,Deccan Power,2024-05-02,Failed - oil leakage\n")
+        self.assertEqual(self.c.post("/api/import-register", json=up("r.csv", csv)).json["created"], 2)
+        l = {j["series"]: j for j in self.c.get("/api/jobs?stage=h").json}
+        self.assertEqual((l["CPRIBLRSCL24T1102"]["verdict"], l["CPRIBLRSCL24T1102"]["tested"]), ("Complies", "2024-03-18"))
+        self.assertEqual(l["CPRIBLRSCL24T1103"]["verdict"], "Does not comply")
+        self.assertEqual([j["series"] for j in self.c.get("/api/jobs?from=2024-04-01&to=2024-12-31").json], ["CPRIBLRSCL24T1103"])
+        self.assertEqual(len(self.c.get("/api/jobs?verdict=comply").json), 1)
 
     def test_register_needs_series_and_customer(self):
         r = self.c.post("/api/import-register", json=up("x.csv", b"name,value\na,1\n")); self.assertEqual(r.status_code, 400)
@@ -254,6 +316,36 @@ class ReportsAndSources(Base):
         with aletheia.db() as c: c.execute("UPDATE reports SET pdf=? WHERE version=2", (b"%PDF tampered",))
         self.assertFalse(self.c.get("/api/verify/" + self.get(i)["reports"][0]["token"]).json["intact"])
         self.assertEqual(self.c.get("/api/verify/nope").status_code, 404)
+
+    def test_release_rules_and_customer_copy(self):
+        i = self.ready(); tok = self.get(i)["reports"][0]["token"]
+        self.assertEqual(self.c.get(f"/api/verify/{tok}/report.pdf").status_code, 409)  # not approved yet: nothing to hand out
+        r = self.c.post(f"/api/jobs/{i}/approve", json=dict(name="p. naveenkumar", employee_id="E1"))  # the test engineer himself
+        self.assertEqual(r.status_code, 403)
+        os.environ["ALETHEIA_APPROVERS"] = "E2001, E2002"
+        try:
+            self.assertEqual(self.c.post(f"/api/jobs/{i}/approve", json=dict(name="R. Viewer", employee_id="E9999")).status_code, 403)
+            self.assertEqual(self.c.post(f"/api/jobs/{i}/approve", json=dict(name="R. Viewer", employee_id="e2001")).status_code, 200)
+        finally:
+            os.environ.pop("ALETHEIA_APPROVERS")
+        tok = self.get(i)["reports"][0]["token"]
+        self.assertTrue(self.c.get(f"/api/verify/{tok}/report.pdf").data.startswith(b"%PDF"))
+        self.assertEqual(self.c.delete(f"/api/jobs/{i}").status_code, 409)  # released: kept so the QR code keeps working
+        self.assertEqual(self.c.get(f"/api/verify/{tok}").status_code, 200)
+        s = self.c.get("/api/stats").json; self.assertEqual(s["turnaround_h"]["n"], 1); self.assertEqual(s["verdicts"], {"Complies": 1})
+        self.assertEqual(len(self.c.get("/api/jobs?q=Naveenkumar").json), 1)  # search covers the engineer, tests and standard
+        self.assertEqual(len(self.c.get("/api/jobs?q=Type test").json), 1)
+
+    def test_report_wording_comes_from_the_template(self):
+        i = self.ready(); path = os.path.join(_tmp.name, "tpl.json")
+        with open(path, "w", encoding="utf-8") as f: json.dump({"title": "HIGH POWER LAB - CERTIFICATE <draft>", "headings": {"summary": "2. Results at a glance"}}, f)
+        aletheia.TEMPLATE_FILE, old = path, aletheia.TEMPLATE_FILE
+        try:
+            text = pdf_text(aletheia.build_pdf(self.get(i)).getvalue())
+        finally:
+            aletheia.TEMPLATE_FILE = old
+        self.assertIn("HIGH POWER LAB - CERTIFICATE <draft>", text); self.assertIn("2. Results at a glance", text)
+        self.assertIn("4. Statement of conformity", text)  # keys left out keep the default wording
 
     def test_editing_data_withdraws_report(self):
         i = self.ready(); t = dict(DEMO["temp"]); t["rhv_hot"] = t["rhv_hot"] * 1.01

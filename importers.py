@@ -14,6 +14,9 @@ Tabular layout (CSV / Excel / database), one value per row:
 * An optional `series` column lets one file hold several jobs; rows for other series are skipped.
 
 `flatten()` / `export_*()` write exactly this layout, so every job can be downloaded as a template.
+
+Registers of past tests (`load_register`) are read by column name instead: series and customer are required, the other
+columns in ALIASES (sample, rating, ..., test date, result) are optional, and common header spellings are recognised.
 """
 import csv, io, json, os, re, sqlite3, tempfile
 
@@ -122,9 +125,11 @@ def _decode(raw):
 
 def read_csv(raw):
     text = _decode(raw)
-    try: dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
-    except csv.Error: dialect = csv.excel
-    rows = [r for r in csv.reader(io.StringIO(text), dialect) if any(c.strip() for c in r)]
+    # Only the delimiter is guessed. The sniffer's guesses about quoting are unreliable (with Windows line endings it can turn
+    # off doubled quotes, so an empty note written as "" arrives as the text """"), so quoting is always standard CSV.
+    try: delim = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|").delimiter
+    except csv.Error: delim = ","
+    rows = [r for r in csv.reader(io.StringIO(text), delimiter=delim, quotechar='"', doublequote=True) if any(c.strip() for c in r)]
     if not rows: raise ImportError_("The CSV file is empty")
     return [("csv", rows[0], rows[1:])]
 
@@ -224,6 +229,8 @@ ALIASES = {
     "address": ("address", "customeraddress"), "serial": ("serial", "serialno", "serialnumber", "slno"),
     "tests": ("tests", "testsrequested", "test", "testtype"), "criteria": ("criteria", "standard", "referencestandard"),
     "witness": ("witness", "witnessedby"), "conformity": ("conformity", "statementofconformity", "decisionrule"),
+    "verdict": ("result", "verdict", "testresult", "outcome", "finalresult"),
+    "tested": ("testdate", "dateoftest", "dateoftesting", "testedon", "date", "reportdate"),
 }
 
 
@@ -241,7 +248,7 @@ def load_register(filename, raw):
             if any(rec.values()): recs.append(rec)
         return recs, name
     raise ImportError_("No table with at least 'series' and 'customer' columns was found. Expected columns: series, sample, customer, rating "
-                       "(optional: address, serial, tests, standard, witness, conformity)")
+                       "(optional: address, serial, tests, standard, witness, conformity, test date, result)")
 
 
 # ------------------------------------------------------------ exporters (templates / hand-over)

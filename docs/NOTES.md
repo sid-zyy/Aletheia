@@ -1,24 +1,32 @@
 # Aletheia: structure and model notes
 
-Quick reference for the team. The README has full install and usage steps; `docs/ARCHITECTURE.md` has the diagram.
+Quick reference for the team. The README has install, usage, settings and the API; `docs/ARCHITECTURE.md` has the diagram,
+the data model and the job lifecycle; `docs/VALIDITY.md` says what the checks do and do not establish.
 
 ## Structure
 
 | File | What it does |
 |---|---|
-| `app.py` | Flask API, SQLite storage, audit log, the 30 checks (`validate`), PDF report (`build_pdf`), report versions + QR verification |
-| `importers.py` | CSV / Excel / SQLite / JSON in and out, using rows of `section, field, value` |
+| `app.py` | Flask API, SQLite storage, audit log, the 30 checks (`validate`), PDF report (`build_pdf`), report versions + QR verification, release rules, search, dashboard statistics |
+| `rules.py` | Every threshold with its source and status (none confirmed by the lab yet) |
+| `importers.py` | CSV / Excel / SQLite / JSON in and out, using rows of `section, field, value`; register import |
 | `vision.py` | Scan reader: Gemini, Ollama, or any OpenAI-compatible service; page clean-up, part-by-part reading, saved scans |
 | `static/index.html` | The whole web UI (single page) |
 | `static/assistant.js` | Rule-based chat assistant: new request, record search, status, how-to answers (keyword matching, no AI model) |
-| `tests/test_app.py` | 22 tests: `python -m unittest discover -s tests` |
-| `sample_data/` | The A.P. Transformers sample job in every format, plus two legacy registers |
+| `tests/test_app.py`, `tests/test_validity.py` | 59 tests: `python -m unittest discover -s tests` |
+| `report_template.json` | Wording of the report (title, headings, labels, footer) |
+| `sample_data/` | The A.P. Transformers sample job in every format, its 9 scans, plus two legacy registers (the CSV one has test dates and results) |
+| `test-files/` | Three CSV jobs for demos: full (`...25T1654`), partial (`...25T1704`), failing (`...25T1714`); different series, so they load side by side |
 
 **Data:** each job stores one object per document: `request, proforma, work, losses, resistance, noload, routine, sc, temp, pressure`. It also stores `ids` (series and sample number as written on each sheet) and `other` (additional log sheets of any type, keyed `x1, x2…`).
 
 **Workflow:** Request → Import → Review → Report → Approve.
-- **Checks** run on whatever documents are present. Missing documents and empty (NA) values come out as "not evaluated", never as blockers.
-- **Review:** the engineer goes through the flagged items one by one. A failed item blocks the report until it's fixed, and the report is only built once every flagged item is reviewed.
+- **Checks** run on whatever documents are present. Missing documents and empty (NA) values come out as "not evaluated", never as blockers. In the report's summary a test reads PASS only if every check behind it ran; otherwise NOT EVALUATED or NOT FULLY EVALUATED, and the statement of conformity names what was left out.
+- **Review:** the engineer goes through the flagged items one by one. A *data error* (sheet arithmetic that doesn't add up, a broken layout) blocks the report until it's fixed. A *requirement not met* is confirmed by the engineer and the report says the sample does not comply. The report is only built once every flagged item is reviewed or confirmed.
+- **Release:** the test engineer named on the report can't approve it. A released report can't be deleted (the customer's QR code must keep working); it can be withdrawn.
+- **Historical records:** register imports are archived records with a result and test date, kept out of the pipeline, work queue and turnaround. Importing test data into one makes it a live job.
+- **Dashboard turnaround** is request captured -> first approval, from the audit log. Open jobs show how long they have waited.
+- **Report wording** is in `report_template.json` (read on every report, no restart needed).
 - **Editing data** sends the job back to Import, so the checks and report are always redone.
 
 **Files kept beside the database:**
@@ -59,11 +67,12 @@ Settings are environment variables, set before `python app.py`. They're saved as
 - **One reading at a time:** Ollama runs one reading at a time; a second request waits in line.
 - **First scan after idle:** Ollama unloads the model after 5 idle minutes. Set `OLLAMA_KEEP_ALIVE=-1` to keep it loaded.
 - **Restart after Python changes:** restart the app; the browser only needs a refresh for UI changes.
+- **CSV files saved by Excel on Windows** used to be misread (the CSV sniffer guessed the quoting wrong with CRLF line endings, so a blank note `""` became the text `""""` and SC shots were skipped). Fixed: only the delimiter is guessed now; covered by a test.
 - **Sideways detection:** thresholds are tuned on the 9 sample scans; check the notes ("page N was turned upright").
 
 ## Recommendations
 
 - **Speed:** run Ollama on an NVIDIA GPU (RTX 3060 12 GB → `qwen2.5vl:7b`, a few seconds per page). Check with `ollama ps` that it says "100% GPU".
 - **Accuracy without a GPU:** hosted Qwen2.5-VL-72B via OpenRouter (`AI_BASE_URL=https://openrouter.ai/api/v1`, `AI_API_KEY`).
-- **Demo day:** scan every sheet once beforehand, so the saved scans load instantly on stage. Keep the CSV import as the no-AI fallback (`test-files/`).
+- **Demo day:** scan every sheet once beforehand, so the saved scans load instantly on stage. Keep the CSV import as the no-AI fallback (`test-files/`). Approve with a name other than the test engineer (P. Naveenkumar), or approval is refused. The README has the demo scripts (passing, failing, partial, historical, customer view).
 - **Fine-tuning later:** every engineer-corrected scan is a labelled example. Fine-tune once a few hundred sheets are collected; it isn't practical with one job's 15 pages.

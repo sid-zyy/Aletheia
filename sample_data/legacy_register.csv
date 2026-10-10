@@ -1,6 +1,6 @@
-Test Series No,Sample Code,Customer Name,Rating,Address,Serial No,Tests Requested,Standard
-CPRIBLRSCL24T1102,HVD24S0311,Southern Electricals Ltd,100 kVA / 11 kV / 433 V,"Peenya Industrial Area, Bengaluru",7731,Type test,IS 1180
-CPRIBLRSCL24T1187,HVD24S0398,Deccan Power Transformers,500 kVA / 11 kV / 433 V,"Hosur Road, Bengaluru",D-2204,Short-circuit test,IS 2026
-CPRIBLRSCL25T1033,HVD25S0127,Kaveri Transformers Pvt Ltd,63 kVA / 11 kV / 433 V,"SIDCO Estate, Coimbatore",K-0915,Type test,IS 1180
-CPRIBLRSCL25T1290,HVD25S0466,Malnad Switchgear,315 kVA / 11 kV / 433 V,"KIADB, Shivamogga",MS-118,Temperature-rise test,IS 2026
-SCL-OLD-77,HVD23S0001,Legacy Entry Without Valid Series,25 kVA,,,,
+Test Series No,Sample Code,Customer Name,Rating,Address,Serial No,Tests Requested,Standard,Test Date,Result
+CPRIBLRSCL24T1102,HVD24S0311,Southern Electricals Ltd,100 kVA / 11 kV / 433 V,"Peenya Industrial Area, Bengaluru",7731,Type test,IS 1180,18-03-2024,Passed
+CPRIBLRSCL24T1187,HVD24S0398,Deccan Power Transformers,500 kVA / 11 kV / 433 V,"Hosur Road, Bengaluru",D-2204,Short-circuit test,IS 2026,02-07-2024,Failed - winding displacement
+CPRIBLRSCL25T1033,HVD25S0127,Kaveri Transformers Pvt Ltd,63 kVA / 11 kV / 433 V,"SIDCO Estate, Coimbatore",K-0915,Type test,IS 1180,21-01-2025,Passed
+CPRIBLRSCL25T1290,HVD25S0466,Malnad Switchgear,315 kVA / 11 kV / 433 V,"KIADB, Shivamogga",MS-118,Temperature-rise test,IS 2026,14-05-2025,Passed
+SCL-OLD-77,HVD23S0001,Legacy Entry Without Valid Series,25 kVA,,,,,,

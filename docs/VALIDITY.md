@@ -1,6 +1,7 @@
 # Validity of the checks
 
-This page says what has and has not been established about Aletheia's engineering checks. It is generated from `rules.py`; edit the rules there.
+This page says what has and has not been established about Aletheia's engineering checks. The rules table below mirrors
+`rules.py`, which is what the code uses: change a rule there first, then update the table.
 
 ## What has been shown
 
@@ -8,6 +9,12 @@ This page says what has and has not been established about Aletheia's engineerin
 - On complete data no check is silently skipped, and a skipped check now reports its cause.
 - Verdicts no longer depend on a stray word (`"no" in text`): unclear wording gives a warning, never a pass.
 - Limits that vary with the job (temperature rise) come from the proforma, and no-load limits depend on the rating.
+- A sample that fails a requirement gets a "does not comply" report listing what was not met; only errors in the data itself
+  (recomputed averages that do not match, broken layouts) block the report (`test_failing_sample_gets_a_does_not_comply_report`,
+  `test_data_error_still_blocks_the_report`).
+- The report never shows PASS for a test whose checks did not all run: one check skipped for NA values makes the line
+  NOT FULLY EVALUATED, and the statement of conformity lists the skipped checks as well as missing documents
+  (`test_summary_never_passes_a_test_that_was_not_fully_evaluated`).
 
 ## What has NOT been shown
 
@@ -50,4 +57,6 @@ This page says what has and has not been established about Aletheia's engineerin
 - Identifier matching compares only the last 7 / 4 characters (sheets abbreviate IDs) and treats H as 4. Other handwriting confusions (6/4) are flagged as warnings, not resolved.
 - Impedance and ratio tolerances are applied at every tap; the standard may state them at the principal tap only.
 - The correction factor in the winding temperature-rise formula is typed by the operator and only cross-checked against a second typed value.
+- A failed requirement is confirmed by the engineer with one click; the app does not ask for a second reading or apply the
+  lab's decision rule (e.g. guard bands for measurement uncertainty). The decision rule the customer chose is printed as written.
 - Not covered: a single-phase unit's other checks, ester-filled or dry-type transformers (IS 1180 Part 2/3), and ratings the proforma does not describe.

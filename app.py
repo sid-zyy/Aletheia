@@ -1,13 +1,16 @@
 """Aletheia - Automated Test Report Generation System (CPRI Short Circuit Laboratory).
 Run:  pip install -r requirements.txt && python app.py   ->  http://localhost:5000
-Modules: Data Collection (importers.py: JSON / CSV / Excel / SQLite; vision.py: optional scan reading) | Database (SQLite)
-         | Validation | Report Engine (PDF, frozen versions + QR verification) | Dashboard (static/index.html)
+Modules: Data Collection (importers.py: JSON / CSV / Excel / SQLite, registers; vision.py: optional scan reading)
+         | Database (SQLite) | Validation (thresholds in rules.py) | Report Engine (PDF from report_template.json,
+         frozen versions + QR verification, customer download) | Dashboard (static/index.html)
+Settings, API and the data model: README.md and docs/ARCHITECTURE.md.
 """
 import base64, json, hashlib, io, math, os, re, secrets, sqlite3, datetime as dt
 import importers, vision
 import rules
 from rules import val as rule, nll_limits, ratio_tolerance, classify_observation
 from statistics import mean
+from xml.sax.saxutils import escape as xesc
 from flask import Flask, request, jsonify, send_file, send_from_directory, abort
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -56,6 +59,11 @@ def init():
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, job_id INT, event TEXT, at TEXT);""")
         for t in ("jobs", "reports"):  # databases from before the approver's employee ID was recorded
             if "approver_id" not in {r[1] for r in c.execute(f"PRAGMA table_info({t})")}: c.execute(f"ALTER TABLE {t} ADD COLUMN approver_id TEXT")
+        # archived: a historical record from an existing register, not a job in progress; verdict: outcome of the checks
+        # (or as stated in the register); tested: date of test from the register, ISO when it could be read
+        have = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
+        for col, ddl in (("archived", "INTEGER DEFAULT 0"), ("verdict", "TEXT"), ("tested", "TEXT")):
+            if col not in have: c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
 
 def log(c, jid, ev): c.execute("INSERT INTO audit(job_id,event,at) VALUES(?,?,?)", (jid, ev, now()))
 
@@ -64,7 +72,7 @@ def getjob(jid, full=True):
         r = c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         if not r: abort(404)
         j = dict(r); j["data"] = json.loads(j["data"]); j["findings"] = json.loads(j["findings"])
-        j["stage_name"] = STAGES[j["stage"]]
+        j["stage_name"] = "Historical record" if j.get("archived") else STAGES[j["stage"]]
         if full:
             j["audit"] = [dict(a) for a in c.execute("SELECT event,at FROM audit WHERE job_id=? ORDER BY id", (jid,))]
             j["imports"] = [dict(a) for a in c.execute("SELECT source,kind,sha256,at FROM imports WHERE job_id=?", (jid,))]
@@ -81,10 +89,13 @@ def save(jid, **kw):
 def validate(d):
     """Returns (findings, calc). Levels: pass / warn (needs reviewer attention) / fail (blocks)."""
     F, C = [], {}
-    def add(l, c, t, src=None, found=None, exp=None, fix=None, na=False, basis=None, inconclusive=False, cause=None):
+    def add(l, c, t, src=None, found=None, exp=None, fix=None, na=False, basis=None, inconclusive=False, cause=None, blocks=False):
         """src: document(s) checked; found / exp: observed vs required value; fix: what the engineer should do.
-        cause: technical reason a check was skipped, for the engineer only; never printed in the report."""
-        f = dict(level=l, check=c, detail=t, **({"na": True} if na else {}), **({"inconclusive": True} if inconclusive else {}))
+        cause: technical reason a check was skipped, for the engineer only; never printed in the report.
+        blocks: the data itself is wrong (e.g. a logged average that does not match its readings), so no report can be built
+        until it is corrected. Other failures are results: the sample does not meet a requirement, and the report says so."""
+        f = dict(level=l, check=c, detail=t, **({"na": True} if na else {}), **({"inconclusive": True} if inconclusive else {}),
+                 **({"blocks": True} if blocks and l == "fail" else {}))
         if cause: f["cause"] = cause
         if basis: f["basis"] = rules.basis(*basis)  # where the threshold comes from and whether anyone has confirmed it
         f.update({k: v for k, v in dict(source=src, found=found, expected=exp, action=fix).items() if v is not None})
@@ -157,7 +168,7 @@ def validate(d):
             for lb, V, Va, I, Ia, W, Wa, f, Pc in N["rows"]:
                 if abs(mean(I) - Ia) > .005: add("fail", "No-load current average", f"{lb}: mean of {I} = {mean(I):.3f}, logged {Ia}",
                     src=NAMES["noload"], found=f"{lb}: logged average {Ia} A", exp=f"Mean of I1, I2, I3 = {mean(I):.3f} A",
-                    fix="Recalculate the average on the log sheet, or correct the phase current that was misread.")
+                    fix="Recalculate the average on the log sheet, or correct the phase current that was misread.", blocks=True)
                 if abs(sum(W) - Wa) > .1: add("warn", "No-load watts sum", f"{lb}: W1+W2+W3 = {sum(W):.2f} but logged average/sum {Wa} (check reading)",
                     src=NAMES["noload"], found=f"{lb}: logged total {Wa} W", exp=f"W1 + W2 + W3 = {' + '.join(map(str, W))} = {sum(W):.2f} W",
                     fix="Check the three wattmeter readings and the total on the scan; one of them was probably misread or mis-added.")
@@ -275,7 +286,7 @@ def validate(d):
                 oil = P["limits"]["oil"]
                 um = rule("temp_margin_inconclusive_k"); thin = 0 <= oil - rises[-1] < um
                 add("fail" if rises[-1] > oil else "warn" if thin else "pass", "Top-oil temperature rise", f"{rises[-1]:.2f} K (limit {oil} K" + (f", margin {oil - rises[-1]:.1f} K: inconclusive)" if thin else ")"),
-                    src=NAMES["temp"], found=f"{rises[-1]:.2f} K at the last hour", exp=f"{oil} K or less", basis=("temp_margin_inconclusive_k",), inconclusive=thin,
+                    src=NAMES["temp"], found=f"{rises[-1]:.2f} K at the last hour", exp=f"{oil} K or less", basis=("oil_limit_k / wdg_limit_k", "temp_margin_inconclusive_k"), inconclusive=thin,
                     fix=None if rises[-1] <= oil else "Top-oil rise exceeds the limit; the sample fails this test unless a reading is wrong.")
         if wdg_ok:
             with na('Winding temperature rise', NAMES["temp"]):
@@ -283,7 +294,7 @@ def validate(d):
                 for nm, v in (("HV", hv), ("LV", lv)):
                     um = rule("temp_margin_inconclusive_k"); thin = 0 <= w - v < um
                     add("fail" if v > w else "warn" if thin else "pass", f"{nm} winding temperature rise", f"{v:.1f} K (limit {w} K, margin {w - v:.1f} K" + (": inconclusive)" if thin else ")"),
-                        src=NAMES["temp"], found=f"{v:.1f} K (margin {w - v:.1f} K)", exp=f"{w} K or less", basis=("temp_margin_inconclusive_k",), inconclusive=thin,
+                        src=NAMES["temp"], found=f"{v:.1f} K (margin {w - v:.1f} K)", exp=f"{w} K or less", basis=("oil_limit_k / wdg_limit_k", "temp_margin_inconclusive_k"), inconclusive=thin,
                         fix="Exceeds the limit; check the hot and cold resistance readings." if v > w else
                             f"Inconclusive: within {um:g} K of the limit, so a small reading or correction-factor error could change the verdict. Re-check the hot resistance and the correction factor; the lab's own measurement uncertainty should decide this." if thin else None)
         if temp_ok:
@@ -362,19 +373,50 @@ def safe_validate(d):
         culprits.append(k)
     what = lambda x: f"missing field {x}" if isinstance(x, KeyError) else f"{type(x).__name__}: {x}"
     if not culprits:
-        return [dict(level="fail", check="Data structure", detail=f"Imported data is incomplete or not in the expected layout ({what(err)}). "
+        return [dict(level="fail", blocks=True, check="Data structure", detail=f"Imported data is incomplete or not in the expected layout ({what(err)}). "
                      "Compare with a downloaded template, correct the file and import it again.")], {}
     try: F, C = validate({x: v for x, v in d.items() if x not in culprits})
     except Exception: F, C = [], {}  # noqa: BLE001
     F = [f for f in F if not (f["check"] == "Completeness of source documents")]
     for k in culprits:
         name = NAMES.get(k, "Identifiers on each sheet")
-        F.insert(0, dict(level="fail", check=f"Data structure: {name}", source=name,
+        F.insert(0, dict(level="fail", blocks=True, check=f"Data structure: {name}", source=name,
                          detail=f"The {name.lower()} is not in the expected layout ({what(err)}), so it could not be checked.",
                          found="Fields or table shape differ from the standard layout", expected="Same layout as the downloadable template",
                          action=f"Open the {name.lower()} (Edit under Sources) and correct it, re-import it from a corrected file, "
                                 "or remove it from this job (Remove under Sources) if it should not be part of the report."))
     return F, C
+
+def blocking(F):
+    """Failures that mean the data is wrong (no report until corrected), as opposed to a sample that failed a requirement."""
+    return [f for f in F if f["level"] == "fail" and f.get("blocks")]
+
+def verdict_of(F):
+    """Outcome stored with the job for search and the dashboard; None while the data still has errors."""
+    if not F or blocking(F): return None
+    if any(f["level"] == "fail" for f in F): return "Does not comply"
+    partly = any(f.get("na") for f in F) or any(f["check"] == "Completeness of source documents" and f["level"] != "pass" for f in F)
+    return "Complies (partly evaluated)" if partly else "Complies"
+
+# Wording of the report: edit report_template.json (or point ALETHEIA_TEMPLATE at another file) without changing code.
+TEMPLATE_FILE = os.environ.get("ALETHEIA_TEMPLATE") or os.path.join(HERE, "report_template.json")
+TEMPLATE_DEFAULTS = {
+    "organisation": "CENTRAL POWER RESEARCH INSTITUTE, BENGALURU", "title": "Short Circuit Laboratory - TEST REPORT",
+    "headings": {"sample": "1. Description of test sample", "summary": "2. Summary of results",
+                 "details": "3. Detailed results", "conformity": "4. Statement of conformity"},
+    "engineer_label": "Test Engineer", "approver_label": "Approved by", "generator": "Aletheia",
+    "footer": "This report applies only to the sample tested and shall not be reproduced except in full. Auto-generated by Aletheia from digitised log sheets."}
+
+def report_template():
+    """TEMPLATE_DEFAULTS overlaid with the template file; a missing or broken file falls back to the defaults."""
+    t = json.loads(json.dumps(TEMPLATE_DEFAULTS))
+    try:
+        with open(TEMPLATE_FILE, encoding="utf-8") as f: own = json.load(f)
+    except (OSError, ValueError): return t
+    for k, v in own.items():
+        if isinstance(v, dict) and isinstance(t.get(k), dict): t[k].update({a: str(b) for a, b in v.items()})
+        elif k in t and isinstance(v, str): t[k] = v
+    return t
 
 class Soft(dict):
     """Header fields that may be absent on hand-entered requests print as NA instead of breaking the report."""
@@ -394,11 +436,13 @@ def fmt(v, spec=".1f"):
 
 def build_pdf(j, version=None, verify_url=None):
     F, C = validate(j["data"]); d = shown(j["data"]); P, W, Rq = Soft(d.get("proforma", {})), Soft(d.get("work", {})), Soft(d.get("request", {}))
+    tp = report_template(); hd = tp["headings"]
+    num_ = lambda v: "NA" if v is None else v  # a value that could not be computed prints as NA, never as Python's None
     Lim = Soft(P["limits"] if isinstance(P["limits"], dict) else {})
     has = lambda *ks: all(k in d for k in ks)
     missing = [v for k, v in NAMES.items() if k not in d]
     st = getSampleStyleSheet(); h = st["Heading3"]; n = st["BodyText"]; n.fontSize = 8.5
-    cell = lambda s: Paragraph(str(s), ParagraphStyle_small)
+    cell = lambda s: Paragraph(xesc(str(s)), ParagraphStyle_small)  # values are plain text: "<=1 K/h" must not be read as markup
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm, topMargin=18 * mm, bottomMargin=16 * mm,
                             title=f"Test Report {j['series']}")
@@ -409,43 +453,49 @@ def build_pdf(j, version=None, verify_url=None):
         t.setStyle(TableStyle(sty)); return t
     kv = lambda pairs: tbl([[a, b] for a, b in pairs], [55 * mm, 125 * mm], head=False)
     verdict = lambda lv: {"pass": "PASS", "warn": "REVIEWED*" if j.get("approver") else "REVIEW*", "fail": "FAIL"}[lv]
-    NOT = "NOT EVALUATED"
+    NOT, PART = "NOT EVALUATED", "NOT FULLY EVALUATED"
     def srow(name, needs, result, requirement, keys):
         """One summary line; tests whose documents were not provided are listed as not evaluated instead of failing."""
         if not has(*needs): return [name, "Data not provided (" + ", ".join(NAMES[k] for k in needs if k not in d) + ")", "-", NOT]
         try: got = result()
         except Exception: got = "NA"  # noqa: BLE001 - a summary cell must never break the report
-        return [name, got, requirement(), res(*keys)]
+        return [name, got if str(got).strip() else "NA", requirement(), res(*keys)]
     rank = {"pass": 0, "warn": 1, "fail": 2}
     def res(*keys):
+        """A failure decides the line. Otherwise a line may only read PASS when every check behind it was evaluated:
+        one check skipped for NA values makes it NOT FULLY EVALUATED, however many related checks passed."""
         fs = [f for f in F if any(k in f["check"] for k in keys)]
-        if fs and all(f.get("na") for f in fs): return NOT
         ls = [f["level"] for f in fs if not f.get("na")]
+        if "fail" in ls: return verdict("fail")
+        if any(f.get("na") for f in fs): return PART if ls else NOT
         return verdict(max(ls, key=rank.get)) if ls else "-"
-    E = [Paragraph("CENTRAL POWER RESEARCH INSTITUTE, BENGALURU", st["Title"]),
-         Paragraph("Short Circuit Laboratory - TEST REPORT", st["Heading2"]),
+    def nl_row(full):
+        """No-load row by its label (as the checks do), never by position."""
+        return next(r for r in d["noload"]["rows"] if ("112" in str(r[0])) == full)
+    E = [Paragraph(xesc(tp["organisation"]), st["Title"]),
+         Paragraph(xesc(tp["title"]), st["Heading2"]),
          kv([("Test report / series no.", j["series"]), ("Sample code no.", j["sample"]), ("Customer", f"{Rq['customer']}, {Rq['address']}"),
              ("Date(s) of test", f"{W['start']} to {W['completed']}"), ("Reference standard", W["standard"]),
              ("Tests performed", Rq["tests"] + (" (" + "; ".join(P["tests"]) + "), plus routine tests" if isinstance(P["tests"], list) else "")),
-             ("Witness", Rq["witness"]), ("Report prepared by", W["engineer"] + " (Test Engineer)"),
+             ("Witness", Rq["witness"]), ("Report prepared by", W["engineer"] + f" ({tp['engineer_label']})"),
              ("Decision rule", Rq["conformity"]),
-             ("Report generated", now() + " by Aletheia" + (f" - version {version}" if version else ""))]),
-         Paragraph("1. Description of test sample", h),
+             ("Report generated", now() + f" by {tp['generator']}" + (f" - version {version}" if version else ""))]),
+         Paragraph(xesc(hd["sample"]), h),
          kv([("Sample", Rq["sample"]), ("Rating", Rq["rating"]), ("Serial no.", Rq["serial"]), ("Drawing nos.", Rq["drawings"]),
              ("Voltage / phases / freq", f"{P['hv']} V / {P['lv']} V, {P['phases']} ph, {P['freq']} Hz, {P['vector']}, {P['cooling']}"),
              ("Taps", P["taps"]), ("Insulation levels", f"Um {P['hv_max_kv']} kV; {P['bil']}"), ("Impedance (75 C)", f"{P['z_pct']} %"),
              ("Guaranteed losses", f"{P['loss50']} W at 50% load; {P['loss100']} W at 100% load"), ("Oil volume / manufactured", f"{P['oil_l']} l / {P['mfg']}"),
              ("Construction", P["construction"])]),
-         Paragraph("2. Summary of results", h),
+         Paragraph(xesc(hd["summary"]), h),
          tbl([["Test", "Result obtained", "Requirement", "Verdict"],
-              srow("Short-circuit withstand (dynamic + thermal)", ["sc"], lambda: "; ".join(f"{t}: {a} kA rms / {b} kA pk" for t, (a, b) in C.get("sc", {}).items()),
+              srow("Short-circuit withstand (dynamic + thermal)", ["sc"], lambda: "; ".join(f"{t}: {a} kA rms / {b} kA pk" for t, (a, b) in C.get("sc", {}).items()) or "NA",
                    lambda: "Within +/-10% of required; no abnormality", ("SC", "Thermal", "Post-test", "Reactance")),
               srow("Temperature rise", ["temp", "proforma"], lambda: f"Top oil {fmt(C.get('oil_rise'))} K; HV wdg {fmt(C.get('hv_rise'))} K; LV wdg {fmt(C.get('lv_rise'))} K",
                    lambda: f"Oil {Lim['oil']} K; winding {Lim['wdg']} K", ("rise", "Steady")),
-              srow("Total loss (75 C)", ["losses", "proforma"], lambda: f"{C.get('t100')} W (100%); {C.get('t50')} W (50%)",
+              srow("Total loss (75 C)", ["losses", "proforma"], lambda: f"{num_(C.get('t100'))} W (100%); {num_(C.get('t50'))} W (50%)",
                    lambda: f"{P['loss100']} W; {P['loss50']} W", ("Total loss",)),
               srow("Impedance", ["losses", "proforma"], lambda: "see detailed results", lambda: f"{P['z_pct']} % +/-10%", ("Impedance",)),
-              srow("No-load current at 100% / 112.5%", ["noload", "proforma"], lambda: f"{d['noload']['rows'][0][4]} A / {d['noload']['rows'][2][4]} A",
+              srow("No-load current at 100% / 112.5%", ["noload", "proforma"], lambda: f"{nl_row(False)[4]} A / {nl_row(True)[4]} A",
                    lambda: "<=2% / <=5% of rated", ("No-load current",)),
               srow("Voltage ratio (all taps)", ["routine", "proforma"], lambda: f"max dev. {fmt(C.get('ratio_dev'), '.2f')}%", lambda: "+/-0.5%", ("Voltage ratio",)),
               srow("Dielectric routine tests", ["routine"], lambda: "; ".join(dict.fromkeys(str(d["routine"][k].get("obs", "-")) for k in ("induced", "hvac", "lvac"))),
@@ -456,7 +506,7 @@ def build_pdf(j, version=None, verify_url=None):
              [[f"Additional record: {o.get('title', 'Additional log sheet')}", "Values recorded (see detailed results)", "No limits defined", "RECORDED"]
               for o in (d.get("other") or {}).values()],
              [48 * mm, 62 * mm, 45 * mm, 25 * mm])]
-    E.append(Paragraph("3. Detailed results", h)); sub = iter(range(1, 20))
+    E.append(Paragraph(xesc(hd["details"]), h)); sub = iter(range(1, 20)); sec_no = hd["details"].split(".")[0].strip() or "3"
     def amb(x):
         try: return mean(x[3:6])
         except (TypeError, ValueError): return None
@@ -469,7 +519,7 @@ def build_pdf(j, version=None, verify_url=None):
         try: yield
         except Exception:  # noqa: BLE001
             E.append(Paragraph(f"{name}: data incomplete (NA values); see the source document.", n))
-    num = lambda title: Paragraph(f"3.{next(sub)} {title}", n)
+    num = lambda title: Paragraph(xesc(f"{sec_no}.{next(sub)} {title}"), n)
     if has("resistance"):
         with part(NAMES['resistance']):
             R = d["resistance"]
@@ -481,7 +531,7 @@ def build_pdf(j, version=None, verify_url=None):
             E += [num("Losses and impedance (reference temperature 75 C)"),
                   tbl([["Tap", "%Z", "%X", "%X chg", "Load loss W", "Stray W", "Total 100% W", "Total 50% W", "Isc rms/pk kA"]] +
                       [[r[0], r[1], r[2], r[3] if r[3] is not None else "-", r[6], r[10], r[13], r[12] or "-", f"{r[9]}/{r[8]}" if r[9] else "-"] for r in L["rows"]]),
-                  Paragraph(f"No-load loss: {L['nll_bt']} W (before), {L['nll_at']} W (after).", n)]
+                  Paragraph(xesc(f"No-load loss: {L['nll_bt']} W (before), {L['nll_at']} W (after)."), n)]
     if has("noload"):
         with part(NAMES['noload']):
             E += [num("No-load current / loss"),
@@ -500,7 +550,7 @@ def build_pdf(j, version=None, verify_url=None):
             S = d["sc"]
             E += [num(f"Short-circuit test ({S['date']}; {S['condition']})"),
                   tbl([["Osc", "Tap", "Peak kA", "RMS U", "RMS V", "RMS W", "Avg", "Dur s", "Note"]] + [[s[0], s[1], s[3] or "-", s[4], s[5], s[6], s[7], s[8], s[9]] for s in S["shots"]]),
-                  Paragraph(f"During / after test: {S['during']} / {S['after']}. Untanking: {S['inspection']}.", n)]
+                  Paragraph(xesc(f"During / after test: {S['during']} / {S['after']}. Untanking: {S['inspection']}."), n)]
     if has("temp"):
         with part(NAMES['temp']):
             T = d["temp"]
@@ -521,21 +571,31 @@ def build_pdf(j, version=None, verify_url=None):
             E.append(num(f"Additional test record: {o.get('title', 'Additional log sheet')} (recorded values; no limits evaluated)"))
             if o.get("fields"): E.append(kv([(f.get("label") or "-", f.get("value")) for f in o["fields"]]))
             for t in o.get("tables") or []:
-                if t.get("title"): E.append(Paragraph(t["title"], n))
+                if t.get("title"): E.append(Paragraph(xesc(str(t["title"])), n))
                 E.append(tbl([t.get("columns") or [""] * len(t["rows"][0])] + t.get("rows", [])))
     if missing:
         E.append(Paragraph("Source documents not provided (the related tests were not evaluated): " + ", ".join(missing) + ".", n))
-    fails = [f for f in F if f["level"] == "fail"]; warns = [f for f in F if f["level"] == "warn"]
-    E += [Paragraph("4. Statement of conformity", h),
-          Paragraph(f"Decision rule requested by the customer: {Rq['conformity']}. <b>" +
-                    ("The sample does NOT comply: " + "; ".join(f["check"] for f in fails) if fails else
-                     f"The sample complied with all {sum(f['level'] == 'pass' for f in F)} automatically evaluated requirements ({W['standard']})"
-                     + (f". This statement covers only the tests whose data was provided; not evaluated: {', '.join(missing)}." if missing else ".")) + "</b>", n)]
+    fails = [f for f in F if f["level"] == "fail"]; warns = [f for f in F if f["level"] == "warn" and not f.get("na")]
+    skipped = list(dict.fromkeys(f["check"] for f in F if f.get("na")))  # checks that could not run because values were NA
+    scope = ""
+    if missing or skipped:
+        scope = (" This statement covers only what could be evaluated. Not evaluated: "
+                 + "; ".join(filter(None, [("documents not provided - " + ", ".join(missing)) if missing else "",
+                                           ("checks with NA values - " + ", ".join(skipped)) if skipped else ""])) + ".")
+    E += [Paragraph(xesc(hd["conformity"]), h),
+          Paragraph(xesc(f"Decision rule requested by the customer: {Rq['conformity']}. ") + "<b>" +
+                    xesc(f"The sample does NOT comply with the requirements ({W['standard']}). Requirements not met: " + "; ".join(f["check"] for f in fails) + "."
+                         if fails else f"The sample complied with all {sum(f['level'] == 'pass' for f in F)} evaluated requirements ({W['standard']}).")
+                    + "</b>" + xesc(scope), n)]
+    if fails:
+        E += [Paragraph("Requirements not met" + (" (results confirmed by the reviewer at approval):" if j.get("approver") else
+                                                  " (results confirmed by the engineer; to be approved):"), n),
+              tbl([["Requirement", "Result obtained", "Required"]] + [[f["check"], f.get("found", f["detail"]), f.get("expected", "-")] for f in fails], [60 * mm, 60 * mm, 60 * mm])]
     if warns:
         E += [Paragraph("* Items flagged by automated validation and accepted by the reviewer at approval:" if j.get("approver") else
                         "* Items flagged by automated validation - to be confirmed by the reviewer before approval:", n), tbl([["Check", "Detail"]] + [[f["check"], f["detail"]] for f in warns])]
-    E += [Spacer(1, 14), tbl([["Test Engineer: " + W["engineer"], f"Approved by: {signed(j['approver'], j.get('approver_id')) or '(pending)'}"]], head=False),
-          Paragraph("This report applies only to the sample tested and shall not be reproduced except in full. Auto-generated by Aletheia from digitised log sheets.", n)]
+    E += [Spacer(1, 14), tbl([[f"{tp['engineer_label']}: " + W["engineer"], f"{tp['approver_label']}: {signed(j['approver'], j.get('approver_id')) or '(pending)'}"]], head=False),
+          Paragraph(xesc(tp["footer"]), n)]
     if verify_url:
         from reportlab.graphics.barcode.qr import QrCodeWidget
         from reportlab.graphics.shapes import Drawing
@@ -594,7 +654,7 @@ def data_changed(j, d, event):
     found = dict(customer=rq.get("customer") or wk.get("customer"), rating=rq.get("rating"), sample=wk.get("sample"))
     fill = {k: str(v).strip() for k, v in found.items() if j.get(k) in (None, "", "NA") and v and str(v).strip()
             and (k != "sample" or re.fullmatch(SAMPLE_RE, str(v).strip()))}
-    save(j["id"], data=d, stage=max(min(j["stage"], 1), 1), findings=[], approver=None, approver_id=None, **fill)
+    save(j["id"], data=d, stage=max(min(j["stage"], 1), 1), findings=[], approver=None, approver_id=None, verdict=None, archived=0, **fill)
     with db() as c: log(c, j["id"], event + (" - earlier report is now out of date" if stale else ""))
 
 def freeze(j):
@@ -610,21 +670,57 @@ def freeze(j):
 @app.get("/")
 def index(): return send_from_directory(app.static_folder, "index.html")
 
+# Searched text: record details plus what the request and work instruction say (tests, standard, engineer, dates) and the outcome
+SEARCHED = ("series", "sample", "customer", "rating", "verdict", "tested", "json_extract(data,'$.request.tests')", "json_extract(data,'$.request.criteria')",
+            "json_extract(data,'$.request.address')", "json_extract(data,'$.work.standard')", "json_extract(data,'$.work.engineer')",
+            "json_extract(data,'$.work.start')", "json_extract(data,'$.work.completed')", "approver")
+DAY = "COALESCE(NULLIF(tested,''), substr(created,1,10))"  # test date from a register, else the day the request was captured
+
 @app.get("/api/jobs")
 def jobs():
-    q, s = f"%{request.args.get('q', '')}%", request.args.get("stage", "")
-    sql = "SELECT id FROM jobs WHERE (series LIKE ? OR sample LIKE ? OR customer LIKE ? OR rating LIKE ?)" + (" AND stage=?" if s != "" else "") + " ORDER BY updated DESC, id DESC"
-    with db() as c: ids = [r[0] for r in c.execute(sql, (q, q, q, q) + ((int(s),) if s != "" else ()))]
-    out = []
-    for i in ids:
-        j = getjob(i, False); j["sections"] = list(j.pop("data").keys()); out.append(j)
-    return jsonify(out)
+    """One query for the whole list (no per-job lookups). Filters: q (text), stage (0-4, or 'h' for historical records),
+    verdict ('comply', 'not', 'none'), from / to (YYYY-MM-DD)."""
+    a = request.args; q, s, v = f"%{a.get('q', '').strip()}%", a.get("stage", ""), a.get("verdict", "")
+    where, args = ["(" + " OR ".join(f"COALESCE({x},'') LIKE ?" for x in SEARCHED) + ")"], [q] * len(SEARCHED)
+    if s == "h": where.append("archived=1")
+    elif s.isdigit(): where.append("archived=0 AND stage=?"); args.append(int(s))
+    if v in ("comply", "not", "none"):
+        where.append({"comply": "verdict LIKE 'Complies%'", "not": "verdict='Does not comply'", "none": "verdict IS NULL"}[v])
+    for k, op in (("from", ">="), ("to", "<=")):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.get(k, "")): where.append(f"{DAY} {op} ?"); args.append(a[k])
+    sql = (f"SELECT id,series,sample,customer,rating,stage,approver,approver_id,created,updated,archived,verdict,tested,"
+           f"(SELECT group_concat(key) FROM json_each(jobs.data)) AS secs,"
+           + ",".join(f"(SELECT COUNT(*) FROM json_each(jobs.findings) WHERE json_extract(value,'$.level')='{l}') AS n_{l}" for l in ("pass", "warn", "fail"))
+           + " FROM jobs WHERE " + " AND ".join(where) + " ORDER BY updated DESC, id DESC")
+    with db() as c: rows = [dict(r) for r in c.execute(sql, args)]
+    for j in rows:
+        j["sections"] = (j.pop("secs") or "").split(",") if j.get("secs") else []
+        j["counts"] = {l: j.pop("n_" + l) for l in ("pass", "warn", "fail")}
+        j["stage_name"] = "Historical record" if j["archived"] else STAGES[j["stage"]]
+    return jsonify(rows)
 
-def insert_job(c, b, event):
+def insert_job(c, b, event, archived=False):
     rq = {**(b.get("request") or {})}
-    cur = c.execute("INSERT INTO jobs(series,sample,customer,rating,data,created,updated) VALUES(?,?,?,?,?,?,?)",
-                    (b["series"], b["sample"], b["customer"].strip(), b["rating"].strip(), json.dumps({"request": rq}), now(), now()))
+    cur = c.execute("INSERT INTO jobs(series,sample,customer,rating,data,created,updated,archived,verdict,tested) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (b["series"], b["sample"], b["customer"].strip(), b["rating"].strip(), json.dumps({"request": rq}), now(), now(),
+                     int(archived), b.get("verdict") or None, b.get("tested") or None))
     log(c, cur.lastrowid, event); return cur.lastrowid
+
+def iso_day(s):
+    """A register's test date as YYYY-MM-DD when it can be read (2024-03-18, 18-03-2024, 18/03/2024, 18.03.2024); otherwise kept as written."""
+    s = str(s or "").strip()
+    for f in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d %H:%M:%S", "%d-%b-%Y", "%d %b %Y"):
+        try: return dt.datetime.strptime(s, f).date().isoformat()
+        except ValueError: pass
+    return s
+
+def register_verdict(s):
+    """The register's own wording of the result, mapped onto the app's outcomes when it is clear."""
+    t = str(s or "").strip()
+    if not t: return None
+    if re.search(r"\b(not|non|fail|failed|does not)\b", t, re.I): return "Does not comply"
+    if re.search(r"\b(pass|passed|compl(y|ies|ied)|ok|satisfactory)\b", t, re.I): return "Complies"
+    return t
 
 @app.post("/api/jobs")
 def create():
@@ -779,14 +875,16 @@ def register():
         err = check_ids(r)
         if err: skipped.append(dict(row=n, series=r["series"], reason="; ".join(err))); continue
         r["request"] = {k: r[k] for k in REQ_KEYS if r.get(k)}
-        try:
-            with db() as c: made.append(insert_job(c, r, f"Record imported from existing register {name}"))
+        r["verdict"], r["tested"] = register_verdict(r.get("verdict")), iso_day(r.get("tested")) or None
+        try:  # a historical record: searchable, but not a job in progress (it does not appear in the pipeline or work queue)
+            with db() as c: made.append(insert_job(c, r, f"Historical record imported from existing register {name}", archived=True))
         except sqlite3.IntegrityError: skipped.append(dict(row=n, series=r["series"], reason="Series number already exists"))
     return jsonify(created=len(made), ids=made, skipped=skipped, table=table, rows=len(recs))
 
 @app.get("/api/register-template.csv")
 def register_template():
-    rows = "series,sample,customer,rating,address,serial,tests,standard,witness,conformity\nCPRIBLRSCL25T1601,HVD25S0801,Example Transformers Pvt Ltd,100 kVA / 11 kV / 433 V,\"Plot 1, Industrial Area, Bengaluru\",2201,Type test,IS 1180,,\n"
+    rows = ("series,sample,customer,rating,address,serial,tests,standard,witness,conformity,test date,result\n"
+            "CPRIBLRSCL25T1601,HVD25S0801,Example Transformers Pvt Ltd,100 kVA / 11 kV / 433 V,\"Plot 1, Industrial Area, Bengaluru\",2201,Type test,IS 1180,,,2025-01-14,Complies\n")
     return send_file(io.BytesIO(rows.encode("utf-8-sig")), mimetype="text/csv", as_attachment=True, download_name="ALETHEIA_register_template.csv")
 
 # ---- source documents (scans / photographs kept as evidence) and optional AI reading
@@ -843,30 +941,34 @@ def extract(sid):
 # ---- validate, generate, approve
 @app.post("/api/jobs/<int:i>/validate")
 def val(i):
-    j = getjob(i); F, _ = safe_validate(j["data"]); fails = sum(f["level"] == "fail" for f in F)
+    j = getjob(i); F, _ = safe_validate(j["data"]); fails = sum(f["level"] == "fail" for f in F); blocks = len(blocking(F))
     done = {(f["check"], f["detail"]) for f in j["findings"] if f.get("reviewed")}  # unchanged items keep their review
     for f in F:
-        if f["level"] == "warn" and (f["check"], f["detail"]) in done: f["reviewed"] = True
-    save(i, findings=F, stage=max(j["stage"], 2) if not fails else min(j["stage"], 1))
-    with db() as c: log(c, i, f"Validation run: {sum(f['level'] == 'pass' for f in F)} pass, {sum(f['level'] == 'warn' for f in F)} warn, {fails} fail")
+        if f["level"] in ("warn", "fail") and not f.get("blocks") and (f["check"], f["detail"]) in done: f["reviewed"] = True
+    # only data errors hold the job back; a sample that fails a requirement goes on to a "does not comply" report
+    save(i, findings=F, stage=max(j["stage"], 2) if not blocks else min(j["stage"], 1), verdict=verdict_of(F))
+    with db() as c: log(c, i, f"Validation run: {sum(f['level'] == 'pass' for f in F)} pass, {sum(f['level'] == 'warn' for f in F)} warn, {fails} fail"
+                         + (f" ({blocks} data error{'s' if blocks > 1 else ''} to correct)" if blocks else ""))
     return jsonify(findings=F)
 
 @app.post("/api/jobs/<int:i>/review")
 def review(i):
-    """Mark one flagged check as reviewed by the engineer (failed checks cannot be: they must be fixed)."""
+    """Mark one flagged check as reviewed, or confirm a failed requirement as a genuine result (it is then reported as not met).
+    Data errors (blocks) cannot be reviewed: they must be corrected."""
     j = getjob(i); b = body(); F = j["findings"]; n = b.get("index")
     if not isinstance(n, int) or not 0 <= n < len(F): return jsonify(error=["No such check"]), 400
-    if F[n]["level"] == "fail": return jsonify(error=["A failed check cannot be marked as reviewed: correct the data and run the checks again"]), 409
-    if F[n]["level"] != "warn": return jsonify(error=["Only flagged items need review"]), 400
+    if F[n].get("blocks"): return jsonify(error=["This is a data error and cannot be marked as reviewed: correct the data and run the checks again"]), 409
+    if F[n]["level"] not in ("warn", "fail"): return jsonify(error=["Only flagged items need review"]), 400
     F[n]["reviewed"] = bool(b.get("reviewed", True)); save(i, findings=F)
-    with db() as c: log(c, i, f"{'Reviewed' if F[n]['reviewed'] else 'Review withdrawn'}: {F[n]['check']} - {F[n]['detail'][:90]}")
+    what = ("Failure confirmed" if F[n]["reviewed"] else "Failure confirmation withdrawn") if F[n]["level"] == "fail" else ("Reviewed" if F[n]["reviewed"] else "Review withdrawn")
+    with db() as c: log(c, i, f"{what}: {F[n]['check']} - {F[n]['detail'][:90]}")
     return jsonify(findings=F)
 
 @app.post("/api/jobs/<int:i>/generate")
 def gen(i):
     j = getjob(i)
-    if j["stage"] < 2: return jsonify(error=["Validate data (no failures) before generating"]), 409
-    left = [f["check"] for f in j["findings"] if f["level"] == "warn" and not f.get("reviewed")]
+    if j["stage"] < 2: return jsonify(error=["Run the checks and correct any data errors before generating"]), 409
+    left = [f["check"] for f in j["findings"] if f["level"] in ("warn", "fail") and not f.get("reviewed")]
     if left: return jsonify(error=[f"Review every flagged item before the report is built ({len(left)} left)"]), 409
     t = dt.datetime.now()
     try: v, sha = freeze(j)
@@ -885,6 +987,11 @@ def approve(i):
     err = ([] if name else ["Enter the approver's name"]) + (
         ["Enter the approver's employee ID"] if not emp else [] if re.fullmatch(EMP_RE, emp) else ["Employee ID must be 2-20 letters, digits, '-' or '/'"])
     if err: return jsonify(error=err), 400
+    person = lambda s: re.sub(r"[^a-z]", "", str(s or "").lower())
+    if person(name) and person(name) == person((j["data"].get("work") or {}).get("engineer")):
+        return jsonify(error=["The test engineer who prepared this report cannot also approve it; a second person must approve"]), 403
+    staff = {x.strip().upper() for x in os.environ.get("ALETHEIA_APPROVERS", "").split(",") if x.strip()}
+    if staff and emp not in staff: return jsonify(error=[f"Employee ID {emp} is not on the list of authorised approvers"]), 403
     save(i, stage=4, approver=name, approver_id=emp); v, sha = freeze(getjob(i))
     with db() as c: log(c, i, f"Approved by {signed(name, emp)}; released for export (version {v}, SHA-256 {sha[:12]}...)")
     return jsonify(ok=True, version=v)
@@ -908,6 +1015,19 @@ def verify(token):
     intact = hashlib.sha256(r["pdf"]).hexdigest() == r["sha256"]; current = r["version"] == newest and j["stage"] >= 3
     return jsonify(series=j["series"], sample=j["sample"], customer=j["customer"], version=r["version"], sha256=r["sha256"], generated=r["at"],
                    approver=r["approver"], approver_id=r["approver_id"], intact=intact, current=current, approved=bool(r["approver"]) and current and j["stage"] == 4)
+
+@app.get("/api/verify/<token>/report.pdf")
+def verify_pdf(token):
+    """The customer's copy: anyone holding the link (or the QR code) can download the report, but only while it is the
+    current, approved version. Superseded or withdrawn versions are not handed out."""
+    with db() as c:
+        r = c.execute("SELECT * FROM reports WHERE token=?", (token,)).fetchone()
+        if not r: return jsonify(error=["Unknown report code"]), 404
+        j = c.execute("SELECT series,stage FROM jobs WHERE id=?", (r["job_id"],)).fetchone()
+        newest = c.execute("SELECT MAX(version) FROM reports WHERE job_id=?", (r["job_id"],)).fetchone()[0]
+    if not (r["approver"] and r["version"] == newest and j["stage"] == 4):
+        return jsonify(error=["This version is not the current approved report"]), 409
+    return send_file(io.BytesIO(r["pdf"]), mimetype="application/pdf", as_attachment=True, download_name=f"TestReport_{j['series']}_v{r['version']}.pdf")
 
 @app.get("/verify/<token>")
 def verify_page(token): return send_from_directory(app.static_folder, "index.html")
@@ -943,22 +1063,39 @@ def discard(i):
 
 @app.delete("/api/jobs/<int:i>")
 def delete(i):
-    """Delete the whole record: job, imports, source documents, report versions and history."""
+    """Delete the whole record: job, imports, source documents, report versions and history.
+    Not allowed once a report has been released: its QR code must keep working, so the record and its history stay."""
     getjob(i, False)
     with db() as c:
+        if c.execute("SELECT 1 FROM reports WHERE job_id=? AND approver IS NOT NULL", (i,)).fetchone():
+            return jsonify(error=["A report for this record has been released. It is kept so the customer's copy can still be verified; "
+                                  "withdraw the report instead if it must no longer be used."]), 409
         for t in ("imports", "audit", "sources", "reports"): c.execute(f"DELETE FROM {t} WHERE job_id=?", (i,))
         c.execute("DELETE FROM jobs WHERE id=?", (i,))
     return jsonify(ok=True)
 
 @app.get("/api/stats")
 def stats():
+    """Pipeline counts cover jobs in progress or released here; historical records from registers are counted separately.
+    Turnaround = time from capturing the request to approving the report (the first approval of each released job),
+    measured from the audit trail, so it reflects the whole preparation, not just building the PDF."""
     with db() as c:
         by = [0] * 5
-        for r in c.execute("SELECT stage,COUNT(*) n FROM jobs GROUP BY stage"): by[r[0]] = r[1]
+        for r in c.execute("SELECT stage,COUNT(*) n FROM jobs WHERE archived=0 GROUP BY stage"): by[r[0]] = r[1]
+        hist = c.execute("SELECT COUNT(*) FROM jobs WHERE archived=1").fetchone()[0]
         ms = [int(m.group(1)) for r in c.execute("SELECT event FROM audit WHERE event LIKE 'Report generated in%'") if (m := re.search(r"in (\d+) ms", r[0]))]
         kinds = {r[0] or "json": r[1] for r in c.execute("SELECT kind,COUNT(*) FROM imports GROUP BY kind")}
+        done = c.execute("SELECT j.created, MIN(a.at) FROM jobs j JOIN audit a ON a.job_id=j.id AND a.event LIKE 'Approved by%' "
+                         "WHERE j.archived=0 AND j.stage=4 GROUP BY j.id").fetchall()
+        open_ = [r[0] for r in c.execute("SELECT created FROM jobs WHERE archived=0 AND stage<4")]
+        verdicts = {r[0]: r[1] for r in c.execute("SELECT COALESCE(verdict,'Not yet checked'),COUNT(*) FROM jobs WHERE archived=0 GROUP BY 1")}
         ai = vision.status(c)
-    return jsonify(total=sum(by), by_stage=by, stages=STAGES, avg_gen_ms=int(mean(ms)) if ms else None, imports=kinds,
+    hours = lambda a, b: (dt.datetime.fromisoformat(b) - dt.datetime.fromisoformat(a)).total_seconds() / 3600
+    tat = [hours(a, b) for a, b in done if a and b]
+    ages = [hours(a, now()) for a in open_ if a]
+    return jsonify(total=sum(by), by_stage=by, stages=STAGES, historical=hist, avg_gen_ms=int(mean(ms)) if ms else None, imports=kinds,
+                   turnaround_h=dict(avg=round(mean(tat), 2), best=round(min(tat), 2), worst=round(max(tat), 2), n=len(tat)) if tat else None,
+                   open_age_h=dict(avg=round(mean(ages), 2), oldest=round(max(ages), 2), n=len(ages)) if ages else None, verdicts=verdicts,
                    ai={k: ai[k] for k in ("configured", "model", "provider", "kind", "calls_today", "daily_limit")}, sections=NAMES)
 
 @app.post("/api/demo")
