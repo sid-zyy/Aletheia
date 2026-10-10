@@ -8,7 +8,7 @@ Settings, API and the data model: README.md and docs/ARCHITECTURE.md.
 import base64, json, hashlib, io, math, os, re, secrets, sqlite3, sys, datetime as dt
 import importers, vision
 import rules, report
-import auth, integrity, workflow, excel_routes, retention, notify, portal
+import auth, integrity, workflow, excel_routes, retention, notify, portal, tickets
 from integrity import Conflict, Locked
 from rules import val as rule, nll_limits, ratio_tolerance, classify_observation
 from statistics import mean
@@ -88,7 +88,7 @@ def actor():
     return u["id"], f"{u['full_name']} ({u['username']})", ",".join(u["roles"]), request.remote_addr
 
 def log(c, jid, ev, kind="event"):
-    """Audit entry. kind: job, data, check, verify, report, approve, admin, auth, denied, event."""
+    """Audit entry. kind: job, data, check, verify, report, approve, admin, auth, denied, notify, ticket, event."""
     uid, name, roles, ip = actor()
     cur = c.execute("INSERT INTO audit(job_id,event,at,user_id,actor,role,ip,kind) VALUES(?,?,?,?,?,?,?,?)", (jid, ev, now(), uid, name, roles, ip, kind))
     integrity.seal(c, cur.lastrowid)  # hash chain: changing or removing any entry later is detectable
@@ -1617,6 +1617,8 @@ def my_work():
             out["awaiting_verification"] = q(f"SELECT j.id, j.series, s.key, s.uploaded_at AS at, uu.full_name AS by FROM sections s JOIN jobs j ON j.id=s.job_id "
                                              f"LEFT JOIN users uu ON uu.id=s.uploaded_by WHERE {open_jobs} AND s.state='uploaded' AND s.key!='request' AND s.data IS NOT NULL ORDER BY s.uploaded_at")
             out["locked_accounts"] = q("SELECT id, username AS series, full_name AS name, locked_until AS at FROM users WHERE locked_until > ?", now())
+            out["tickets"] = q("SELECT t.id, o.name AS series, t.subject AS name, t.updated_at AS at FROM tickets t LEFT JOIN orgs o ON o.id=t.org_id "
+                               "WHERE t.status='open' ORDER BY t.updated_at")
     for lst in out.values():
         for x in lst:
             if "key" in x: x["name"] = NAMES.get(x["key"], "Identifiers on each sheet" if x["key"] == "ids" else "Additional log sheets" if x["key"] == "other" else x["key"])
@@ -1727,6 +1729,7 @@ excel_routes.install(sys.modules[__name__])  # template registry and Excel route
 retention.install(sys.modules[__name__])     # backups, audit tip, export packages
 notify.install(sys.modules[__name__])        # notifications, settings, email outbox
 portal.install(sys.modules[__name__])        # partial reports, approved values, customers' request forms
+tickets.install(sys.modules[__name__])       # customers' tickets to the administrators
 if __name__ == "__main__":
     retention.schedule()                     # one backup a day while the server runs
     notify.worker()                          # email outbox

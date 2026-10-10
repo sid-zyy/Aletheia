@@ -28,11 +28,11 @@ changes at first sign-in), the customer organisations and the test bays.
 
 | Role | Does | Cannot |
 |---|---|---|
-| **Admin** | assigns tests (or a whole job) to test engineers with the bay; users, customer organisations, test bays, Excel templates, settings, backups, audit log; sees what waits for approval | enter or verify data, sign reports |
+| **Admin** | assigns tests (or a whole job) to test engineers with the bay; answers and closes **customer tickets**; users, customer organisations, test bays, Excel templates, settings, backups, audit log; sees what waits for approval | enter or verify data, sign reports |
 | **Tester** (test engineer) | intake: receives a customer's request (records sheet 3 of the form, the test plan; series/sample numbers are allocated) or returns it to the customer with the reason; takes unassigned tests and chooses the bay, uploads the logsheets of their tests, corrects returned tests | raise or change a customer's request, take a test assigned to someone else, verify their own upload, sign off or approve a job they worked on |
 | **Verifier** | checks each uploaded test against its source cells: verify, return (with reason), reopen, not applicable; signs the job off ("all data correct") | verify their own upload |
 | **Approver** | approves and releases the report (re-enters password); with a second approver, amends a released report | approve a job they uploaded, entered or verified data on |
-| **Customer** | the only one who raises a test request: fills in the Customer Request Form (CPRI/QAF/01A, sheets 1-2) online and corrects it when returned; sees their organisation's jobs: progress, approved values, partial report, released reports | see other customers' jobs, values of tests not yet approved, staff names |
+| **Customer** | the only one who raises a test request: fills in the Customer Request Form (CPRI/QAF/01A, sheets 1-2) online and corrects it when returned; raises **tickets** to the laboratory (questions or problems, optionally about a job); sees their organisation's jobs: progress, approved values, partial report, released reports | see other customers' jobs, values of tests not yet approved, staff names |
 
 Tester, Verifier and Approver may be combined on one account; the rules above still apply per job. Admin and Customer
 accounts stand alone. Every rule is enforced by the server (a route without a permission rule is refused) and every refusal
@@ -64,7 +64,7 @@ is recorded in the audit log.
 
 Pages: **Dashboard** (with each person's tasks: what to test, take, verify, approve; for Admin what waits for approval and what is not assigned), **My work** (what waits on you, oldest first), **Report Workflow**,
 **Records & Search** (with Excel export of many jobs), **Report Preview**; for Admin: **Users & customers**, **Templates**,
-**Audit log**, **Backups**, **Settings**; for customers: **My jobs** and **Notifications**.
+**Audit log**, **Backups**, **Settings**; **Customer tickets**; for customers: **My jobs** (with their test requests), **Tickets** and **Notifications**.
 
 ### Demo
 
@@ -75,6 +75,15 @@ Pages: **Dashboard** (with each person's tasks: what to test, take, verify, appr
 | Several jobs in one workbook | Report Workflow -> *Upload a workbook for several jobs* |
 | Failing sample | `test-files/3 - failing job (top-oil rise over limit).csv`: the logged top-oil rise is over its limit, so the report says the sample does NOT comply |
 | Customer | Create a customer account for the job's organisation, sign in: progress, approved values, partial report |
+
+## Customer tickets
+
+A customer raises a ticket from **Tickets** (or *Raise a ticket* on one of their jobs): what it is about (test request,
+test report, partial report or values, sample handling or despatch, account, other), a subject and the message. It goes
+to the administrators (notification, dashboard task *Customer tickets to answer*). The administrator answers in the same
+thread; the customer sees the answer signed *CPRI Short Circuit Laboratory* (never a staff name) and is notified. Status:
+**open** (waiting for the laboratory) -> **answered** -> **closed**; a customer's reply re-opens it. Customers see only
+their organisation's tickets; messages cannot be changed or removed, and every step is in the audit log (kind `ticket`).
 
 ## Excel logsheets and templates
 
@@ -149,6 +158,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | Data | `/api/jobs/<id>/import`, `/api/jobs/<id>/excel/preview|import`, `/api/excel/preview|import` (several jobs), `/api/jobs/<id>/section`, `/api/jobs/<id>/history`, `/api/files/<id>` |
 | Verification | `/api/jobs/<id>/sections/<test>/verify|return|reopen|na`, `/api/jobs/<id>/assign`, `/api/jobs/<id>/signoff` |
 | Reports | `/api/jobs/<id>/validate|review|generate|approve|amend`, `/api/jobs/<id>/report.pdf`, `/api/verify/<code>` |
+| Tickets | `/api/tickets[?status=]`, `/api/tickets/<id>`, `/api/tickets/<id>/messages|close|reopen` |
 | Customer | `/api/jobs/<id>/approved-values`, `/api/jobs/<id>/partials`, `/api/jobs/<id>/partial.pdf`, `/api/customer/request-forms` |
 | Excel | `/api/templates[...]`, `/api/logsheets/<test|all>.xlsx`, `/api/request-form.xlsx`, `/api/jobs/<id>/logsheets.xlsx`, `/api/records.xlsx` |
 | Operations | `/api/my-work`, `/api/notifications`, `/api/settings`, `/api/outbox`, `/api/audit[/verify|/tip]`, `/api/admin/backups[...]`, `/api/jobs/<id>/package.zip` |
@@ -167,6 +177,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `test_excel.py` | template round trips, preview, layout drift, formulas, refused files, several jobs per workbook, template versions |
 | `test_amend.py` | manifest, amendments, record packages, backups and tamper detection |
 | `test_portal.py` | approved values only, partial reports, notifications and email, customer-only requests, return and correction, no same-day board |
+| `test_tickets.py` | customers raise tickets, administrators answer and close them; who sees what |
 | `test_load.py` | eight people at once on one database |
 
 ## Files
@@ -180,10 +191,11 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `workflow.py` | intake rules (PIN-code table), ownership, progress, sign-off readiness |
 | `xltemplates.py`, `seed_templates.py`, `excel_routes.py` | Excel template engine, version-1 templates, template registry and Excel routes |
 | `retention.py` | backups, backup check, audit tip, record packages |
+| `tickets.py` | customer tickets to the administrators: thread, status, notifications |
 | `notify.py`, `portal.py` | notifications, email outbox, settings; partial reports, approved values, customer forms |
 | `rules.py` | every engineering threshold with its source and status |
 | `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
-| `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `assistant.js` |
+| `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `tickets.js`, `assistant.js` |
 | `docs/` | [NEXT_STEPS.md](docs/NEXT_STEPS.md) (plan and progress), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VALIDITY.md](docs/VALIDITY.md), [NOTES.md](docs/NOTES.md) |
 | `sample_data/`, `test-files/` | demo job in every format with its scans, legacy registers; three CSV demo jobs |
 

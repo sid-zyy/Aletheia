@@ -48,8 +48,9 @@ async function dashTasks(){if(!ME||isCust())return;const h=$('#app .hero');if(!h
  const assign=x=>Object.assign(x,{_btn:`<a class="btn g s" href="#/job/${x.id}">Assign</a>`});
  let g='';
  if(ME.roles.includes('admin'))g+=G('Reports to approve',w.to_approve,x=>`${esc(x.customer||'')} &middot; report generated ${ago(x.at)}`,1)+G('Tests not assigned',(w.unassigned||[]).map(assign),x=>'',0,'dashboard')+
-  G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:'Request '+x.id,href:'#/intake/r'+x.id})),x=>ago(x.at))+G('Awaiting verification',w.awaiting_verification,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`)+
-  G('Locked accounts',(w.locked_accounts||[]).map(x=>({...x,href:'#/users'})),x=>`until ${esc((x.at||'').slice(11,16))}`,1);
+  G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:'Request '+x.id,href:'#/dashboard'})),x=>ago(x.at)+' &middot; a test engineer receives it')+G('Awaiting verification',w.awaiting_verification,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`)+
+  G('Locked accounts',(w.locked_accounts||[]).map(x=>({...x,href:'#/users'})),x=>`until ${esc((x.at||'').slice(11,16))}`,1)+
+  G('Customer tickets to answer',(w.tickets||[]).map(x=>({...x,href:'#/tickets/'+x.id})),x=>ago(x.at),1,'tickets');
  if(ME.roles.includes('tester'))g+=G('Returned to you',w.returned,x=>`<span style="color:var(--er)">${esc(x.note||'')}</span>`,1)+G('To test',w.assigned,x=>(x.bay?esc(x.bay)+' &middot; ':'')+'assigned '+ago(x.at),1)+
   G('Available to take',(w.available||[]).map(take),x=>'not assigned')+G('Intake to complete',w.intake,x=>'intake not confirmed against the original')+
   G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:'Request '+x.id,href:'#/intake/r'+x.id})),x=>ago(x.at)+' &middot; open it when the sample arrives');

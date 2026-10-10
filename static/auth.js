@@ -61,8 +61,8 @@ function pwView(forced){const h=`${forced?'<p class="note">This is a temporary p
 async function logout(){try{await api('/api/logout',{})}catch(e){}ME=null;PERMS=[];CSRF='';document.body.innerHTML=SHELL_HTML;location.hash='';boot()}
 /* userChip() (the user menu) is in ui.js */
 /* navigation per role: staff see the laboratory pages, Admin also the administration pages, customers only their jobs */
-function navFor(){if(isCust())return[['my','My jobs'],['notifications','Notifications']];const n=[['dashboard','Dashboard'],...(ME.roles.includes('admin')?[]:[['mywork','My work']]),...(can('job.create')?[['intake','Customer requests']]:[]),['workflow','Report Workflow'],['records','Records & Search'],['preview','Report Preview']];
- if(can('users.manage'))n.push(['users','Users & customers'],['templates','Templates'],['audit','Audit log'],['backups','Backups'],['settings','Settings']);n.push(['arch','Architecture']);return n}
+function navFor(){if(isCust())return[['my','My jobs'],['tickets','Tickets'],['notifications','Notifications']];const n=[['dashboard','Dashboard'],...(ME.roles.includes('admin')?[]:[['mywork','My work']]),...(can('job.create')?[['intake','Customer requests']]:[]),['workflow','Report Workflow'],['records','Records & Search'],['preview','Report Preview']];
+ if(can('users.manage'))n.push(['users','Users & customers'],['templates','Templates'],['audit','Audit log'],['tickets','Customer tickets'],['backups','Backups'],['settings','Settings']);n.push(['arch','Architecture']);return n}
 
 /* ---------------------------------------------------------------- Admin: users and customer organisations */
 async function usersPage(){const [us,os]=await Promise.all([api('/api/users'),api('/api/orgs')]),on=Object.fromEntries(os.map(o=>[o.id,o.name]));
@@ -111,7 +111,7 @@ async function myJobs(){const l=await api('/api/jobs');
  :`<div class="card empty"><h2>No jobs yet</h2>Jobs appear here once the laboratory registers your product.</div>`);custForms()}
 async function myJob(id){const j=await api('/api/jobs/'+id),vs=j.versions||[],P=j.progress||[],n=s=>P.filter(p=>p.state==s).length,tot=P.filter(p=>p.state!='na').length||1;
  const seg=[['verified','var(--ok)'],['uploaded','var(--wn)'],['received','var(--wn)'],['returned','var(--er)']];
- $('#app').innerHTML=`<button class="back" onclick="go('my')">&larr; My jobs</button>`+head(esc(j.series),`Sample ${esc(j.sample)} &middot; ${esc(j.rating)}`,j.report?`<a class="btn" href="/api/jobs/${id}/report.pdf?dl=1">Download final report</a>`:'')+
+ $('#app').innerHTML=`<button class="back" onclick="go('my')">&larr; My jobs</button>`+head(esc(j.series),`Sample ${esc(j.sample)} &middot; ${esc(j.rating)}`,`<a class="btn g" href="#/tickets/new/${id}">Raise a ticket</a>`+(j.report?`<a class="btn" href="/api/jobs/${id}/report.pdf?dl=1">Download final report</a>`:''))+
  `<div class="card"><h2>Progress</h2><b style="font-size:20px">${n('verified')} of ${tot} tests approved</b><span class="note"> &middot; ${n('uploaded')+n('received')} pending verification &middot; ${n('not_started')} not started</span>
  <div class="prog">${seg.map(([s,c])=>`<i style="flex:${n(s)};background:${c}"></i>`).join('')}<i style="flex:${n('not_started')}"></i></div>
  ${P.map(p=>`<div class="ps"><span>${esc(p.name)}</span><span class="pst ${p.state}">${PSTATE[p.state]||p.state}</span></div>`).join('')}
