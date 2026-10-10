@@ -228,6 +228,15 @@ class Assignment(Flow):
         self.assertEqual(len(notes), 1, notes)
         self.assertEqual(notes[0], f"{self.get(a)['series']}, {self.get(b)['series']}: Short-circuit logsheet assigned to you")
 
+    def test_checks_expect_only_the_required_tests(self):
+        i = self.receive(plan=("sc",))  # the customer asked for the short-circuit test only
+        self.c.post(f"/api/jobs/{i}/import", json=dict(filename="sc.json", content={"sc": DEMO["sc"], "ids": {"sc": DEMO["ids"]["sc"], "resistance": ["25T1656", "HVD25S0847"]}}))
+        F = self.c.post(f"/api/jobs/{i}/validate").json["findings"]
+        comp = next(f for f in F if f["check"] == "Completeness of source documents")
+        self.assertEqual((comp["level"], comp["detail"]), ("pass", "All 2 required documents imported"))  # the request and the SC test
+        self.assertFalse([f for f in F if f["check"] == "Limits not available"])  # the proforma was not required
+        self.assertFalse([f for f in F if f["check"] == "Identifier consistency" and "resistance" in f["detail"]])  # no resistance sheet uploaded
+
     def test_admin_dashboard_lists_what_waits(self):
         i = self.planned()
         w = self.admin.get("/api/my-work").json

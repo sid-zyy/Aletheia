@@ -168,7 +168,7 @@ def build(A, j, version=None, verify_url=None, manifest=None, partial=None):
     partial=dict(version, approved, pending, sections) builds the customer's partial report: approved tests only, no
     conclusion, no signatures, no ULR, watermark on every page (NEXT_STEPS.md 7.1)."""
     t = template(A.TEMPLATE_FILE)
-    try: F, C = A.validate(j["data"])
+    try: F, C = A.validate(j["data"], j.get("plan"))
     except Exception: F, C = [], {}  # noqa: BLE001 - the report shows what it can
     prev, buf = {}, None
     for _ in range(3):  # lay out until the sheet numbers no longer move (normally twice)
@@ -505,7 +505,7 @@ def _render(A, t, j, F, C, version, verify_url, manifest, partial, prev, seen):
 
     if not partial and R:  # the conclusion follows the last results sheet
         fails = [f for f in F if f["level"] == "fail"]
-        missing = [v for k, v in A.NAMES.items() if k not in d]
+        missing = [A.NAMES[k] for k in A.required(j.get("plan")) if k not in d]
         skipped = list(dict.fromkeys(f["check"] for f in F if f.get("na")))
         scope = ""
         if missing or skipped:

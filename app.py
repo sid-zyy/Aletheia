@@ -135,8 +135,9 @@ def save(jid, **kw):
         c.execute(f"UPDATE jobs SET {','.join(k + '=?' for k in kw)} WHERE id=?", (*[json.dumps(v) if isinstance(v, (dict, list)) else v for v in kw.values()], jid))
 
 # --------------------------------------------------------------- validation
-def validate(d):
-    """Returns (findings, calc). Levels: pass / warn (needs reviewer attention) / fail (blocks)."""
+def validate(d, plan=None):
+    """Returns (findings, calc). Levels: pass / warn (needs reviewer attention) / fail (blocks).
+    plan: the job's required tests (section keys); documents outside it are neither expected nor reported missing."""
     F, C = [], {}
     def add(l, c, t, src=None, found=None, exp=None, fix=None, na=False, basis=None, inconclusive=False, cause=None, blocks=False, advisory=False):
         """src: document(s) checked; found / exp: observed vs required value; fix: what the engineer should do.
@@ -164,15 +165,16 @@ def validate(d):
                               exp="All values this check needs", na=True, cause=f"{type(e).__name__}: {e}",
                               fix="Fill in the missing values if this test was performed; otherwise leave them as NA. The report lists it as not evaluated.")
         return guard()
-    miss = [v for k, v in NAMES.items() if k not in d]
+    need = required(plan)
+    miss = [NAMES[k] for k in need if k not in d]
     # Missing documents do not block the report: checks run on what is present, and the report says what was not evaluated.
     add("warn" if miss else "pass", "Completeness of source documents",
         f"Missing: {', '.join(miss)}. Checks that need them were skipped; the report marks those tests as not evaluated." if miss
-        else "All 10 source documents imported",
-        src="All source documents", found=f"{len(NAMES) - len(miss)} of {len(NAMES)} documents imported", exp=f"All {len(NAMES)} documents",
-        fix=("Import the missing documents if those tests were performed. If they were not requested, approve the report as it is; "
-             "the missing tests are listed as not evaluated.") if miss else None)
-    if "proforma" not in d and any(k in d for k in ("noload", "losses", "routine", "temp")):
+        else f"All {len(need)} required documents imported",
+        src="Required documents", found=f"{len(need) - len(miss)} of {len(need)} required documents imported", exp=f"All {len(need)} required documents",
+        fix=("Upload the missing documents from their rows on the job page, or mark a test not applicable (with a reason) if it "
+             "was not performed.") if miss else None)
+    if "proforma" in need and "proforma" not in d and any(k in d for k in ("noload", "losses", "routine", "temp")):
         add("warn", "Limits not available", "The proforma is missing, so loss, impedance, no-load current, ratio and temperature-rise "
             "results could not be compared with their limits.", src=NAMES["proforma"], found="Proforma not imported",
             exp="Proforma with rating, guaranteed losses, impedance and temperature-rise limits",
@@ -183,7 +185,7 @@ def validate(d):
     with na('Identifier consistency', "Identifiers on each sheet"):
         if "work" in ids:
             ws, wm = norm(ids["work"][0])[-7:], norm(ids["work"][1])[-4:]
-            bad = [(k, s, m) for k, (s, m) in ids.items() if norm(s)[-7:] != ws or norm(m)[-4:] != wm]
+            bad = [(k, s, m) for k, (s, m) in ids.items() if (k in d or k == "work") and (norm(s)[-7:] != ws or norm(m)[-4:] != wm)]  # sheets uploaded only
             for k, s, m in bad:
                 add("warn", "Identifier consistency", f"{NAMES.get(k, k)}: transcribed '{s}' / '{m}' but work instruction = {ws} / {wm}. Verify handwriting (4/6/H).",
                     src=NAMES.get(k, k), found=f"Series {s}, sample {m}", exp=f"Series ...{ws}, sample ...{wm} (as on the work instruction)",
@@ -418,23 +420,27 @@ def validate(d):
                         src=src, found=v, exp=f"...{want}", fix="Check the identifier on the scan and correct it on the sheet's page if it was misread.")
     return F, C
 
-def safe_validate(d):
+def required(plan):
+    """The documents a job needs: the customer's request and the tests in its plan (every document when it has no plan)."""
+    return [k for k in NAMES if k == "request" or k in plan] if plan else list(NAMES)
+
+def safe_validate(d, plan=None):
     """validate() for data that may be incomplete or mis-shaped (hand-edited spreadsheets): never raises.
     If one document's layout breaks the checks, it is named in a blocking finding and the other documents are still checked."""
     try:
-        return validate(d)
+        return validate(d, plan)
     except Exception as e:  # noqa: BLE001 - any shape problem becomes a blocking finding the user can act on
         err = e
     culprits = []
     for k in [k for k in d if k != "request"]:
-        try: validate({x: v for x, v in d.items() if x != k})
+        try: validate({x: v for x, v in d.items() if x != k}, plan)
         except Exception: continue  # noqa: BLE001 - still failing without k, so k alone is not the cause
         culprits.append(k)
     what = lambda x: f"missing field {x}" if isinstance(x, KeyError) else f"{type(x).__name__}: {x}"
     if not culprits:
         return [dict(level="fail", blocks=True, check="Data structure", detail=f"Imported data is incomplete or not in the expected layout ({what(err)}). "
                      "Compare with a downloaded template, correct the file and import it again.")], {}
-    try: F, C = validate({x: v for x, v in d.items() if x not in culprits})
+    try: F, C = validate({x: v for x, v in d.items() if x not in culprits}, plan)
     except Exception: F, C = [], {}  # noqa: BLE001
     F = [f for f in F if not (f["check"] == "Completeness of source documents")]
     for k in culprits:
@@ -1063,7 +1069,7 @@ def extract(sid):
 def val(i):
     j = getjob(i)
     if locked(j): return locked(j)
-    F, _ = safe_validate(j["data"]); fails = sum(f["level"] == "fail" for f in F); blocks = len(blocking(F))
+    F, _ = safe_validate(j["data"], j.get("plan")); fails = sum(f["level"] == "fail" for f in F); blocks = len(blocking(F))
     done = {(f["check"], f["detail"]) for f in j["findings"] if f.get("reviewed")}  # unchanged items keep their review
     for f in F:
         if f["level"] in ("warn", "fail") and not f.get("blocks") and (f["check"], f["detail"]) in done: f["reviewed"] = True
