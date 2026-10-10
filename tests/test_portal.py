@@ -40,8 +40,9 @@ class Values(Portal):
         self.assertEqual(self.verify(i, "sc").status_code, 200)
         vals = self.cust.get(f"/api/jobs/{i}/approved-values").json
         self.assertEqual([v["key"] for v in vals], ["sc"])
-        shots = next(x for x in vals[0]["items"] if x["label"] == "Oscillograms"); self.assertIn("Peak (kA)", shots["columns"]); self.assertEqual(shots["rows"][1][0], "S002")
-        self.assertIn({"label": "Date of test", "value": "31-10-2025"}, vals[0]["items"])
+        shots = next(x for x in vals[0]["items"] if x["label"] == "S.C. Test results"); self.assertIn("Peak (kA)", shots["columns"]); self.assertEqual(shots["rows"][1][0], "S002")
+        self.assertIn({"label": "Date of Test", "value": "31-10-2025"}, vals[0]["items"])
+        self.assertFalse([x for x in vals[0]["items"] if x["label"] in ("Test Engineer", "Customer's Signature")])  # no staff names
         everything = json.dumps(self.cust.get(f"/api/jobs/{i}").json) + json.dumps(vals)
         self.assertNotIn("26.01", everything); self.assertNotIn("2930", everything)  # temp and proforma are not approved: no numbers
         p = pdf_text(self.cust.get(f"/api/jobs/{i}/partial.pdf").data)

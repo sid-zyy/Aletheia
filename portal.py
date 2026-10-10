@@ -82,25 +82,24 @@ def labelled(c, j, key):
     if not r: return [dict(label=f, value=v) for _, f, v in A.importers.flatten({key: data})]
     m = json.loads(r[0]); out = []; done = set()
     for f in m.get("fields") or []:
-        if f["field"].startswith("@") or f.get("by") == "const": continue
+        if f["field"].startswith(("@", "sig.")) or f.get("by") == "const": continue  # signatures name laboratory staff: never shown
         if f.get("type") == "table":
             if f["at"] in done: continue
             done.add(f["at"])
             group = [g for g in m["fields"] if g.get("type") == "table" and g.get("at") == f["at"]]
+            labels = f.get("row_labels")
+            merged = X.merged_rows(group, data, labels)  # the rows as the sheet shows them (every field reading this table)
             rows = []
-            if any("pick" in g for g in group):
-                merged = {}
-                for g in group:
-                    for n, x in enumerate(X.get(data, g["field"]) or []): merged.setdefault(n, [None] * len(f["columns"]))[g["pick"]] = x
-                rows = [merged[n] for n in sorted(merged)]
-            else:
-                for g in group: rows += X.table_rows(g, X.get(data, g["field"]))
-            specs = X.col_specs(f)
-            cols = [(cs.get("title") + " " if cs.get("title") else "") + lab for _, _, lab, _, cs in specs]
+            for n in sorted(merged):
+                r_ = merged[n]
+                if labels and n < len(labels): r_[0] = labels[n]
+                rows.append(r_)
+            specs = [x for x in X.col_specs(f) if not X.is_calc(x[4])]  # calculated only for display: not a logged value
+            cols = [(cs.get("title") + " " if cs.get("title") else "") + str(lab).strip() for _, _, lab, _, cs in specs]
             flat = [[(r_[pos] if j_ is None else (r_[pos][j_] if isinstance(r_[pos], list) and j_ < len(r_[pos]) else None)) for pos, j_, *_ in specs] for r_ in rows]
-            out.append(dict(label=f.get("caption") or f["field"], columns=cols, rows=flat))
+            if any(v is not None for r_ in flat for v in r_[1 if labels else 0:]): out.append(dict(label=f.get("caption") or f.get("title") or f["field"], columns=cols, rows=flat))
         else:
-            out.append(dict(label=f.get("label") or f["field"], value=X.get(data, f["field"])))
+            out.append(dict(label=f.get("title") or f.get("label") or f["field"], value=X.get(data, f["field"])))
     return out
 
 

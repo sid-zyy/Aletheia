@@ -192,9 +192,13 @@ def validate(d, plan=None):
     norm = lambda s: s.upper().replace("H", "4")
     ids = d.get("ids", {})
     with na('Identifier consistency', name("ids")):
-        if "work" in ids:
-            ws, wm = norm(ids["work"][0])[-7:], norm(ids["work"][1])[-4:]
-            bad = [(k, s, m) for k, (s, m) in ids.items() if (k in d or k == "work") and (norm(s)[-7:] != ws or norm(m)[-4:] != wm)]  # sheets uploaded only
+        two = lambda v: (list(v) + [None, None])[:2] if isinstance(v, (list, tuple)) else [None, None]
+        written = lambda x: x is not None and str(x).strip() not in ("", "NA")  # an identifier left off a sheet is not compared
+        if "work" in ids and written(two(ids["work"])[0]):
+            w0, w1 = two(ids["work"])
+            ws, wm = norm(str(w0))[-7:], norm(str(w1))[-4:] if written(w1) else None
+            bad = [(k, s, m) for k, v in ids.items() for s, m in [two(v)] if (k in d or k == "work")
+                   and ((written(s) and norm(str(s))[-7:] != ws) or (written(m) and wm and norm(str(m))[-4:] != wm))]  # sheets uploaded only
             for k, s, m in bad:
                 add("warn", "Identifier consistency", f"{name(k)}: transcribed '{s}' / '{m}' but work instruction = {ws} / {wm}. Verify handwriting (4/6/H).",
                     src=name(k), found=f"Series {s}, sample {m}", exp=f"Series ...{ws}, sample ...{wm} (as on the work instruction)",
@@ -1658,7 +1662,7 @@ def get_file(fid):
     resp = send_file(io.BytesIO(r["content"]), mimetype=r["mime"] or "application/octet-stream", as_attachment=True, download_name=r["name"])
     resp.headers["X-Content-Type-Options"] = "nosniff"; return resp
 
-CODE_FILES = ("app.py", "importers.py", "rules.py", "vision.py", "auth.py", "integrity.py", "workflow.py", "xltemplates.py", "excel_routes.py", "retention.py")
+CODE_FILES = ("app.py", "importers.py", "rules.py", "vision.py", "auth.py", "integrity.py", "workflow.py", "xltemplates.py", "paper_templates.py", "excel_routes.py", "retention.py")
 def code_id():
     """Fingerprint of the Python code on disk. Taken once at start-up and again on request, it shows whether the running
     server is older than its files (the page is always served fresh, so an unrestarted server and a new page can disagree)."""

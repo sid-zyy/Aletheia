@@ -125,6 +125,19 @@ sheet shows (a formula never recalculated is refused), decimal commas only by ex
 Administrators make a new template version when a sheet changes, test it on a sample and on past uploads, compare it with the
 active one and activate it; versions that read stored data are kept. See `xltemplates.py` for the mapping format.
 
+**Version 2: the paper layout** (`paper_templates.py`). Each test's sheet is laid out as its scanned paper logsheet
+(`sample_data/scans/`): the header block first, then the readings in the paper's row and column order, then remarks,
+instruments and signatures, with the same labels and units, so a tester copies values straight across. Input cells are
+light yellow; printed text, row labels and calculated cells (averages, average ambient, top-oil rise, deflection) are grey
+and locked (the sheet is protected without a password). Choices are dropdowns, readings must be numbers within sensible
+limits, dates must be dates, and a short note at the top says how to fill it in. A hidden first row carries the fingerprint
+that recognises the sheet on upload. The stored data keeps the shape the checks and the report read; what the paper adds
+(time of each temperature reading, voltage applied per shot, instruments, signatures...) is stored alongside under new
+names, and signatures are never shown to customers. On the first start of this version, version 2 becomes active and
+version 1 is retired (an administrator's own active version is kept, and version 2 is offered as a draft). Files filled in
+on version 1 still import: an upload is matched against the active version first, then the retired ones.
+`sample_data/tests/*.xlsx` are the demo job's values in the paper layout.
+
 The original flat layout (`section, field, value` in CSV, Excel, SQLite or JSON) is still read; any job can be downloaded in it.
 
 ## The test report
@@ -224,7 +237,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `auth.py` | accounts, sessions, CSRF, roles and the permission gate |
 | `integrity.py` | sections and history, files, numbering, audit hash chain, database triggers, migrations |
 | `workflow.py` | the Customer Request Form CPRI/QAF/01A (fields, sheet 3) and its rules (PIN-code table), ownership, progress, sign-off readiness |
-| `xltemplates.py`, `seed_templates.py`, `excel_routes.py` | Excel template engine, version-1 templates, template registry and Excel routes |
+| `xltemplates.py`, `seed_templates.py`, `paper_templates.py`, `excel_routes.py` | Excel template engine, version-1 templates, version-2 templates (the paper logsheets), template registry and Excel routes |
 | `retention.py` | backups, backup check, audit tip, record packages |
 | `tickets.py` | customer tickets to the administrators: thread, status, notifications |
 | `notify.py`, `portal.py` | notifications, email outbox, settings; partial reports, approved values, customers' test requests |
@@ -232,7 +245,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
 | `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `tickets.js`, `assistant.js` |
 | `docs/` | [NEXT_STEPS.md](docs/NEXT_STEPS.md) (plan and progress), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VALIDITY.md](docs/VALIDITY.md), [LAB_WORKFLOW.md](docs/LAB_WORKFLOW.md), [CHECKLIST.md](docs/CHECKLIST.md), [NOTES.md](docs/NOTES.md) |
-| `sample_data/tests/` | the demo job's data per test, as a CSV and as a filled Excel logsheet (template layout, read by the upload preview) (proforma, work instruction, losses, resistance, no-load, routine, short circuit, temperature rise, pressure), to upload test by test |
+| `sample_data/tests/` | the demo job's data per test, as a CSV and as a filled Excel logsheet (paper layout, version 2, read by the upload preview) (proforma, work instruction, losses, resistance, no-load, routine, short circuit, temperature rise, pressure), to upload test by test |
 | `sample_data/`, `test-files/` | demo job in every format with its scans (including the scanned CPRI/QAF/01A request form), the sample report, legacy registers; three CSV demo jobs |
 
 ## Limits to know about

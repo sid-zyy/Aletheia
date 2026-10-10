@@ -3,7 +3,7 @@ import copy, io, json, os, re, sqlite3, sys, unittest, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_app import Base, DEMO, aletheia, signed_in, up  # noqa: E402
-import seed_templates as S, xltemplates as X  # noqa: E402
+import paper_templates as P, seed_templates as S, xltemplates as X  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402
 
 LOGS = [k for k in S.SPECS]
@@ -13,6 +13,12 @@ def filled(sections=None, data=DEMO, ids=None):
     """A workbook of logsheets in the current layout, filled with the demo values."""
     ids = DEMO["ids"] if ids is None else ids
     return X.workbook([(S.layout(k), data[k], ids) for k in (sections or LOGS)])
+
+
+def filled2(sections=None, data=DEMO, ids=None):
+    """The same, in the paper layout (version 2, the active one)."""
+    ids = DEMO["ids"] if ids is None else ids
+    return X.workbook([(P.paper(k), data[k], ids) for k in (sections or LOGS)])
 
 
 def present(d): return {k: v for k, v in d.items() if v is not None}
@@ -48,7 +54,7 @@ class RoundTrip(Base):
     def test_blank_sheets_and_job_export_round_trip(self):
         b = self.c.get("/api/logsheets/all.xlsx"); self.assertEqual(b.status_code, 200)
         wb = load_workbook(io.BytesIO(b.data)); self.assertEqual(len(wb.sheetnames), len(LOGS))
-        self.assertIn("NL_V100", wb.defined_names)
+        self.assertIn("TR2_RHV_COLD", wb.defined_names)  # the paper layout (version 2) is the one handed out
         self.assertEqual(self.c.get("/api/logsheets/temp.xlsx").status_code, 200)
         i = self.c.post("/api/demo").json["id"]
         x = self.c.get(f"/api/jobs/{i}/logsheets.xlsx"); self.assertEqual(x.status_code, 200)
@@ -184,7 +190,7 @@ class Registry(Base):
         next(f for f in m["fields"] if f["field"] == "v100")["label"] = "Applied voltage, 100% (V)"
         self.assertEqual(self.c.post("/api/templates", json=dict(from_id=old_tid, mapping=m)).status_code, 403)  # testers do not manage templates
         r = self.admin.post("/api/templates", json=dict(from_id=old_tid, mapping=m)); self.assertEqual(r.status_code, 201, r.json)
-        new = r.json["id"]; self.assertEqual(r.json["version"], 2)
+        new = r.json["id"]; self.assertEqual(r.json["version"], 3)  # versions 1 (read this file) and 2 (the paper layout) exist
         self.assertEqual(self.admin.post("/api/templates", json=dict(from_id=old_tid, mapping={"fields": []})).status_code, 400)
         d = self.admin.get(f"/api/templates/{old_tid}/diff/{new}").json; self.assertEqual([x["field"] for x in d], ["v100"])
         past = self.admin.post(f"/api/templates/{new}/test-past", json={}).json
@@ -192,24 +198,24 @@ class Registry(Base):
         live = self.admin.post("/api/templates/test", json=dict(up("nl.xlsx", filled(["noload"])), mapping=m)).json
         self.assertEqual(live["data"]["v100"], 433.06)
         self.assertEqual(self.admin.post(f"/api/templates/{new}/activate").status_code, 200)
-        st = {t["version"]: t["status"] for t in self.admin.get("/api/templates?key=noload-std").json}; self.assertEqual(st, {1: "retired", 2: "active"})
+        st = {t["version"]: t["status"] for t in self.admin.get("/api/templates?key=noload-std").json}; self.assertEqual(st, {1: "retired", 2: "retired", 3: "active"})
         with self.assertRaises(sqlite3.IntegrityError):  # a template that has read data is frozen
             with aletheia.db() as c: c.execute("UPDATE templates SET mapping='{}' WHERE id=?", (old_tid,))
         self.assertEqual(self.get(i)["meta"]["noload"]["template_id"], old_tid)  # the old job keeps the version that read it
         x = load_workbook(io.BytesIO(self.c.get(f"/api/jobs/{i}/logsheets.xlsx").data)); self.assertIn("Rated voltage, 100% (V)", [c.value for c in x.active["A"]] + [c.value for c in x.active["D"]])
         j = self.job("CPRIBLRSCL25T1700"); self.c.post(f"/api/jobs/{j}/import", json=up("nl.xlsx", filled(["noload"])))
         self.assertEqual(self.get(j)["meta"]["noload"]["template_id"], new)
-        e = self.admin.get(f"/api/templates/{new}/export"); self.assertEqual(json.loads(e.data)["version"], 2)
-        self.assertEqual(self.admin.post("/api/templates/import", json=json.loads(e.data)).json["version"], 3)
+        e = self.admin.get(f"/api/templates/{new}/export"); self.assertEqual(json.loads(e.data)["version"], 3)
+        self.assertEqual(self.admin.post("/api/templates/import", json=json.loads(e.data)).json["version"], 4)
 
     def test_admin_tools_grid_and_sample(self):
         tid = self.tid("temp-std")
-        g = self.admin.post("/api/templates/grid", json=up("t.xlsx", filled(["temp"]))).json["sheets"][0]
-        self.assertEqual(g["rows"][0][0], "Temperature-Rise Test Logsheet"); self.assertIn("tr_rhv_cold", g["names"])
+        g = self.admin.post("/api/templates/grid", json=up("t.xlsx", filled2(["temp"]))).json["sheets"][0]
+        self.assertEqual(g["rows"][0][0], "Aletheia template temp v2"); self.assertIn("tr2_rhv_cold", g["names"])
         d = self.admin.post("/api/templates", json=dict(from_id=tid)).json["id"]
-        self.assertEqual(self.admin.post(f"/api/templates/{d}/sample", json=up("t.xlsx", filled(["temp"]))).status_code, 200)
+        self.assertEqual(self.admin.post(f"/api/templates/{d}/sample", json=up("t.xlsx", filled2(["temp"]))).status_code, 200)
         r = self.admin.post("/api/templates/test", json=dict(template_id=d, mapping=self.admin.get(f"/api/templates/{d}").json["mapping"])).json
-        self.assertEqual(present(r["data"]), DEMO["temp"]); self.assertTrue(r["fingerprint_found"])
+        self.assertEqual({k: r["data"][k] for k in DEMO["temp"]}, DEMO["temp"]); self.assertTrue(r["fingerprint_found"])
         self.assertEqual(self.admin.post(f"/api/templates/{d}/retire").status_code, 200)  # a draft is simply discarded
         self.assertEqual(self.admin.get(f"/api/templates/{d}").status_code, 404)
 

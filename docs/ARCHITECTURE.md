@@ -61,6 +61,7 @@ previous one by hash.
 | `workflow.py` | The Customer Request Form CPRI/QAF/01A: fields of sheets 1-2 (customer) and sheet 3 (laboratory) and their rules (required fields, formats, PIN-code table, choices, declarations), test plan, ownership and certification, progress, sign-off readiness |
 | `xltemplates.py` | Template engine: read a sheet (names, labels, cells, tables; statuses per value), draw blank and filled sheets, diff and validate mappings |
 | `seed_templates.py` | Version 1 of the logsheet templates and of an Excel request form kept in the registry (seeds it once) |
+| `paper_templates.py` | Version 2 of the logsheet templates: each sheet laid out as its scanned paper logsheet (header, readings, remarks, signatures), with locked printed text, calculated cells, dropdowns and limits; made active once per database, version 1 retired but still importable |
 | `excel_routes.py` | Template registry (draft / active / retired), upload preview and import, several jobs per workbook, Excel downloads |
 | `notify.py` | In-app notifications, email outbox and worker, settings |
 | `tickets.py` | Customer tickets to the administrators: thread (append-only), status open / answered / closed, notifications |

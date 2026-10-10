@@ -10,7 +10,7 @@
 """
 import datetime as dt, io, json, re
 from flask import jsonify, request, send_file, abort
-import auth, integrity, xltemplates as X, seed_templates
+import auth, integrity, xltemplates as X, seed_templates, paper_templates
 
 A = None  # the running app module (app.py), set by install()
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -30,6 +30,7 @@ def init_db(c):
         for key, kind, section, name, m in seed_templates.all_templates():
             c.execute("INSERT INTO templates(key,kind,section,name,version,status,mapping,created_at,activated_at,note) VALUES(?,?,?,?,1,'active',?,?,?,?)",
                       (key, kind, section, name, json.dumps(m), t, t, "Version 1 shipped with Aletheia"))
+    paper_rollout(c)
     # a template that has read stored data is part of the record: never changed afterwards (a new version is made instead)
     c.execute("DROP TRIGGER IF EXISTS templates_frozen")
     c.execute("CREATE TRIGGER templates_frozen BEFORE UPDATE OF mapping ON templates WHEN OLD.status!='draft' "
@@ -37,6 +38,28 @@ def init_db(c):
     c.execute("DROP TRIGGER IF EXISTS templates_no_delete")
     c.execute("CREATE TRIGGER templates_no_delete BEFORE DELETE ON templates WHEN OLD.status!='draft' "
               "BEGIN SELECT RAISE(ABORT, 'templates are retired, never deleted'); END")
+
+
+PAPER_NOTE = "Version 2 shipped with Aletheia: the layout of the paper logsheet"
+
+
+def paper_rollout(c):
+    """Once per database: each logsheet gets its version 2 (the paper layout, paper_templates.py). It becomes the active
+    version when the shipped version 1 is still the active one; if an administrator has activated a version of their own,
+    it is added as a draft for them to test and activate. Earlier versions are retired, never removed: files filled in on
+    them still import, and stored data keeps pointing at the version that read it."""
+    t = dt.datetime.now().isoformat(timespec="seconds")
+    for section in paper_templates.BUILD:
+        key = f"{section}-std"
+        if c.execute("SELECT 1 FROM templates WHERE key=? AND note=?", (key, PAPER_NOTE)).fetchone(): continue
+        cur = c.execute("SELECT * FROM templates WHERE key=? AND status='active'", (key,)).fetchone()
+        shipped = cur is not None and cur["version"] == 1 and str(cur["note"] or "").startswith("Version 1 shipped")
+        v = c.execute("SELECT COALESCE(MAX(version),0)+1 FROM templates WHERE key=?", (key,)).fetchone()[0]
+        m = dict(paper_templates.paper(section), version=v)
+        if shipped or cur is None:
+            c.execute("UPDATE templates SET status='retired', retired_at=? WHERE key=? AND status='active'", (t, key))
+        c.execute("INSERT INTO templates(key,kind,section,name,version,status,mapping,created_at,activated_at,note) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                  (key, "logsheet", section, m["title"], v, "active" if shipped or cur is None else "draft", json.dumps(m), t, t if shipped or cur is None else None, PAPER_NOTE))
 
 
 def row(r, full=False):
@@ -47,12 +70,14 @@ def row(r, full=False):
     return d
 
 
-def active(c, kind=None, section=None):
-    q, a = "SELECT * FROM templates WHERE status='active'", []
+def active(c, kind=None, section=None, retired=False):
+    """The active templates; with retired=True the retired ones follow (newest first), so a file filled in on an earlier
+    version is still recognised: the active version is tried first, then the older ones."""
+    q, a = "SELECT * FROM templates WHERE status IN ('active'" + (",'retired'" if retired else "") + ")", []
     if kind: q += " AND kind=?"; a.append(kind)
     if section: q += " AND section=?"; a.append(section)
     return [dict(id=r["id"], key=r["key"], version=r["version"], name=r["name"], section=r["section"], mapping=titled(json.loads(r["mapping"]), r["kind"], r["section"]))
-            for r in c.execute(q + " ORDER BY key", a)]
+            for r in c.execute(q + " ORDER BY status='active' DESC, key, version DESC", a)]
 
 
 def titled(m, kind, section):
@@ -88,7 +113,7 @@ def read_workbook(c, name, raw, template_id=None):
     """Every recognised sheet of the workbook, extracted. Returns (sheets, unmatched sheet names)."""
     b = book(name, raw)
     ts = [dict(id=r["id"], key=r["key"], version=r["version"], name=r["name"], section=r["section"], mapping=json.loads(r["mapping"]))
-          for r in [template(c, template_id)]] if template_id else active(c, "logsheet")
+          for r in [template(c, template_id)]] if template_id else active(c, "logsheet", retired=True)
     found = X.detect(b, ts)
     if template_id and not found and b.sheets(): found = [(b.sheets()[0], ts[0])]  # the user chose the template explicitly
     out = []

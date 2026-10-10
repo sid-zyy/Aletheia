@@ -34,6 +34,8 @@ Status 2026-10-10 (evening). Ticked items are implemented and covered by tests (
 - [x] Admin screen to map or update a template when the layout changes
 - [x] Extracted values fill the report's required cells
 - [x] Existing CSV/Excel import keeps working
+- [x] Version 2 templates laid out as the scanned paper logsheets: same order and labels, locked printed and calculated cells, dropdowns, number and date limits, hidden fingerprint
+- [x] Version 1 sheets still import (retired templates are tried after the active one)
 - [ ] The lab's own logsheets as new template versions (waiting for the `.xlsx` files, Q8)
 
 **Test report**

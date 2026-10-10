@@ -35,9 +35,10 @@ template says so ("decimal": ","). Units are never guessed.
 """
 import datetime as dt, difflib, io, re, zipfile
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 from openpyxl.workbook.defined_name import DefinedName
+from openpyxl.worksheet.datavalidation import DataValidation
 
 MAX_ROWS = 2000
 
@@ -258,21 +259,32 @@ def extract(book, mapping, ws=None):
         ws = hits[0] if hits else (book.sheets() or [None])[0]
     if ws is None: raise TemplateError("The workbook has no visible sheet")
     sh = Sheet(book, ws)
+    for it in mapping.get("layout") or []:  # printed text of a paper layout is the form itself, never a value outside the mapping
+        try:
+            c1, r1, c2, r2 = range_boundaries(f"{it['at']}:{it.get('to') or it['at']}")
+            sh.used.update((r, c) for r in range(r1, r2 + 1) for c in range(c1, c2 + 1))
+        except (KeyError, ValueError, TypeError): pass
     data, ids, fields, errors, warnings = {}, {}, [], [], []
     if ws.sheet_state != "visible": warnings.append(f"Sheet '{ws.title}' is hidden")
     for f in mapping.get("fields") or []:
+        if f.get("type") == "table" and f.get("caption") and f.get("at"):  # the table's printed caption, above its header
+            try: _, cr, cc = addr(f["at"]); sh.used.add(sh.top_left(cr - 1, cc))
+            except TemplateError: pass
         if f.get("type") == "table": res = read_table(sh, f, book)
         elif f.get("by") == "const": res = dict(field=f["field"], value=f.get("value"), cell=None, status="ok", note="fixed in the template")
         else: res = read_field(sh, f, book)
+        if f.get("title") or f.get("label") or f.get("caption"): res["label"] = f.get("title") or f.get("label") or f.get("caption")
         fields.append(res)
         st = res["status"]
         if st in ("missing", "ambiguous", "type", "formula_unsaved", "not_found") and (f.get("required") or st != "missing"):
-            errors.append(f"{f.get('label') or f['field']}: {res['note']}" + (f" ({res['cell']})" if res.get("cell") else ""))
+            errors.append(f"{f.get('title') or f.get('label') or f.get('caption') or f['field']}: {res['note']}" + (f" ({res['cell']})" if res.get("cell") else ""))
         if st in ("ok", "formula", "missing", "hidden") and not (st == "missing" and f.get("required")):
             target = f["field"]
-            if target.startswith("@ids."): put(ids, target[5:], res["value"])
+            if target.startswith("@ids."):
+                if res["value"] is not None: put(ids, target[5:], res["value"])  # an identifier not written on the sheet is left out, not stored as NA
             else: put(data, target, res["value"])
         if st == "hidden": warnings.append(f"{f.get('label') or f['field']}: read from a hidden row or column ({res['cell']})")
+    data = {k: prune(v) for k, v in data.items()}
     unmapped = []
     for row in ws.iter_rows(max_row=min(ws.max_row, MAX_ROWS)):
         for cell in row:
@@ -282,6 +294,15 @@ def extract(book, mapping, ws=None):
             unmapped.append(dict(cell=sh.ref(cell.row, cell.column), value=v if not isinstance(v, (dt.date, dt.datetime)) else v.isoformat()))
     if unmapped: warnings.append(f"{len(unmapped)} value cell{'s' if len(unmapped) > 1 else ''} outside the mapping were not read (first: {unmapped[0]['cell']})")
     return dict(section=section, sheet=ws.title, data=data, ids=ids, fields=fields, errors=errors, warnings=warnings, unmapped=unmapped[:50])
+
+
+def prune(v):
+    """Inside a group of values (a dict), what was left empty is left out, and a group left entirely empty is None; lists keep
+    their positions (Before / After pairs). Top-level fields keep None: an empty cell is recorded as NA."""
+    if not isinstance(v, dict): return v
+    out = {k: prune(x) for k, x in v.items()}
+    out = {k: x for k, x in out.items() if x is not None}
+    return out or None
 
 
 def locate(sh, f, book):
@@ -387,46 +408,105 @@ def find_header(sh, f, specs):
     return hdr_bottom, cols
 
 
+def blank(v): return v is None or (isinstance(v, str) and not v.strip())
+
+
+def is_calc(c):
+    """A calculated column: drawn with a formula; read only when "read" is set (it then holds a logged value)."""
+    return bool(c.get("calc")) and not c.get("read")
+
+
 def read_table(sh, f, book):
+    if f.get("orient") == "columns": return read_tgrid(sh, f, book)
     specs = col_specs(f)
     try: hdr, cols = find_header(sh, f, specs)
     except LookupError as e:
         return dict(field=f["field"], value=None, cell=None, status="ambiguous" if e.args[0] == "ambiguous" else "not_found", note=e.args[1])
+    labels = f.get("row_labels")
     rows, problems, first_ref, r = [], [], None, hdr + 1
-    while r <= min(sh.ws.max_row, hdr + MAX_ROWS):
+    last = hdr + len(labels) if labels else min(sh.ws.max_row, hdr + MAX_ROWS)
+    while r <= last:
         cells = {k: (r, cc) for k, cc in cols.items()}
         raw = {k: sh.raw(*rc) for k, rc in cells.items()}
-        if all(v is None or (isinstance(v, str) and not v.strip()) for v in raw.values()): break
+        inputs = [raw[(i, j)] for i, j in raw if not (i == 0 and labels) and not is_calc(f["columns"][i])]
+        if all(blank(v) for v in inputs):
+            if labels:  # a printed row label with nothing logged against it (90 %, hour 15...): skipped, not the end
+                for rc in cells.values(): sh.used.add(rc)
+                r += 1; continue
+            break
         if f.get("stop_label") and norm(raw.get((0, None))) == norm(f["stop_label"]): break
         out = []
         for i, c in enumerate(f["columns"]):
-            if "group" in c:
-                vals = []
-                for j in range(len(c["group"])):
-                    rc = cells[(i, j)]; sh.used.add(rc)
-                    if sh.formula_unsaved(*rc): problems.append(f"{sh.ref(*rc)}: formula without a saved value")
-                    v, p = convert(raw[(i, j)], c.get("type", f.get("cell_type", "number")), c)
-                    if p: problems.append(f"{sh.ref(*rc)}: {p}")
-                    vals.append(v)
-                out.append(vals)
-            else:
-                rc = cells[(i, None)]; sh.used.add(rc)
+            def one(key, typ, opts):
+                rc = cells[key]; sh.used.add(rc)
+                if is_calc(c): return None
                 if sh.formula_unsaved(*rc): problems.append(f"{sh.ref(*rc)}: formula without a saved value")
-                v, p = convert(raw[(i, None)], c.get("type", f.get("cell_type", "number")), c)
+                v, p = convert(raw[key], typ, opts)
                 if p: problems.append(f"{sh.ref(*rc)}: {p}")
-                out.append(v)
+                if c.get("calc") and isinstance(v, float): v = round(v, 6)  # the sheet calculated it: no binary noise (382.91999999999996)
+                return v
+            if "group" in c: out.append([one((i, j), c.get("type", f.get("cell_type", "number")), c) for j in range(len(c["group"]))])
+            else: out.append(one((i, None), c.get("type", f.get("cell_type", "number")), c))
         first_ref = first_ref or sh.ref(r, min(cols.values()))
         rows.append(out); r += 1
     ref = f"{first_ref}..{sh.ref(r - 1, max(cols.values()))}" if rows else sh.ref(hdr, min(cols.values()))
+    return table_result(f, rows, problems, ref)
+
+
+def read_tgrid(sh, f, book):
+    """A table drawn sideways, as on several paper logsheets: the column titles run down the first column and every record
+    is one column to the right of them (reference points 1 to 6, readings over time)."""
+    titles = [c["label"] for c in f["columns"]]
+    try: r0, c0 = sh.find_label(titles[0], near=addr(f["at"])[1:] if f.get("at") else None)
+    except LookupError as e:
+        return dict(field=f["field"], value=None, cell=None, status="ambiguous" if e.args[0] == "ambiguous" else "not_found", note=f"table title '{titles[0]}': {e.args[1]}")
+    trow = {0: r0}
+    for i, t in enumerate(titles[1:], 1):  # each title in the same column, below the previous one (rows may have been inserted)
+        hit = next((rr for rr in range(trow[i - 1] + 1, trow[i - 1] + 6) if norm(sh.raw(rr, c0)) == norm(t)), None)
+        if hit is None: return dict(field=f["field"], value=None, cell=sh.ref(r0, c0), status="not_found", note=f"row title '{t}' not found under '{titles[0]}'")
+        trow[i] = hit
+    for rr in trow.values(): sh.used.add((rr, c0))
+    labels = f.get("row_labels"); rows, problems, refs = [], [], []
+    for k in range(f.get("records") or len(labels or []) or 6):
+        cc = c0 + 1 + k
+        raw = {i: sh.raw(trow[i], cc) for i in trow}
+        for i in trow: sh.used.add((trow[i], cc))
+        if all(blank(raw[i]) for i, c in enumerate(f["columns"]) if not (i == 0 and labels) and not is_calc(c)): continue
+        out = []
+        for i, c in enumerate(f["columns"]):
+            if is_calc(c): out.append(None); continue
+            if sh.formula_unsaved(trow[i], cc): problems.append(f"{sh.ref(trow[i], cc)}: formula without a saved value")
+            v, p = convert(raw[i], c.get("type", f.get("cell_type", "number")), c)
+            if p: problems.append(f"{sh.ref(trow[i], cc)}: {p}")
+            out.append(v)
+        rows.append(out); refs.append(cc)
+    ref = f"{sh.ref(r0, refs[0])}..{sh.ref(trow[len(titles) - 1], refs[-1])}" if refs else sh.ref(r0, c0)
+    return table_result(f, rows, problems, ref)
+
+
+def take_row(f, x):
+    """The stored row from a sheet row: "take" lists the sheet columns (n, or [n, k] for item k of a group) in stored order."""
+    if not f.get("take"): return x
+    return [x[t[0]][t[1]] if isinstance(t, list) and isinstance(x[t[0]], list) else x[t] if not isinstance(t, list) else None for t in f["take"]]
+
+
+def table_result(f, rows, problems, ref):
     if problems:
         return dict(field=f["field"], value=None, cell=ref, status="type", note="; ".join(problems[:5]) + (f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""))
+    rows = [take_row(f, x) for x in rows]
+    if f.get("take"):  # this field reads part of a shared table: a row with nothing in its part is not one of its rows
+        rows = [x for x in rows if any(not blank(v) and not (isinstance(v, list) and all(blank(y) for y in v)) for v in (x[1:] if f["take"][0] == 0 else x))]
     if not rows:
         return dict(field=f["field"], value=None, cell=ref, status="missing", note="table is empty" + (" (required)" if f.get("required") else ""))
+    if f.get("keys_as"):  # printed row labels stored under short keys ("Normal tap" -> "NT")
+        km = {norm(k): v for k, v in f["keys_as"].items()}
+        rows = [[km.get(norm(x[0]), x[0])] + list(x[1:]) for x in rows]
     if f.get("keys"): rows = [x for x in rows if x[0] in f["keys"]]
     how = f.get("rows_as", "list")
     if "pick" in f: val = [x[f["pick"]] for x in rows]
     elif how == "dict": val = {str(x[0]): (x[1] if len(x) == 2 else x[1:]) for x in rows}
     elif how == "values": val = [x[0] for x in rows]
+    elif how == "first": val = rows[0]
     elif how == "row":
         hit = [x for x in rows if str(x[0]) == str(f.get("key"))]
         if not hit: return dict(field=f["field"], value=None, cell=ref, status="missing", note=f"no row '{f.get('key')}' in the table")
@@ -443,7 +523,9 @@ INPUT = PatternFill("solid", fgColor="FFFBEA")
 
 
 def draw(ws, mapping, data=None, ids=None, wb=None):
-    """Lay out one sheet from its mapping (labels, input cells, named cells, table headers); fill it from data if given."""
+    """Lay out one sheet from its mapping (labels, input cells, named cells, table headers); fill it from data if given.
+    A mapping with a "layout" (version 2 and later) is drawn as the paper logsheet instead: see draw_paper."""
+    if mapping.get("layout") is not None: return draw_paper(ws, mapping, data, ids, wb)
     ws["A1"] = mapping.get("title") or mapping.get("section"); ws["A1"].font = Font(bold=True, size=13)
     fp = mapping.get("fingerprint") or {}
     if fp.get("contains"):
@@ -527,6 +609,225 @@ def workbook(sheets):
         while title in wb.sheetnames: title = f"{base[:28]} {n}"; n += 1
         draw(wb.create_sheet(title), mapping, data, ids, wb)
     out = io.BytesIO(); wb.save(out); return out.getvalue()
+
+
+# ---- paper layout (template version 2): the sheet drawn as the laboratory's printed logsheet
+FIXED = PatternFill("solid", fgColor="EEF1F5")   # printed text and row labels: locked
+CALC = PatternFill("solid", fgColor="E3E6EA")    # calculated by the sheet: locked, grey
+NOTE = PatternFill("solid", fgColor="EAF3FB")
+STYLE = {
+    "org": dict(font=Font(bold=True, size=12), align=Alignment(horizontal="center", vertical="center")),
+    "unit": dict(font=Font(size=11), align=Alignment(horizontal="center", vertical="center")),
+    "title": dict(font=Font(bold=True, size=13, underline="single"), align=Alignment(horizontal="center", vertical="center")),
+    "meta": dict(font=Font(size=9, color="333333"), align=Alignment(vertical="center", wrap_text=True)),
+    "meta_r": dict(font=Font(size=9, color="333333"), align=Alignment(horizontal="right", vertical="center", wrap_text=True)),
+    "note": dict(font=Font(italic=True, size=9, color="1C3D6E"), align=Alignment(vertical="top", wrap_text=True), fill=NOTE),
+    "section": dict(font=Font(bold=True, size=11), align=Alignment(horizontal="center", vertical="center"), fill=HEAD, border=True),
+    "head": dict(font=Font(bold=True), align=Alignment(horizontal="center", vertical="center", wrap_text=True), fill=HEAD, border=True),
+    "label": dict(font=Font(size=10), align=Alignment(vertical="center", wrap_text=True), fill=FIXED, border=True),
+    "label_b": dict(font=Font(bold=True, size=10), align=Alignment(vertical="center", wrap_text=True), fill=FIXED, border=True),
+    "text": dict(font=Font(size=9), align=Alignment(vertical="top", wrap_text=True), border=True),
+    "sig": dict(font=Font(bold=True, size=10), align=Alignment(horizontal="center", vertical="top")),
+    "foot": dict(font=Font(size=8, color="56667F"), align=Alignment(vertical="center", wrap_text=True)),
+}
+DATE_MIN = 36526  # 01-01-2000 as an Excel serial: dates before it are typing mistakes
+
+
+def rng_cells(ws, a, b=None):
+    c1, r1, c2, r2 = range_boundaries(f"{a}:{b or a}")
+    return [ws.cell(r, c) for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)]
+
+
+def place(ws, at, to=None, value=None, style=None, fill=None, locked=True):
+    """One cell or merged area: value in the top-left, the style and border on every cell of the area."""
+    cells = rng_cells(ws, at, to)
+    st = STYLE.get(style, {})
+    for c in cells:  # styled before merging: Excel draws a merged area's border from every cell of it
+        if st.get("border") or style is None: c.border = BOX
+        if st.get("fill") or fill: c.fill = fill or st["fill"]
+        c.protection = Protection(locked=locked)
+    top = cells[0]
+    if value is not None: top.value = value
+    if st.get("font"): top.font = st["font"]
+    top.alignment = st.get("align") or Alignment(horizontal="left", vertical="center", wrap_text=True)
+    if to and to != at and f"{at}:{to}" not in {str(r) for r in ws.merged_cells.ranges}: ws.merge_cells(f"{at}:{to}")
+    return top
+
+
+def validate_cells(ws, ref, spec, typ):
+    """Stop mistakes at entry: a list of choices, a number within limits, or a date."""
+    title = spec.get("title") or spec.get("label") or ""
+    if spec.get("choices"):
+        dv = DataValidation(type="list", formula1='"' + ",".join(str(x) for x in spec["choices"]) + '"', allow_blank=True)
+        dv.error = "Choose one of the listed values" + (" (or keep what you typed if it is on the paper sheet)" if spec.get("other") else "")
+        dv.errorStyle = "warning" if spec.get("other") else "stop"
+    elif typ == "number":
+        dv = DataValidation(type="decimal", operator="between", formula1=str(spec.get("min", -1e9)), formula2=str(spec.get("max", 1e9)), allow_blank=True)
+        dv.error = f"Enter a number" + (f" between {spec['min']} and {spec['max']}" if "min" in spec and "max" in spec else "") + (f" ({title})" if title else "")
+    elif typ == "date":
+        dv = DataValidation(type="date", operator="greaterThanOrEqual", formula1=str(DATE_MIN), allow_blank=True)
+        dv.error = "Enter a date (dd-mm-yyyy)"
+    else: return
+    dv.showErrorMessage = True; dv.errorTitle = "Check this value"
+    ws.add_data_validation(dv); dv.add(ref)
+
+
+def as_cell_value(v, typ):
+    if v is None: return None
+    if typ == "date" and isinstance(v, str):
+        try: return dt.datetime.strptime(v, "%d-%m-%Y")
+        except ValueError: return v
+    return v if not isinstance(v, (list, dict)) else str(v)
+
+
+def draw_paper(ws, mapping, data=None, ids=None, wb=None):
+    pg = mapping.get("page") or {}
+    for col, w in (pg.get("widths") or {}).items(): ws.column_dimensions[col].width = w
+    for r, h in (pg.get("heights") or {}).items(): ws.row_dimensions[int(r)].height = h
+    ws.sheet_view.showGridLines = False
+    if pg.get("orientation") == "landscape": ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.sheet_properties.pageSetUpPr.fitToPage = True; ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
+    for it in mapping.get("layout") or []:
+        if it.get("style") == "fingerprint":  # recognises the sheet on upload; kept out of sight in a hidden row
+            c = ws[it["at"]]; c.value = it["text"]; c.font = Font(size=6, color="FFFFFF")
+            ws.row_dimensions[c.row].hidden = True; continue
+        place(ws, it["at"], it.get("to"), it.get("text"), it.get("style") or "label")
+        if it.get("h"): ws.row_dimensions[ws[it["at"]].row].height = it["h"]
+    tables = {}
+    for f in mapping.get("fields") or []:
+        if f.get("by") == "const": continue
+        if f.get("type") == "table": tables.setdefault(f["at"], []).append(f); continue
+        typ = f.get("type")
+        vc = place(ws, f["cell"], f.get("to"), None, None, fill=INPUT, locked=False)
+        if typ == "text": vc.number_format = "@"
+        elif typ == "date": vc.number_format = "dd-mm-yyyy"
+        validate_cells(ws, f"{f['cell']}:{f.get('to') or f['cell']}", f, typ)
+        if data is not None or ids is not None:
+            v = get(ids or {}, f["field"][5:]) if f["field"].startswith("@ids.") else get(data or {}, f["field"])
+            if v is not None: vc.value = as_cell_value(v, typ)
+        if f.get("name") and wb is not None:
+            wb.defined_names[f["name"]] = DefinedName(f["name"], attr_text=f"'{ws.title}'!${get_column_letter(vc.column)}${vc.row}")
+    for at, fs in tables.items(): (draw_tgrid if fs[0].get("orient") == "columns" else draw_table_paper)(ws, at, fs, data)
+    ws.protection.sheet = True  # printed text, labels and formulas stay put; the input cells are unlocked
+    for k in ("formatColumns", "formatRows", "formatCells"): setattr(ws.protection, k, False)
+
+
+def stored_rows(f, val):
+    """Stored value -> the sheet rows it came from (the inverse of read_table / table_result)."""
+    if val is None: return []
+    how = f.get("rows_as", "list"); n = len(f.get("take") or f["columns"])
+    if "pick" in f: return []  # handled by the caller, column by column
+    if how == "dict": rows = [[k] + (list(v) if n > 2 else [v]) for k, v in val.items()]
+    elif how == "values": rows = [[x] for x in val]
+    elif how == "row": rows = [[f.get("key")] + (list(val) if n > 2 else [val])]
+    elif how == "first": rows = [list(val)]
+    else: rows = [list(x) for x in val]
+    if f.get("keys_as"):
+        back = {v: k for k, v in f["keys_as"].items()}
+        rows = [[back.get(x[0], x[0])] + x[1:] for x in rows]
+    if not f.get("take"): return rows
+    out = []
+    for x in rows:
+        sheet = [[None] * len(c["group"]) if "group" in c else None for c in f["columns"]]
+        for k, t in enumerate(f["take"]):
+            if k >= len(x): break
+            if isinstance(t, list): sheet[t[0]][t[1]] = x[k]
+            else: sheet[t] = x[k]
+        out.append(sheet)
+    return out
+
+
+def merged_rows(fs, data, labels):
+    """The rows of a table region filled from every field that reads it (by printed row label, else by position)."""
+    f0 = fs[0]; rows = {}
+    def slot(x, i):
+        if not labels: return i
+        lab = x[0] if x else None
+        if lab is None: return i  # this field does not read the label column: rows follow each other from the top
+        hit = next((n for n, l in enumerate(labels) if str(l).strip().lower() == str(lab).strip().lower()), None)
+        return hit if hit is not None else len(labels) + i
+    for f in fs:
+        val = get(data, f["field"]) if data is not None else None
+        if val is None: continue
+        if "pick" in f:
+            for i, x in enumerate(val): rows.setdefault(i, [[None] * len(c["group"]) if "group" in c else None for c in f0["columns"]])[f["pick"]] = x
+            continue
+        for i, x in enumerate(stored_rows(f, val)):
+            cur = rows.setdefault(slot(x, i), [[None] * len(c["group"]) if "group" in c else None for c in f0["columns"]])
+            for p, v in enumerate(x):
+                if isinstance(v, list): cur[p] = [a if a is not None else (cur[p][q] if isinstance(cur[p], list) and q < len(cur[p]) else None) for q, a in enumerate(v)]
+                elif v is not None: cur[p] = v
+    return rows
+
+
+def calc_formula(expr, ref):
+    """'{Ambient 1}' in a column's formula -> that column's cell in the same row (or, sideways, the same record)."""
+    return re.sub(r"\{([^}]+)\}", lambda m: ref(m.group(1)), expr)
+
+
+def draw_table_paper(ws, at, fs, data):
+    f0 = fs[0]; _, r0, c0 = addr(at); specs = col_specs(f0); labels = f0.get("row_labels")
+    two = any(cs.get("title") for *_, cs in specs)
+    if f0.get("caption"): place(ws, f"{get_column_letter(c0)}{r0 - 1}", f"{get_column_letter(c0 + len(specs) - 1)}{r0 - 1}", f0["caption"], "section")
+    letters, c, done = {}, c0, set()
+    for pos, j, lab, typ, cs in specs:
+        letters[lab] = get_column_letter(c)
+        hr = r0 + 1 if (two and j is not None) else r0
+        place(ws, f"{get_column_letter(c)}{hr}", None, lab, "head")
+        if two and j is None: ws.merge_cells(start_row=r0, start_column=c, end_row=r0 + 1, end_column=c)
+        if two and j == 0 and pos not in done:
+            n = len(f0["columns"][pos]["group"]); done.add(pos)
+            place(ws, f"{get_column_letter(c)}{r0}", f"{get_column_letter(c + n - 1)}{r0}" if n > 1 else None, cs.get("title") or "", "head")
+        if cs.get("w"): ws.column_dimensions[get_column_letter(c)].width = max(ws.column_dimensions[get_column_letter(c)].width or 0, cs["w"])
+        c += 1
+    first = r0 + (2 if two else 1)
+    longest = max(len(str(lab)) for *_, lab, _t, _c in specs)  # wrapped headers get the height they need
+    if longest > 10: ws.row_dimensions[first - 1].height = 15 * min(4, 1 + longest // 11)
+    rows = merged_rows(fs, data, labels)
+    n = max(len(labels) if labels else f0.get("rows", 5), (max(rows) + 1) if rows else 0)
+    for i in range(n):
+        r = first + i; out = rows.get(i); cc = c0
+        for pos, j, lab, typ, cs in specs:
+            cell = ws.cell(r, cc); cell.border = BOX
+            v = None if out is None else out[pos] if j is None else (out[pos][j] if isinstance(out[pos], list) and j < len(out[pos]) else None)
+            if pos == 0 and labels:
+                cell.value = labels[i] if i < len(labels) else v; cell.fill = FIXED; cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            elif cs.get("calc"):
+                cell.fill = CALC; cell.number_format = cs.get("format", "0.00")
+                cell.value = v if v is not None else calc_formula(cs["calc"], lambda l: f"{letters[l]}{r}")
+            else:
+                cell.fill = INPUT; cell.protection = Protection(locked=False)
+                if typ == "text": cell.number_format = "@"
+                if v is not None: cell.value = as_cell_value(v, typ)
+            cc += 1
+    for k, (pos, j, lab, typ, cs) in enumerate(specs):  # one validation per column
+        if (pos == 0 and labels) or cs.get("calc"): continue
+        L = get_column_letter(c0 + k); validate_cells(ws, f"{L}{first}:{L}{first + n - 1}", dict(cs, title=lab), typ)
+
+
+def draw_tgrid(ws, at, fs, data):
+    f0 = fs[0]; _, r0, c0 = addr(at); cols = f0["columns"]; labels = f0.get("row_labels")
+    n = f0.get("records") or len(labels or []) or 6
+    rowof = {c["label"]: r0 + i for i, c in enumerate(cols)}
+    for i, c in enumerate(cols): place(ws, f"{get_column_letter(c0)}{r0 + i}", None, c["label"], "label_b")
+    rows = merged_rows(fs, data, labels)
+    for k in range(n):
+        cc = c0 + 1 + k; L = get_column_letter(cc); out = rows.get(k)
+        for i, c in enumerate(cols):
+            cell = ws.cell(r0 + i, cc); cell.border = BOX; v = out[i] if out else None
+            if i == 0 and labels:
+                cell.value = labels[k] if k < len(labels) else v; cell.fill = FIXED; cell.font = Font(bold=True); cell.alignment = Alignment(horizontal="center")
+            elif c.get("calc"):
+                cell.fill = CALC; cell.number_format = c.get("format", "0.00"); cell.value = v if v is not None else calc_formula(c["calc"], lambda l: f"{L}{rowof[l]}")
+            else:
+                cell.fill = INPUT; cell.protection = Protection(locked=False)
+                if c.get("type") == "text": cell.number_format = "@"
+                if v is not None: cell.value = as_cell_value(v, c.get("type", "number"))
+    for i, c in enumerate(cols):
+        if (i == 0 and labels) or c.get("calc"): continue
+        validate_cells(ws, f"{get_column_letter(c0 + 1)}{r0 + i}:{get_column_letter(c0 + n)}{r0 + i}", c, c.get("type", f0.get("cell_type", "number")))
 
 
 # ------------------------------------------------------------------ comparing template versions
