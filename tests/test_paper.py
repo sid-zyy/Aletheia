@@ -72,6 +72,18 @@ class PaperLayout(Base):
         r = X.extract(X.Book(paper(["noload"])), P.paper("noload"))
         self.assertEqual([x[0] for x in r["data"]["rows"]], ["BT", "AT", "112.5%"])  # 90 % and 110 % printed, nothing logged
 
+    def test_tester_downloads_a_blank_sheet_with_the_jobs_numbers_on_it(self):
+        i = self.job(); j = self.get(i)
+        r = self.c.get(f"/api/jobs/{i}/logsheets/sc.xlsx"); self.assertEqual(r.status_code, 200)  # self.c is a tester
+        self.assertIn(f"{j['series']}_sc_logsheet_v2", r.headers["Content-Disposition"])
+        res = X.extract(X.Book(r.data), P.paper("sc"))
+        self.assertEqual(res["ids"]["sc"], [j["series"], j["sample"]])
+        self.assertIsNone(res["data"].get("shots")); self.assertIn("table is empty (required)", " ".join(res["errors"]))  # readings left to the tester
+        w = X.extract(X.Book(self.c.get(f"/api/jobs/{i}/logsheets/work.xlsx").data), P.paper("work"))["data"]
+        self.assertEqual((w["series"], w["customer"]), (j["series"], j["customer"]))
+        self.assertEqual(self.c.get(f"/api/jobs/{i}/logsheets/request.xlsx").status_code, 404)
+        self.assertEqual(self.cust.get(f"/api/jobs/{i}/logsheets/sc.xlsx").status_code, 403)
+
     def test_preview_names_each_value_as_printed(self):
         i = self.job(); p = self.c.post(f"/api/jobs/{i}/excel/preview", json=dict(up("sc.xlsx", paper(["sc"])), section="sc")).json
         self.assertTrue(p["ok"], p); f = {x["field"]: x for x in p["sheets"][0]["fields"]}

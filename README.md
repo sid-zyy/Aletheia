@@ -141,7 +141,9 @@ that recognises the sheet on upload. The stored data keeps the shape the checks 
 names, and signatures are never shown to customers. On the first start of this version, version 2 becomes active and
 version 1 is retired (an administrator's own active version is kept, and version 2 is offered as a draft). Files filled in
 on version 1 still import: an upload is matched against the active version first, then the retired ones.
-`sample_data/tests/*.xlsx` are the demo job's values in the paper layout.
+`sample_data/tests/*.xlsx` are the demo job's values in the paper layout. Testers get the blank sheets from the job page:
+**Blank sheet** on each test's row downloads that test's logsheet with the job's series number, sample code and customer
+already written in; they fill in the readings and upload it with **Upload** on the same row.
 
 The original flat layout (`section, field, value` in CSV, Excel, SQLite or JSON) is still read; any job can be downloaded in it.
 

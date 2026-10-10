@@ -445,6 +445,23 @@ def install(app_module):
         return jsonify(results=results)
 
     # ---------------------------------------------------------------- downloads across reports
+    @app.get("/api/jobs/<int:i>/logsheets/<section>.xlsx")
+    @auth.require("staff.view")
+    def job_logsheet_blank(i, section):
+        """The current blank logsheet of one test, for this job: its series number, sample code and customer are already
+        written in (the tester fills in the readings). The readings themselves are never pre-filled."""
+        j = A.getjob(i, False)
+        if section not in NAMES or section == "request": abort(404)
+        with db() as c: ts = active(c, "logsheet", section)
+        if not ts: abort(404)
+        m = ts[0]["mapping"]; paths = {f["field"] for f in m.get("fields") or []}
+        known = dict(series=j["series"], sample=j["sample"], customer=j["customer"])
+        data = {k: v for k, v in known.items() if k in paths and v not in (None, "", "NA")}
+        ids = {section: [j["series"], j["sample"] if j["sample"] not in (None, "", "NA") else None]}
+        raw = X.workbook([(m, data, ids)])
+        return send_file(io.BytesIO(raw), mimetype=XLSX, as_attachment=True,
+                         download_name=f"{j['series']}_{section}_logsheet_v{ts[0]['version']}.xlsx")
+
     @app.get("/api/jobs/<int:i>/logsheets.xlsx")
     @auth.require("data.export")
     def job_logsheets(i):
