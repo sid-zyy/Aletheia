@@ -54,7 +54,7 @@ async function dashTasks(){if(!ME||isCust())return;const h=$('#app .hero');if(!h
  if(ME.roles.includes('tester'))g+=G('Returned to you',w.returned,x=>`<span style="color:var(--er)">${esc(x.note||'')}</span>`,1)+G('To test',w.assigned,x=>'assigned '+ago(x.at),1)+
   G('Available to take',(w.available||[]).map(take),x=>'not assigned')+G('Intake to complete',w.intake,x=>'intake not confirmed against the original')+
   G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:'Request '+x.id,href:'#/intake/r'+x.id})),x=>ago(x.at)+' &middot; open it when the sample arrives');
- if(ME.roles.includes('verifier'))g+=G('To verify',w.to_verify,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`,1)+G('Ready for your sign-off',w.to_signoff,x=>'every test verified');
+ if(ME.roles.includes('admin'))g+=G('To verify',w.to_verify,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`,1)+G('Ready for your sign-off',w.to_signoff,x=>'every test verified');
  if(ME.roles.includes('approver')&&!ME.roles.includes('admin'))g+=G('Reports to approve',w.to_approve,x=>'report generated '+ago(x.at),1);
  const c=document.createElement('div');c.className='card';c.id='tasks';
  c.innerHTML=`<div class="wh"><h2 style="margin:0">Your tasks</h2>${ME.roles.includes('admin')?'':'<a class="lk" href="#/mywork">Open My work</a>'}</div>${g?`<div class="tasks">${g}</div>`:'<p class="note">Nothing is waiting on you right now.</p>'}`;

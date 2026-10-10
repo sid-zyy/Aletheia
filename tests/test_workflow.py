@@ -12,7 +12,7 @@ def extra_users():
     h = generate_password_hash(PW)
     with aletheia.db() as c:
         for un, name, roles, emp, tests in (("w.das", "W. Das", "tester", "E1003", None), ("sc.only", "S. C. Only", "tester", "E1004", "sc"),
-                                            ("both", "B. Oth", "tester,verifier", "E1005", None)):
+                                            ("both", "B. Oth", "tester,approver", "E1005", None)):
             if not c.execute("SELECT 1 FROM users WHERE username=?", (un,)).fetchone():
                 c.execute("INSERT INTO users(username,full_name,employee_id,roles,test_types,password_hash,must_change_password,created_at) VALUES(?,?,?,?,?,?,0,'2026-01-01')",
                           (un, name, emp, roles, tests, h))
@@ -116,7 +116,7 @@ class Sections(Flow):
         b = signed_in("both"); i = self.job()
         b.post(f"/api/jobs/{i}/import", json=dict(filename="sc.json", content={"sc": DEMO["sc"]}))
         r = b.post(f"/api/jobs/{i}/sections/sc/verify", json=dict(revision=1)); self.assertEqual(r.status_code, 403)
-        self.assertIn("someone else", r.json["error"][0])
+        self.assertIn("does not allow", r.json["error"][0])  # testers never verify; verification is the administrator's
         self.assertEqual(self.v.post(f"/api/jobs/{i}/sections/sc/verify", json=dict(revision=1)).status_code, 200)
         m = self.get(i)["meta"]["sc"]; self.assertEqual((m["state"], m["verified_by"], m["revision"]), ("verified", "S. Iyer", 2))
 
@@ -252,7 +252,7 @@ class Queues(Flow):
         b = self.job("CPRIBLRSCL25T1700"); self.c.post(f"/api/jobs/{b}/import", json=dict(filename="b.json", content={"temp": DEMO["temp"]}))
         w = self.v.get("/api/my-work").json
         self.assertEqual([(x["series"], x["name"]) for x in w["to_verify"]], [("CPRIBLRSCL25T1654", "Short-circuit logsheet"), ("CPRIBLRSCL25T1700", "Temperature-rise logsheet")])
-        self.assertNotIn("to_approve", w)
+        self.assertIn("to_approve", w)  # the administrator verifies and also sees what waits for approval
         t = self.c.get("/api/my-work").json; self.assertEqual(len(t["uploaded"]), 2); self.assertEqual(len(t["intake"]), 2)
         self.admin.post(f"/api/jobs/{b}/assign", json=dict(key="sc", user_id=uid("w.das")))
         self.assertEqual(signed_in("w.das").get("/api/my-work").json["assigned"][0]["series"], "CPRIBLRSCL25T1700")

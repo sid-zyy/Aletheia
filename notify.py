@@ -78,7 +78,7 @@ def on_uploaded(c, job_id, keys):
     series = c.execute("SELECT series FROM jobs WHERE id=?", (job_id,)).fetchone()[0]
     names = ", ".join(A.NAMES.get(k, k) for k in keys if k in A.NAMES and k != "request")
     if not names: return
-    notify(c, users_with(c, "verifier"), job_id, "uploaded", f"{series}: {names} uploaded and waiting for verification")
+    notify(c, users_with(c, "admin"), job_id, "uploaded", f"{series}: {names} uploaded and waiting for verification")
     notify(c, customers_of(c, job_id), job_id, "progress", f"{series}: test data received ({names}); pending verification")
 
 
@@ -91,7 +91,7 @@ def on_section(c, job_id, key, state, reason=None):
         notify(c, customers_of(c, job_id), job_id, "approved", f"{series}: {name} approved; the partial report has been updated", section=key)
         plan = json.loads(c.execute("SELECT plan FROM jobs WHERE id=?", (job_id,)).fetchone()[0] or "[]")
         if not A.workflow.ready_for_signoff(c, job_id, A.NAMES, plan):
-            notify(c, users_with(c, "verifier"), job_id, "signoff", f"{series}: every test is verified; ready for the verifier's sign-off")
+            notify(c, users_with(c, "admin"), job_id, "signoff", f"{series}: every test is verified; ready for the verifier's sign-off")
 
 
 def on_released(c, job_id, version):

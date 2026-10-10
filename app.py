@@ -1598,7 +1598,7 @@ def my_work():
             tt = [x for x in str(u.get("test_types") or "").split(",") if x]
             out["available"] = [x for x in unassigned(c, open_jobs) if not tt or x["key"] in tt]
             out["requests"] = q("SELECT f.id, o.name AS org, f.filename, f.at FROM customer_forms f LEFT JOIN orgs o ON o.id=f.org_id WHERE f.status='received' ORDER BY f.id")
-        if "verifier" in u["roles"]:
+        if "admin" in u["roles"]:  # verification is the administrator's
             out["to_verify"] = q(f"SELECT j.id, j.series, s.key, s.uploaded_at AS at, uu.full_name AS by FROM sections s JOIN jobs j ON j.id=s.job_id LEFT JOIN users uu ON uu.id=s.uploaded_by "
                                 f"WHERE {open_jobs} AND s.state='uploaded' AND s.key!='request' AND s.data IS NOT NULL AND COALESCE(s.uploaded_by,-1)!=? ORDER BY s.uploaded_at", u["id"])
             out["to_signoff"] = [dict(id=j["id"], series=j["series"], at=j["updated"]) for j in

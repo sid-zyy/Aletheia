@@ -27,7 +27,7 @@ def pdf_text(data):
 
 
 PW = "lab-test-password-1"
-STAFF = {"t.rao": ("T. Rao", "tester", "E1001"), "s.iyer": ("S. Iyer", "verifier", "E1002"), "r.viewer": ("R. Viewer", "approver", "E2001"),
+STAFF = {"t.rao": ("T. Rao", "tester", "E1001"), "s.iyer": ("S. Iyer", "admin", "E1002"), "r.viewer": ("R. Viewer", "approver", "E2001"),
          "p.naveen": ("P. Naveenkumar", "approver", "E2002"), "admin": ("Lab Admin", "admin", "E0001")}
 _HASH = None
 

@@ -23,7 +23,7 @@ def users():
                 c.execute("INSERT INTO users(username,full_name,employee_id,roles,password_hash,must_change_password,created_at) VALUES(?,?,?,?,?,0,'x')",
                           (f"load.t{n}", f"Load Tester {n}", f"E80{n}", "tester", h))
         if not c.execute("SELECT 1 FROM users WHERE username='load.v1'").fetchone():
-            c.execute("INSERT INTO users(username,full_name,employee_id,roles,password_hash,must_change_password,created_at) VALUES('load.v1','Load Verifier','E809','verifier',?,0,'x')", (h,))
+            c.execute("INSERT INTO users(username,full_name,employee_id,roles,password_hash,must_change_password,created_at) VALUES('load.v1','Load Verifier','E809','admin',?,0,'x')", (h,))
 
 
 class Load(Base):

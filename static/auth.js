@@ -9,7 +9,7 @@ new MutationObserver(()=>{if(PW)return;document.querySelectorAll('input[type=pas
 
 let ME=null,PERMS=[],CSRF='';
 const can=p=>PERMS.includes(p),isCust=()=>!!ME&&ME.roles.includes('customer');
-const ROLE_LBL={admin:'Admin',tester:'Tester',verifier:'Verifier',approver:'Approver',customer:'Customer'};
+const ROLE_LBL={admin:'Admin',tester:'Tester',approver:'Approver',customer:'Customer'};
 (()=>{const s=document.createElement('style');s.textContent=`
 .gate{min-height:100vh;display:grid;place-items:center;padding:24px 16px;background:linear-gradient(160deg,#12315f,#1c4f9c 55%,#2a6fc4)}
 .gate .card{width:100%;max-width:420px;margin:0}.gate h1{font-size:24px}.gate label{display:block;font-size:13px;font-weight:600;color:var(--mu);margin:14px 0 6px}

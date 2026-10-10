@@ -13,8 +13,8 @@ import datetime as dt, functools, os, re, secrets
 from flask import Blueprint, current_app, g, jsonify, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
-ROLES = ("admin", "tester", "verifier", "approver", "customer")
-STAFF = ("admin", "tester", "verifier", "approver")
+ROLES = ("admin", "tester", "approver", "customer")  # the verifier role was folded into admin
+STAFF = ("admin", "tester", "approver")
 # permission -> roles holding it. Server-enforced; the page only hides what a role cannot use.
 PERMS = {
     "jobs.view":        STAFF + ("customer",),  # customers are further limited to their organisation's jobs
@@ -23,9 +23,9 @@ PERMS = {
     "job.edit":         ("tester",),
     "job.delete":       ("admin",),             # only records that never had a released report
     "data.write":       ("tester",),            # import, enter / correct / remove sections, attach scans, AI reading
-    "data.check":       ("tester", "verifier"),  # run checks, mark flagged items reviewed
-    "section.verify":   ("verifier",),
-    "report.generate":  ("tester", "verifier"),
+    "data.check":       ("tester", "admin"),  # run checks, mark flagged items reviewed
+    "section.verify":   ("admin",),            # the administrator verifies tests and signs jobs off
+    "report.generate":  ("tester", "admin"),
     "report.approve":   ("approver",),
     "report.amend":     ("approver",),
     "report.view":      STAFF + ("customer",),  # customers: released or partial reports of their own jobs only
@@ -211,7 +211,7 @@ def clean_roles(roles):
     if bad: return None, f"Unknown role: {', '.join(bad)}"
     if "customer" in roles and len(roles) > 1: return None, "A customer account cannot hold a laboratory role"
     if "admin" in roles and len(roles) > 1:
-        return None, "Admin cannot also be tester, verifier or approver (separation of duties); create a second account"
+        return None, "Admin cannot also be tester or approver (separation of duties); create a second account"
     return roles, None
 
 
