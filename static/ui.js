@@ -99,7 +99,7 @@ function emblem(){const cx=200,cy=180,F='font-family="Inter,Segoe UI,sans-serif"
  ${[cx-30,cx,cx+30].map(bush).join('')}<rect x="${cx-45}" y="${cy-8}" width="90" height="62" rx="5" fill="#1c4f9c" stroke="#d7e6fb" stroke-width="2"/>
  <path d="M${cx-45} ${cy+8}H${cx+45}M${cx-45} ${cy+38}H${cx+45}" stroke="#d7e6fb" stroke-opacity=".5"/>${fins(cx-66)}${fins(cx+50)}
  <path d="M${cx-48} ${cy+54}h96v7h-96z" fill="#d7e6fb"/><path d="M${cx-8} ${cy+14}l9-4-3 9 7-2-12 14 3-9-6 2z" fill="#ff8a7a"/>
- <text x="${cx}" y="${cy+84}" text-anchor="middle" ${F} font-size="10.5" font-weight="600" letter-spacing="1.5" fill="#cfe0f7">IS 1180 · IS 2026</text>
+ <text x="${cx}" y="${cy+84}" text-anchor="middle" ${F} font-size="10.5" font-weight="600" letter-spacing="1.5" fill="#cfe0f7">IS 1180</text>
  <path d="M${cx-118} ${cy+132}L${cx-142} ${cy+150}L${cx-118} ${cy+168}L${cx-104} ${cy+162}Z" fill="#9b1c1c"/><path d="M${cx+118} ${cy+132}L${cx+142} ${cy+150}L${cx+118} ${cy+168}L${cx+104} ${cy+162}Z" fill="#9b1c1c"/>
  <path d="M${cx-110} ${cy+132}Q${cx} ${cy+158} ${cx+110} ${cy+132}L${cx+110} ${cy+162}Q${cx} ${cy+188} ${cx-110} ${cy+162}Z" fill="#c0392b" stroke="#fff" stroke-opacity=".8" stroke-width="1.5"/>
  <text ${F} font-size="15" font-weight="800" letter-spacing="4" fill="#fff" dominant-baseline="middle"><textPath href="#emR" startOffset="50%" text-anchor="middle">ALETHEIA</textPath></text></svg>`}
