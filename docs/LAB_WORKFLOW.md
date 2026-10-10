@@ -1,7 +1,7 @@
 # Working with Aletheia: recommendations for the Short Circuit Laboratory
 
 For the laboratory and faculty (faculty note F10). None of this needs software changes; each point says how Aletheia
-supports it. Purpose: same-day reports (D2) that are complete and correct (D4), with fewer manual steps.
+supports it. Purpose: reports that are complete and correct (D4), with fewer manual steps.
 
 ## 1. One job card per product
 Print the series and sample number once at intake (Aletheia allocates them only when the request form is complete) and
@@ -20,10 +20,10 @@ kept byte-for-byte with its fingerprint; the name helps people, the fingerprint 
 
 ## 4. Record the bay
 Choose the bay on the job page before uploading (the PC remembers it). *Aletheia:* every test shows which bay it came from,
-and the Today board shows what is outstanding and whose it is.
+and the dashboard shows what is outstanding and whose it is.
 
 ## 5. Verify during the day, not at the end
-Verifiers clear "My work" at fixed times (e.g. 11:00, 14:00, 16:30). The same-day target depends on it.
+Verifiers clear "My work" at fixed times (e.g. 11:00, 14:00, 16:30), so tests do not wait for the end of the day.
 *Aletheia:* the verification queue is sorted oldest first, verifiers are notified of every upload, and a test can be verified
 while others are still being tested.
 
@@ -34,12 +34,12 @@ code, phone, email, rating, witness) are listed at once; a PIN that does not mat
 blocked until the intake is confirmed against the original.
 
 ## 7. A single point of intake
-Security and the receiving engineer hand over at a fixed point, so the arrival time (which starts the same-day clock) is
+Security and the receiving engineer hand over at a fixed point, so the arrival time is
 unambiguous. *Aletheia:* records arrival time, who opened the box and who received it.
 
-## 8. Weekly review of the same-day target
-Review the jobs that were carried over and their reasons. *Aletheia:* every job past its cut-off needs a reason; release
-records whether it was finished the same day; the Records export lists all jobs in one workbook.
+## 8. Weekly review of open jobs
+Review the jobs still open and the customers' open tickets. *Aletheia:* release records when each report was finished; the
+Records export lists all jobs in one workbook.
 
 ## 9. Template change control
 Who may change a logsheet: named persons only. Procedure: change the sheet and its version number in the header, the

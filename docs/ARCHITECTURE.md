@@ -31,7 +31,7 @@ flowchart LR
         E2[Report: build_pdf, manifest, QR]
     end
     subgraph Ops["notify.py, portal.py, retention.py"]
-        O1[Notifications + email outbox, same-day board]
+        O1[Notifications + email outbox]
         O2[Partial reports, approved values]
         O3[Backups, audit tip, record packages]
     end
@@ -61,7 +61,7 @@ previous one by hash.
 | `xltemplates.py` | Template engine: read a sheet (names, labels, cells, tables; statuses per value), draw blank and filled sheets, diff and validate mappings |
 | `seed_templates.py` | Version 1 of the logsheet templates and the customer request form (seeds the registry once) |
 | `excel_routes.py` | Template registry (draft / active / retired), upload preview and import, several jobs per workbook, Excel downloads |
-| `notify.py` | In-app notifications, email outbox and worker, same-day cut-off and board, settings |
+| `notify.py` | In-app notifications, email outbox and worker, settings |
 | `portal.py` | Partial reports, approved values with logsheet labels, requests filled in online by customers, Excel request forms |
 | `retention.py` | Backups with checksums, backup check, audit tip, record packages, server clock |
 | `importers.py` | Flat-layout readers and exporters (CSV, Excel, SQLite, JSON), legacy registers |
@@ -74,7 +74,7 @@ previous one by hash.
 | Table | Contents |
 |---|---|
 | `users`, `orgs` | Accounts (roles, employee ID, certified tests, lock-out, session epoch) and customer organisations. Never deleted |
-| `jobs` | One job: series (unique), sample, customer, stage 0-4, findings, verdict, org, test `plan`, `intake` record, sign-off, open `amend`, `cutoff`, `same_day` |
+| `jobs` | One job: series (unique), sample, customer, stage 0-4, findings, verdict, org, test `plan`, `intake` record, sign-off, open `amend`, `completed_at` (release time) |
 | `sections` | One row per test of a job: state (uploaded / returned / verified / na), data, data SHA-256, revision, file, template, uploader + bay, verifier, note |
 | `section_history` | Every revision and state change of every section (append-only) |
 | `files` | Uploaded data files byte-for-byte with SHA-256 (append-only) |

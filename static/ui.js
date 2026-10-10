@@ -31,7 +31,7 @@ const initials=n=>String(n||'?').replace(/^(dr|mr|mrs|ms|prof|sh|smt)\.?\s+/i,''
 function userChip(){if(!ME)return'';const c=ROLE_COL[ME.roles[0]]||'#1c4f9c',r=ME.roles.map(x=>ROLE_LBL[x]).join(', ');
  return `<div class="um"><button class="umb" id="umb" aria-haspopup="true" aria-expanded="false" onclick="umToggle(event)"><span class="av" style="background:${c}">${esc(initials(ME.full_name))}</span><span class="umt"><b>${esc(ME.full_name)}</b><small>${esc(r)}</small></span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
  <div class="ump" id="ump" hidden><div class="uh"><span class="av lg" style="background:${c}">${esc(initials(ME.full_name))}</span><div><b>${esc(ME.full_name)}</b><small>${esc(ME.username)}${ME.employee_id?' &middot; '+esc(ME.employee_id):''}${ME.org?' &middot; '+esc(ME.org):''}</small><small>${ME.roles.map(x=>`<span class="rl" style="background:${ROLE_COL[x]}22;color:${ROLE_COL[x]}">${ROLE_LBL[x]}</span>`).join('')}</small></div></div>
- ${isCust()?`<a href="#/my">My jobs</a><a href="#/my/request">New test request</a>`:ME.roles.includes('admin')?`<a href="#/dashboard">Dashboard and tasks</a>`:`<a href="#/mywork">My work</a><a href="#/today">Today</a>`}
+ ${isCust()?`<a href="#/my">My jobs</a><a href="#/my/request">New test request</a>`:ME.roles.includes('admin')?`<a href="#/dashboard">Dashboard and tasks</a>`:`<a href="#/mywork">My work</a>`}
  <a href="#/notifications">Notifications</a><button onclick="umClose();pwView()">Change password</button><button class="so" onclick="logout()">Sign out</button></div></div>`}
 function umToggle(e){e.stopPropagation();const p=$('#ump'),b=$('#umb');if(!p)return;p.hidden=!p.hidden;b.setAttribute('aria-expanded',String(!p.hidden))}
 function umClose(){const p=$('#ump');if(p){p.hidden=true;$('#umb').setAttribute('aria-expanded','false')}}
@@ -47,11 +47,11 @@ async function dashTasks(){if(!ME||isCust())return;const h=$('#app .hero');if(!h
  const take=x=>Object.assign(x,{_btn:`<button class="btn g s" onclick='takeTest(${x.id},"${x.key}",${JSON.stringify(x.name)})'>Take</button>`});
  const assign=x=>Object.assign(x,{_btn:`<a class="btn g s" href="#/job/${x.id}">Assign</a>`});
  let g='';
- if(ME.roles.includes('admin'))g+=G('Reports to approve',w.to_approve,x=>`${esc(x.customer||'')} &middot; report generated ${ago(x.at)}`,1)+G('Tests not assigned',(w.unassigned||[]).map(assign),x=>x.cutoff?`cut-off ${esc(x.cutoff.replace('T',' '))}`:'',0,'dashboard')+
+ if(ME.roles.includes('admin'))g+=G('Reports to approve',w.to_approve,x=>`${esc(x.customer||'')} &middot; report generated ${ago(x.at)}`,1)+G('Tests not assigned',(w.unassigned||[]).map(assign),x=>'',0,'dashboard')+
   G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:x.filename,href:'#/intake'})),x=>ago(x.at))+G('Awaiting verification',w.awaiting_verification,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`)+
   G('Locked accounts',(w.locked_accounts||[]).map(x=>({...x,href:'#/users'})),x=>`until ${esc((x.at||'').slice(11,16))}`,1);
  if(ME.roles.includes('tester'))g+=G('Returned to you',w.returned,x=>`<span style="color:var(--er)">${esc(x.note||'')}</span>`,1)+G('To test',w.assigned,x=>(x.bay?esc(x.bay)+' &middot; ':'')+'assigned '+ago(x.at),1)+
-  G('Available to take',(w.available||[]).map(take),x=>x.cutoff?`cut-off ${esc(x.cutoff.replace('T',' ').slice(5))}`:'not assigned')+G('Intake to complete',w.intake,x=>'intake not confirmed against the original')+
+  G('Available to take',(w.available||[]).map(take),x=>'not assigned')+G('Intake to complete',w.intake,x=>'intake not confirmed against the original')+
   G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:x.filename,href:'#/intake'})),x=>ago(x.at)+' &middot; use it on the Intake page');
  if(ME.roles.includes('verifier'))g+=G('To verify',w.to_verify,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`,1)+G('Ready for your sign-off',w.to_signoff,x=>'every test verified');
  if(ME.roles.includes('approver')&&!ME.roles.includes('admin'))g+=G('Reports to approve',w.to_approve,x=>'report generated '+ago(x.at),1);

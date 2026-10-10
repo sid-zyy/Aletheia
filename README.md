@@ -41,8 +41,7 @@ is recorded in the audit log.
 1. **Intake** (Tester): the customer's request, filled in online by the customer (checked as they type), their Excel form, the
    form on screen, or a data file. Every required field is checked (PIN code, phone, email, state, rating...;
    "NA" only with a reason); the series and sample numbers are allocated only when nothing is missing or wrong. The engineer
-   records arrival time and who opened the box, chooses the test plan and may assign each test to a tester. The same-day
-   cut-off starts here.
+   records arrival time and who opened the box, chooses the test plan and may assign each test to a tester.
 2. **Assignment and testing**: the administrator assigns tests (or the whole job) with the bay, or an engineer takes an
    unassigned test and chooses the bay. Testers, in any order and bay, upload each test's Excel logsheet. The upload preview shows every value with
    the cell it was read from; a required empty cell blocks the test (never stored as NA). Each test keeps its full history.
@@ -54,7 +53,7 @@ is recorded in the audit log.
    customer is notified. Corrections after release are **amendments**: a new version that supersedes the old one, which stays
    verifiable.
 
-Pages: **Dashboard** (with each person's tasks: what to test, take, verify, approve; for Admin what waits for approval and what is not assigned), **My work** (what waits on you, oldest first), **Today** (same-day board), **Report Workflow**,
+Pages: **Dashboard** (with each person's tasks: what to test, take, verify, approve; for Admin what waits for approval and what is not assigned), **My work** (what waits on you, oldest first), **Report Workflow**,
 **Records & Search** (with Excel export of many jobs), **Report Preview**; for Admin: **Users & customers**, **Templates**,
 **Audit log**, **Backups**, **Settings**; for customers: **My jobs** and **Notifications**.
 
@@ -106,7 +105,7 @@ logsheet) are optional template fields; when a logsheet does not carry them the 
 
 ## Settings
 
-Environment variables, read when the app starts. Same-day cut-off and email are set in the app (Admin -> Settings).
+Environment variables, read when the app starts. Email is set in the app (Admin -> Settings).
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -114,7 +113,7 @@ Environment variables, read when the app starts. Same-day cut-off and email are 
 | `PORT` | `5000` | Port of the web app |
 | `ALETHEIA_TEMPLATE` | `report_template.json` | Report wording and laboratory details (ULR prefix, address, clause numbers, notes) |
 | `ALETHEIA_BACKUP_DIR`, `ALETHEIA_BACKUP_KEEP` | `backups/`, `30` | Backup folder; how many daily backups to keep (the first of each month is always kept) |
-| `ALETHEIA_AUTO_BACKUP`, `ALETHEIA_WORKER` | `1`, `1` | Daily backup; email outbox and cut-off warnings (`0` turns off) |
+| `ALETHEIA_AUTO_BACKUP`, `ALETHEIA_WORKER` | `1`, `1` | Daily backup; email outbox (`0` turns off) |
 | `ALETHEIA_SMTP_PASSWORD` | unset | SMTP password (server, port, sender, user are set in the app) |
 | `ALETHEIA_FEATURE_SCAN` | `0` | `1` turns on the optional AI reading of scanned sheets (below) |
 | `GEMINI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY`, `AI_*` | unset | AI reader for scans (only with `ALETHEIA_FEATURE_SCAN=1`) |
@@ -142,7 +141,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | Reports | `/api/jobs/<id>/validate|review|generate|approve|amend`, `/api/jobs/<id>/report.pdf`, `/api/verify/<code>` |
 | Customer | `/api/jobs/<id>/approved-values`, `/api/jobs/<id>/partials`, `/api/jobs/<id>/partial.pdf`, `/api/customer/request-forms` |
 | Excel | `/api/templates[...]`, `/api/logsheets/<test|all>.xlsx`, `/api/request-form.xlsx`, `/api/jobs/<id>/logsheets.xlsx`, `/api/records.xlsx` |
-| Operations | `/api/my-work`, `/api/today`, `/api/notifications`, `/api/settings`, `/api/outbox`, `/api/audit[/verify|/tip]`, `/api/admin/backups[...]`, `/api/jobs/<id>/package.zip` |
+| Operations | `/api/my-work`, `/api/notifications`, `/api/settings`, `/api/outbox`, `/api/audit[/verify|/tip]`, `/api/admin/backups[...]`, `/api/jobs/<id>/package.zip` |
 
 ## Tests
 
@@ -157,7 +156,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `test_workflow.py` | intake rules, verify / return / reopen, ownership, sign-off, bays, My work |
 | `test_excel.py` | template round trips, preview, layout drift, formulas, refused files, several jobs per workbook, template versions |
 | `test_amend.py` | manifest, amendments, record packages, backups and tamper detection |
-| `test_portal.py` | approved values only, partial reports, notifications and email, same-day board, customers' forms |
+| `test_portal.py` | approved values only, partial reports, notifications and email, customers' forms, no same-day board |
 | `test_load.py` | eight people at once on one database |
 
 ## Files
@@ -171,7 +170,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `workflow.py` | intake rules (PIN-code table), ownership, progress, sign-off readiness |
 | `xltemplates.py`, `seed_templates.py`, `excel_routes.py` | Excel template engine, version-1 templates, template registry and Excel routes |
 | `retention.py` | backups, backup check, audit tip, record packages |
-| `notify.py`, `portal.py` | notifications, email outbox, same-day board, settings; partial reports, approved values, customer forms |
+| `notify.py`, `portal.py` | notifications, email outbox, settings; partial reports, approved values, customer forms |
 | `rules.py` | every engineering threshold with its source and status |
 | `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
 | `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `assistant.js` |

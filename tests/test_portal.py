@@ -1,4 +1,4 @@
-"""Customer portal, partial reports, notifications and the same-day target (NEXT_STEPS.md section 7, test plan in 11)."""
+"""Customer portal, partial reports and notifications (NEXT_STEPS.md section 7, test plan in 11)."""
 import datetime as dt, io, json, os, sys, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -106,34 +106,15 @@ class Notifications(Portal):
         self.assertEqual(self.notes("ap.portal", "progress")[0]["email_status"], "none")  # still told in the portal
 
 
-class SameDay(Portal):
-    def test_cutoff_board_carry_over_and_same_day_flag(self):
-        self.assertEqual(self.c.post("/api/settings", json=dict(cutoff_time="17:30")).status_code, 403)
-        self.assertEqual(self.admin.post("/api/settings", json=dict(cutoff_time="25:00")).status_code, 400)
-        self.admin.post("/api/settings", json=dict(cutoff_time="17:30", warn_minutes="90"))
-        with aletheia.db() as c:
-            self.assertEqual(notify.cutoff_for(c, "2026-10-10T09:00"), "2026-10-10T17:30")
-            self.assertEqual(notify.cutoff_for(c, "2026-10-10T19:10"), "2026-10-11T17:30")  # arrived after the cut-off (Q12)
-        i = self.job_for_customer(); self.assertTrue(self.get(i)["cutoff"].endswith("17:30"))
-        later = (dt.datetime.now() + dt.timedelta(hours=5)).isoformat(timespec="minutes"); soon = (dt.datetime.now() + dt.timedelta(minutes=30)).isoformat(timespec="minutes")
-        past = (dt.datetime.now() - dt.timedelta(minutes=10)).isoformat(timespec="minutes")
-        for when, want in ((later, "green"), (soon, "amber"), (past, "red")):
-            with aletheia.db() as c: c.execute("UPDATE jobs SET cutoff=? WHERE id=?", (when, i))
-            b = next(x for x in self.c.get("/api/today").json["jobs"] if x["id"] == i); self.assertEqual(b["status"], want, when)
-        self.assertTrue(b["carried_over"]); self.assertEqual([x["name"] for x in b["awaiting_verification"]], [p["name"] for p in self.get(i)["progress"]])
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/carry-over", json=dict(reason="")).status_code, 400)
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/carry-over", json=dict(reason="SC bay down after 15:00")).status_code, 200)
-        self.assertEqual(next(x for x in self.c.get("/api/today").json["jobs"] if x["id"] == i)["carry_reason"], "SC bay down after 15:00")
-        with aletheia.db() as c: c.execute("UPDATE jobs SET cutoff_warned=0 WHERE id=?", (i,))
-        notify.cutoff_sweep(); notify.cutoff_sweep()
-        self.assertEqual(len(self.notes("s.iyer", "cutoff")), 1)  # warned once
-        self.assertEqual(self.cust.get("/api/today").status_code, 403)
-
-    def test_release_records_whether_it_was_same_day(self):
+class NoSameDayBoard(Portal):
+    def test_today_board_and_cut_off_are_gone(self):
+        # the same-day target was dropped: no board, no carry-over, no cut-off setting; release still records when it finished
+        self.assertEqual(self.c.get("/api/today").status_code, 404)
         i = self.c.post("/api/demo").json["id"]
-        with aletheia.db() as c: c.execute("UPDATE jobs SET cutoff=? WHERE id=?", ((dt.datetime.now() + dt.timedelta(hours=2)).isoformat(timespec="minutes"), i))
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/carry-over", json=dict(reason="SC bay down")).status_code, 404)
+        self.assertNotIn("cutoff_time", self.admin.get("/api/settings").json)
         self.c.post(f"/api/jobs/{i}/validate"); self.gen(i); self.approve(i)
-        j = self.get(i); self.assertEqual(j["same_day"], 1); self.assertIsNotNone(j["completed_at"])
+        j = self.get(i); self.assertIsNotNone(j["completed_at"]); self.assertNotIn("same_day", j)
 
 
 class RequestForms(Portal):

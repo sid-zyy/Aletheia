@@ -46,7 +46,6 @@
 - [ ] Partial report built from approved sections only, watermarked, regenerated on each approval
 - [ ] Pending sections show status only, no values
 - [ ] Notification on upload, verification and release (in-app first, optional email)
-- [ ] Same-day cut-off shown on the dashboard
 
 **Cleanup**
 - [ ] Scanning hidden behind a setting, off by default

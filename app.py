@@ -738,7 +738,7 @@ def customer_view(j):
     versions = [dict(version=r["version"], at=r["at"], token=r["token"], sha256=r["sha256"], superseded=n > 0,
                      amendment_reason=reasons.get(r["version"]) if n > 0 else None) for n, r in enumerate(rels)]
     return dict(id=j["id"], series=j["series"], sample=j["sample"], customer=j["customer"], rating=j["rating"], created=j["created"], versions=versions,
-                amendment_open=bool(j.get("amend")), amendment_reason=(j.get("amend") or {}).get("reason"), target=j.get("cutoff"),
+                amendment_open=bool(j.get("amend")), amendment_reason=(j.get("amend") or {}).get("reason"),
                 partials=partial_list(j["id"]),
                 stage=j["stage"], stage_name=j["stage_name"], released=bool(rel), verdict=j.get("verdict") if rel else None,
                 progress=[{k: p[k] for k in ("key", "name", "state")} for p in j["progress"]], counts=j["counts"],
@@ -1104,9 +1104,9 @@ def approve(i):
     except Exception as e:  # noqa: BLE001
         return jsonify(error=[f"The report could not be built ({type(e).__name__}: {e}); nothing was released"]), 400
     with db() as c:
-        done = now(); same = (done <= j["cutoff"] + ":59") if j.get("cutoff") else None  # the same-day target (7.2)
-        c.execute("UPDATE jobs SET stage=4, approver=?, approver_id=?, amend=NULL, updated=?, completed_at=COALESCE(completed_at, ?), "
-                  "same_day=COALESCE(same_day, ?) WHERE id=?", (name, emp, done, done, None if same is None else int(same), i))
+        done = now()
+        c.execute("UPDATE jobs SET stage=4, approver=?, approver_id=?, amend=NULL, updated=?, completed_at=COALESCE(completed_at, ?) WHERE id=?",
+                  (name, emp, done, done, i))
         notify.on_released(c, i, v)
         if j.get("amend"):
             c.execute("UPDATE amendments SET closed_at=?, new_version=? WHERE job_id=? AND closed_at IS NULL", (now(), v, i))
@@ -1427,7 +1427,7 @@ def intake_create():
         series, sample = integrity.allocate(c, "series"), integrity.allocate(c, "sample")
         i = insert_job(c, dict(series=series, sample=sample, customer=clean["customer"], rating=clean["rating"], request=req, org_id=b["org_id"]),
                        f"Customer request received (intake); series {series} and sample {sample} allocated")
-        c.execute("UPDATE jobs SET plan=?, intake=?, cutoff=? WHERE id=?", (json.dumps(plan), json.dumps(rec), notify.cutoff_for(c, rec["arrived_at"]), i))
+        c.execute("UPDATE jobs SET plan=?, intake=? WHERE id=?", (json.dumps(plan), json.dumps(rec), i))
         if b.get("customer_form_id"):
             f = c.execute("SELECT * FROM customer_forms WHERE id=? AND status='received'", (b["customer_form_id"],)).fetchone()
             if f:
@@ -1466,8 +1466,8 @@ def intake_complete(i):
         if why: return refuse(c, i, *why)
         rq = integrity.read_section(c, i, "request") or {}
         integrity.write_section(c, i, "request", {**rq, **clean}, me(), "Intake details completed")
-        c.execute("UPDATE jobs SET customer=?, rating=?, org_id=?, plan=?, intake=?, updated=?, cutoff=COALESCE(cutoff, ?) WHERE id=?",
-                  (clean["customer"], clean["rating"], b["org_id"], json.dumps(plan), json.dumps(rec), now(), notify.cutoff_for(c, rec["arrived_at"]), i))
+        c.execute("UPDATE jobs SET customer=?, rating=?, org_id=?, plan=?, intake=?, updated=? WHERE id=?",
+                  (clean["customer"], clean["rating"], b["org_id"], json.dumps(plan), json.dumps(rec), now(), i))
         log(c, i, "Intake details completed and validated" + (f"; confirmed: {'; '.join(warns)}" if warns else ""), kind="job")
     return jsonify(ok=True)
 
@@ -1530,17 +1530,17 @@ def testers():
 def unassigned(c, open_jobs):
     """Planned tests nobody is assigned to and nobody has started, oldest job first."""
     out = []
-    for r in c.execute(f"SELECT j.id, j.series, j.plan, j.created, j.cutoff FROM jobs j WHERE {open_jobs} AND j.plan IS NOT NULL ORDER BY COALESCE(j.cutoff, j.created)").fetchall():
+    for r in c.execute(f"SELECT j.id, j.series, j.plan, j.created FROM jobs j WHERE {open_jobs} AND j.plan IS NOT NULL ORDER BY j.created").fetchall():
         for k in workflow.loads(r["plan"], []):
             if c.execute("SELECT 1 FROM assignments WHERE job_id=? AND key=?", (r["id"], k)).fetchone(): continue
             if c.execute("SELECT 1 FROM sections WHERE job_id=? AND key=? AND (data IS NOT NULL OR state='na')", (r["id"], k)).fetchone(): continue
-            out.append(dict(id=r["id"], series=r["series"], key=k, at=r["created"], cutoff=r["cutoff"]))
+            out.append(dict(id=r["id"], series=r["series"], key=k, at=r["created"]))
     return out
 
 @app.get("/api/my-work")
 @auth.require("staff.view")
 def my_work():
-    """What is waiting on the signed-in person, oldest first (the same-day target makes the oldest the most urgent)."""
+    """What is waiting on the signed-in person, oldest first."""
     u = auth.current(); out = {}
     open_jobs = "j.archived=0 AND j.stage<4"
     with db() as c:
@@ -1641,7 +1641,6 @@ def stats():
                          "WHERE j.archived=0 AND j.stage=4 GROUP BY j.id").fetchall()
         open_ = [r[0] for r in c.execute("SELECT created FROM jobs WHERE archived=0 AND stage<4")]
         verdicts = {r[0]: r[1] for r in c.execute("SELECT COALESCE(verdict,'Not yet checked'),COUNT(*) FROM jobs WHERE archived=0 GROUP BY 1")}
-        sd = c.execute("SELECT COUNT(*), COALESCE(SUM(same_day),0) FROM jobs WHERE archived=0 AND same_day IS NOT NULL").fetchone()
         ai = vision.status(c)
     hours = lambda a, b: (dt.datetime.fromisoformat(b) - dt.datetime.fromisoformat(a)).total_seconds() / 3600
     tat = [hours(a, b) for a, b in done if a and b]
@@ -1649,8 +1648,7 @@ def stats():
     return jsonify(total=sum(by), by_stage=by, stages=STAGES, historical=hist, avg_gen_ms=int(mean(ms)) if ms else None, imports=kinds,
                    turnaround_h=dict(avg=round(mean(tat), 2), best=round(min(tat), 2), worst=round(max(tat), 2), n=len(tat)) if tat else None,
                    open_age_h=dict(avg=round(mean(ages), 2), oldest=round(max(ages), 2), n=len(ages)) if ages else None, verdicts=verdicts,
-                   ai={k: ai[k] for k in ("configured", "model", "provider", "kind", "calls_today", "daily_limit")}, sections=NAMES,
-                   same_day=dict(n=sd[0], same_day=sd[1]))
+                   ai={k: ai[k] for k in ("configured", "model", "provider", "kind", "calls_today", "daily_limit")}, sections=NAMES)
 
 @app.post("/api/demo")
 @auth.require("job.create")
@@ -1682,9 +1680,9 @@ auth.setup(app, db, log, os.path.dirname(os.path.abspath(DB)))
 init()
 excel_routes.install(sys.modules[__name__])  # template registry and Excel routes (they use this module's helpers)
 retention.install(sys.modules[__name__])     # backups, audit tip, export packages
-notify.install(sys.modules[__name__])        # notifications, same-day board, settings
+notify.install(sys.modules[__name__])        # notifications, settings, email outbox
 portal.install(sys.modules[__name__])        # partial reports, approved values, customers' request forms
 if __name__ == "__main__":
     retention.schedule()                     # one backup a day while the server runs
-    notify.worker()                          # email outbox and cut-off warnings
+    notify.worker()                          # email outbox
     app.run(debug=False, port=int(os.environ.get("PORT", 5000)))

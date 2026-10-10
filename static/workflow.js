@@ -114,7 +114,7 @@ async function intakePage(id){id=+id||null;const [F,orgs,testers,j]=await Promis
 /* ---------------------------------------------------------------- My work */
 async function myWork(){const w=await api('/api/my-work'),age=t=>t?dur((Date.now()-new Date(t))/36e5)+' ago':'';
  const L=(title,items,line,empty)=>items?`<div class="card"><h2>${title} <span class="note" style="font-weight:400">(${items.length}${items.length?', oldest first':''})</span></h2>${items.length?items.map(x=>`<div class="qi" onclick="go('job/${x.id}')"><span><b>${esc(x.series)}</b> &middot; ${line(x)}</span><span class="note" style="margin:0">${age(x.at)}</span></div>`).join(''):`<p class="note">${empty}</p>`}</div>`:'';
- $('#app').innerHTML=head('My work',`What is waiting on you, ${esc(ME.full_name)}. Today's target: everything verified and released by this evening.`)+
+ $('#app').innerHTML=head('My work',`What is waiting on you, ${esc(ME.full_name)}, oldest first.`)+
   L('Returned to you for correction',w.returned,x=>`${esc(x.name)}: <span style="color:var(--er)">${esc(x.note||'')}</span>`,'Nothing returned.')+
   L('Sections waiting for verification',w.to_verify,x=>`${esc(x.name)} (uploaded by ${esc(x.by||'-')})`,'Nothing to verify.')+
   L('Jobs ready for your sign-off',w.to_signoff,()=>'every test verified','None ready.')+
