@@ -9,9 +9,10 @@ This page says what has and has not been established about Aletheia's engineerin
 - On complete data no check is silently skipped, and a skipped check now reports its cause.
 - Verdicts no longer depend on a stray word (`"no" in text`): unclear wording gives a warning, never a pass.
 - Limits that vary with the job (temperature rise) come from the proforma, and no-load limits depend on the rating.
-- A sample that fails a requirement gets a "does not comply" report listing what was not met; only errors in the data itself
-  (recomputed averages that do not match, broken layouts) block the report (`test_failing_sample_gets_a_does_not_comply_report`,
-  `test_data_error_still_blocks_the_report`).
+- A sample that fails a requirement gets a "does not comply" report listing what was not met; only a broken data layout
+  blocks the report. Recomputed averages that disagree with the logged ones are advisory (F5) and never block
+  (`test_failing_sample_gets_a_does_not_comply_report`, `test_broken_layout_still_blocks_the_report`,
+  `test_recomputed_average_that_disagrees_is_advisory_only`).
 - The report never shows PASS for a test whose checks did not all run: one check skipped for NA values makes the line
   NOT FULLY EVALUATED, and the statement of conformity lists the skipped checks as well as missing documents
   (`test_summary_never_passes_a_test_that_was_not_fully_evaluated`).
@@ -21,6 +22,43 @@ This page says what has and has not been established about Aletheia's engineerin
 - **No lab engineer has reviewed any threshold.** No rule is marked as confirmed by the lab.
 - No rule has been checked against the text of IS 1180 or IS 2026 itself. `secondary` means it matches a published specification or summary that was read; `unconfirmed` means it comes from general practice or memory.
 - The regression numbers in the tests (e.g. 39.7 K) use the same formula as the code, so they show stability, not correctness.
+
+## Calculable parameters (faculty note F5, NEXT_STEPS.md section 5.5)
+
+Values are taken **as logged**. Where the lab's sheet already states a figure (an average, a total, a rise), Aletheia uses
+that figure; its own arithmetic on the same readings is **advisory**: shown to the engineer as a possible slip, never
+blocking, never needing review, never printed in the report.
+
+| Check | Class | What it uses |
+|---|---|---|
+| Completeness of source documents, Limits not available | keep | presence |
+| Identifier consistency (all sheets, additional sheets) | keep | logged identifiers compared |
+| Winding resistance phase imbalance | keep (plausibility) | spread of the logged readings |
+| Cold resistance cross-check | keep | two logged values compared |
+| No-load current average | **advisory** (was a blocking data error) | mean of logged phases vs logged average |
+| No-load watts sum | **advisory** | sum of logged phases vs logged total |
+| No-load current at 100% / 112.5% | keep, **derived** (Q11) | logged average current as % of rated current (rated current from the proforma) |
+| Total loss at 100% / 50% | keep | logged totals vs guaranteed values |
+| Impedance voltage, Reactance change | keep | logged values vs declared / limit |
+| Voltage ratio, all taps | keep, **derived** (Q11) | logged ratios vs theoretical ratio from the proforma voltages |
+| Dielectric routine tests, Post-test inspection, Oil leakage | keep | logged observations |
+| SC RMS average | **advisory** | mean of logged phases vs logged average |
+| SC current at each tap | keep, **derived** (Q11) | mean of the logged shot averages vs required current |
+| SC shot-by-shot, Thermal ability | keep | logged values vs required |
+| Top-oil temperature rise | keep, **logged value** | `oil_rise_reported`; only when nothing was logged: last hour top oil minus mean ambient, marked "calculated" |
+| HV / LV winding temperature rise | keep, **logged value when present** | `hv_rise` / `lv_rise` from the logsheet; otherwise the IS formula on logged resistances, marked "calculated" (Q11) |
+| Steady-state criterion | keep, **derived** (Q11) | hourly change of top-oil minus ambient |
+| Reported vs computed oil rise | **advisory** | logged rise vs last-hour calculation |
+| Correction factor | keep | two logged values compared |
+| Injected loss = NLL + FLL | **advisory** | sum of logged losses vs logged total |
+| Pressure / vacuum test deflection | **advisory** | logged maximum vs largest logged before/after difference |
+| Additional record | keep | presence of logged values |
+
+The report prints logged values only: the hourly temperature table shows the logged readings (no computed mean ambient or
+rise column), the summary marks each rise "as logged" or "calculated", and a calculated winding rise states its formula.
+
+Open (Q11): whether the lab logs the derived figures marked **derived** above (then they become logged values too), or
+whether the standard's own calculation is acceptable as printed.
 
 ## Rules and their status
 

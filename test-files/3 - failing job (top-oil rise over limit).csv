@@ -504,7 +504,7 @@ temp,rlv_hot,4.3425
 temp,amb_sd,22.85
 temp,corr,0.475
 temp,corr_written,0.275
-temp,oil_rise_reported,26.01
+temp,oil_rise_reported,42.35
 temp,material_k,235
 pressure,amb,25
 pressure,plate_m,1.6

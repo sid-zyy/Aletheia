@@ -3,3 +3,6 @@ __pycache__/
 aletheia.db
 .env
 ai_cache.db
+.aletheia_secret
+backups/
+*.bak

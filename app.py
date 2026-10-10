@@ -5,13 +5,15 @@ Modules: Data Collection (importers.py: JSON / CSV / Excel / SQLite, registers; 
          frozen versions + QR verification, customer download) | Dashboard (static/index.html)
 Settings, API and the data model: README.md and docs/ARCHITECTURE.md.
 """
-import base64, json, hashlib, io, math, os, re, secrets, sqlite3, datetime as dt
+import base64, json, hashlib, io, math, os, re, secrets, sqlite3, sys, datetime as dt
 import importers, vision
 import rules
+import auth, integrity, workflow, excel_routes, retention, notify, portal
+from integrity import Conflict, Locked
 from rules import val as rule, nll_limits, ratio_tolerance, classify_observation
 from statistics import mean
 from xml.sax.saxutils import escape as xesc
-from flask import Flask, request, jsonify, send_file, send_from_directory, abort
+from flask import Flask, request, jsonify, send_file, send_from_directory, abort, has_request_context
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
@@ -66,24 +68,73 @@ def init():
             if col not in have: c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
         # sections: JSON {document: true, or [keys] for the merged ones (ids, other)}, so an import can be undone
         if "sections" not in {r[1] for r in c.execute("PRAGMA table_info(imports)")}: c.execute("ALTER TABLE imports ADD COLUMN sections TEXT")
+        auth.init_db(c)
+        # who did it: every row that records an action carries the signed-in user (accounts are never deleted)
+        for t, cols in (("jobs", (("org_id", "INT"), ("created_by", "INT"))), ("imports", (("user_id", "INT"),)), ("sources", (("user_id", "INT"),)),
+                        ("reports", (("approver_user_id", "INT"), ("generated_by", "INT"))),
+                        ("audit", (("user_id", "INT"), ("actor", "TEXT"), ("role", "TEXT"), ("ip", "TEXT"), ("kind", "TEXT")))):
+            have = {r[1] for r in c.execute(f"PRAGMA table_info({t})")}
+            for col, ddl in cols:
+                if col not in have: c.execute(f"ALTER TABLE {t} ADD COLUMN {col} {ddl}")
+        integrity.init_db(c)
+        # plan: the tests this job needs (JSON list of section keys; empty = whatever is uploaded); intake: the receiving
+        # engineer's record (arrival, opened by, validity, read-back check); signed_off: the verifier's "all data correct"
+        have = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
+        for col, ddl in (("plan", "TEXT"), ("intake", "TEXT"), ("signed_off_by", "INT"), ("signed_off_at", "TEXT")):
+            if col not in have: c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
+        saved = integrity.migrate(c, DB)
+        if saved: print(f"Database migrated to schema {integrity.SCHEMA_VERSION}; backup kept at {saved}")
+        integrity.install_triggers(c)
 
-def log(c, jid, ev): c.execute("INSERT INTO audit(job_id,event,at) VALUES(?,?,?)", (jid, ev, now()))
+def actor():
+    """(user id, display name, roles, workstation) of whoever is acting; 'system' outside a signed-in request."""
+    u = auth.current() if has_request_context() else None
+    if not u: return None, "system", None, (request.remote_addr if has_request_context() else None)
+    return u["id"], f"{u['full_name']} ({u['username']})", ",".join(u["roles"]), request.remote_addr
+
+def log(c, jid, ev, kind="event"):
+    """Audit entry. kind: job, data, check, verify, report, approve, admin, auth, denied, event."""
+    uid, name, roles, ip = actor()
+    cur = c.execute("INSERT INTO audit(job_id,event,at,user_id,actor,role,ip,kind) VALUES(?,?,?,?,?,?,?,?)", (jid, ev, now(), uid, name, roles, ip, kind))
+    integrity.seal(c, cur.lastrowid)  # hash chain: changing or removing any entry later is detectable
+
+def me(): return actor()[0]
 
 def getjob(jid, full=True):
     with db() as c:
         r = c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
-        if not r: abort(404)
-        j = dict(r); j["data"] = json.loads(j["data"]); j["findings"] = json.loads(j["findings"])
+        if not r or not may_see(r): abort(404)  # a customer guessing another organisation's job id learns nothing
+        j = dict(r); j["data"] = integrity.job_data(c, jid); j["findings"] = json.loads(j["findings"])
+        j["meta"] = integrity.section_meta(c, jid)  # per section: state, revision, who uploaded / verified it and from which file
+        j["plan"] = workflow.loads(j.get("plan"), []); j["intake"] = workflow.loads(j.get("intake"), {})
+        j["assign"] = integrity.assignments(c, jid)
+        j["progress"], j["counts"] = workflow.progress(c, jid, NAMES, j["plan"])
+        j["signoff"] = {"by": c.execute("SELECT full_name FROM users WHERE id=?", (j["signed_off_by"],)).fetchone()[0], "at": j["signed_off_at"]} if j.get("signed_off_by") else None
+        j["signoff_blockers"] = workflow.ready_for_signoff(c, jid, NAMES, j["plan"])
+        j["amend"] = workflow.loads(j.get("amend"), None)
+        j["amendments"] = [dict(a) for a in c.execute("SELECT a.id, a.from_version, a.new_version, a.reason, a.sections, a.opened_at, a.closed_at, "
+                                                       "o.full_name AS opened_by, s.full_name AS second_signer FROM amendments a LEFT JOIN users o ON o.id=a.opened_by "
+                                                       "LEFT JOIN users s ON s.id=a.second_signer WHERE a.job_id=? ORDER BY a.id", (jid,))]
+        for a in j["amendments"]: a["sections"] = json.loads(a["sections"])
+        j["ever_released"] = bool(c.execute("SELECT 1 FROM reports WHERE job_id=? AND approver IS NOT NULL", (jid,)).fetchone())
         j["stage_name"] = "Historical record" if j.get("archived") else STAGES[j["stage"]]
+        j["released"] = j["stage"] == 4 and not j.get("archived")
         if full:
-            j["audit"] = [dict(a) for a in c.execute("SELECT event,at FROM audit WHERE job_id=? ORDER BY id", (jid,))]
+            j["audit"] = [dict(a) for a in c.execute("SELECT event,at,actor,kind FROM audit WHERE job_id=? ORDER BY id", (jid,))]
             j["imports"] = [dict(a, sections=json.loads(a["sections"]) if a["sections"] else None)
-                            for a in c.execute("SELECT id,source,kind,sha256,at,sections FROM imports WHERE job_id=? ORDER BY id", (jid,))]
+                            for a in c.execute("SELECT i.id,i.source,i.kind,i.sha256,i.at,i.sections,i.file_id,f.sha256 AS file_sha256,u.full_name AS by "
+                                               "FROM imports i LEFT JOIN files f ON f.id=i.file_id LEFT JOIN users u ON u.id=i.user_id WHERE i.job_id=? ORDER BY i.id", (jid,))]
             j["sources"] = [dict(a) for a in c.execute("SELECT id,filename,mime,sha256,at FROM sources WHERE job_id=? ORDER BY id", (jid,))]
-            j["reports"] = [dict(a) for a in c.execute("SELECT version,token,sha256,approver,approver_id,at FROM reports WHERE job_id=? ORDER BY version DESC", (jid,))]
+            j["reports"] = [dict(a) for a in c.execute("SELECT version,token,sha256,approver,approver_id,at,manifest_sha256 FROM reports WHERE job_id=? ORDER BY version DESC", (jid,))]
         return j
 
+def may_see(row):
+    """Staff see every job; a customer only their own organisation's."""
+    if not has_request_context() or not auth.is_customer(): return True
+    return row["org_id"] is not None and row["org_id"] == auth.current().get("org_id")
+
 def save(jid, **kw):
+    if "data" in kw: raise ValueError("job data lives in the sections table; use integrity.write_section")
     kw["updated"] = now()
     with db() as c:
         c.execute(f"UPDATE jobs SET {','.join(k + '=?' for k in kw)} WHERE id=?", (*[json.dumps(v) if isinstance(v, (dict, list)) else v for v in kw.values()], jid))
@@ -92,13 +143,15 @@ def save(jid, **kw):
 def validate(d):
     """Returns (findings, calc). Levels: pass / warn (needs reviewer attention) / fail (blocks)."""
     F, C = [], {}
-    def add(l, c, t, src=None, found=None, exp=None, fix=None, na=False, basis=None, inconclusive=False, cause=None, blocks=False):
+    def add(l, c, t, src=None, found=None, exp=None, fix=None, na=False, basis=None, inconclusive=False, cause=None, blocks=False, advisory=False):
         """src: document(s) checked; found / exp: observed vs required value; fix: what the engineer should do.
         cause: technical reason a check was skipped, for the engineer only; never printed in the report.
         blocks: the data itself is wrong (e.g. a logged average that does not match its readings), so no report can be built
-        until it is corrected. Other failures are results: the sample does not meet a requirement, and the report says so."""
+        until it is corrected. Other failures are results: the sample does not meet a requirement, and the report says so.
+        advisory: Aletheia re-did arithmetic the lab already logged (an average, a sum, a maximum). Values are taken as logged
+        (faculty note F5), so this only points at a possible slip: it never blocks, needs no review and is never printed."""
         f = dict(level=l, check=c, detail=t, **({"na": True} if na else {}), **({"inconclusive": True} if inconclusive else {}),
-                 **({"blocks": True} if blocks and l == "fail" else {}))
+                 **({"blocks": True} if blocks and l == "fail" and not advisory else {}), **({"advisory": True} if advisory else {}))
         if cause: f["cause"] = cause
         if basis: f["basis"] = rules.basis(*basis)  # where the threshold comes from and whether anyone has confirmed it
         f.update({k: v for k, v in dict(source=src, found=found, expected=exp, action=fix).items() if v is not None})
@@ -169,12 +222,12 @@ def validate(d):
     if N and P:
         with na('No-load readings (averages and sums)', NAMES["noload"]):
             for lb, V, Va, I, Ia, W, Wa, f, Pc in N["rows"]:
-                if abs(mean(I) - Ia) > .005: add("fail", "No-load current average", f"{lb}: mean of {I} = {mean(I):.3f}, logged {Ia}",
+                if abs(mean(I) - Ia) > .005: add("warn", "No-load current average", f"{lb}: mean of {I} = {mean(I):.3f}, logged {Ia} (the logged average is used)",
                     src=NAMES["noload"], found=f"{lb}: logged average {Ia} A", exp=f"Mean of I1, I2, I3 = {mean(I):.3f} A",
-                    fix="Recalculate the average on the log sheet, or correct the phase current that was misread.", blocks=True)
+                    fix="Check the average on the log sheet, or the phase current that may have been misread.", advisory=True)
                 if abs(sum(W) - Wa) > .1: add("warn", "No-load watts sum", f"{lb}: W1+W2+W3 = {sum(W):.2f} but logged average/sum {Wa} (check reading)",
                     src=NAMES["noload"], found=f"{lb}: logged total {Wa} W", exp=f"W1 + W2 + W3 = {' + '.join(map(str, W))} = {sum(W):.2f} W",
-                    fix="Check the three wattmeter readings and the total on the scan; one of them was probably misread or mis-added.")
+                    fix="Check the three wattmeter readings and the total on the scan; one of them was probably misread or mis-added.", advisory=True)
         with na('No-load current limits', NAMES["noload"]):
             lim100, lim112 = nll_limits(P["kva"])
             r112 = [r for r in N["rows"] if "112" in str(r[0])]  # chosen by label, not by row position
@@ -240,7 +293,7 @@ def validate(d):
             for s in S["shots"]:
                 if abs(mean(s[4:7]) - s[7]) > .01: add("warn", "SC RMS average", f"{s[0]}: mean {mean(s[4:7]):.3f} vs logged {s[7]}",
                     src=NAMES["sc"], found=f"Shot {s[0]}: logged average {s[7]} kA", exp=f"Mean of the three phases = {mean(s[4:7]):.3f} kA",
-                    fix="Recalculate the average for this shot on the short-circuit log.")
+                    fix="Check the average for this shot on the short-circuit log.", advisory=True)
         with na('SC current', NAMES["sc"]):
             C["sc"] = {}
             for tap, (ir, ip) in S["required"].items():
@@ -276,27 +329,35 @@ def validate(d):
     T = d.get("temp")
     temp_ok = wdg_ok = False  # oil rise (hourly readings) and winding rise (resistances) are computed independently
     if T and P:
-        with na('Top-oil temperature rise', NAMES["temp"]):
+        logged = lambda k: T.get(k) if isinstance(T.get(k), (int, float)) and not isinstance(T.get(k), bool) else None
+        rises = None
+        with na(None):  # hourly rises: for the steady-state criterion and the advisory comparison only
             rises = [h[1] - mean(h[3:6]) for h in T["hours"]]
-            C.update(oil_rise=rises[-1]); temp_ok = True
+        with na('Top-oil temperature rise', NAMES["temp"]):
+            oil_v = logged("oil_rise_reported") if logged("oil_rise_reported") is not None else rises[-1]
+            C.update(oil_rise=oil_v, oil_rise_src="logged" if logged("oil_rise_reported") is not None else "calculated"); temp_ok = True
         with na('Winding temperature rise', NAMES["temp"]):
-            k, ca, cf = T["material_k"], T["amb_cold"], T["corr"]
-            hv = T["rhv_hot"] / T["rhv_cold"] * (k + ca) - k - T["amb_sd"] + cf
-            lv = T["rlv_hot"] / T["rlv_cold"] * (k + ca) - k - T["amb_sd"] + cf
+            if logged("hv_rise") is not None and logged("lv_rise") is not None:
+                hv, lv = logged("hv_rise"), logged("lv_rise"); C["wdg_src"] = "logged"
+            else:  # nothing logged: the IS formula on the logged resistances (Q11: should the lab log the rise instead?)
+                k, ca, cf = T["material_k"], T["amb_cold"], T["corr"]
+                hv = T["rhv_hot"] / T["rhv_cold"] * (k + ca) - k - T["amb_sd"] + cf
+                lv = T["rlv_hot"] / T["rlv_cold"] * (k + ca) - k - T["amb_sd"] + cf
+                C["wdg_src"] = "calculated"
             C.update(hv_rise=hv, lv_rise=lv); wdg_ok = True
         if temp_ok:
             with na('Top-oil temperature rise', NAMES["temp"]):
-                oil = P["limits"]["oil"]
-                um = rule("temp_margin_inconclusive_k"); thin = 0 <= oil - rises[-1] < um
-                add("fail" if rises[-1] > oil else "warn" if thin else "pass", "Top-oil temperature rise", f"{rises[-1]:.2f} K (limit {oil} K" + (f", margin {oil - rises[-1]:.1f} K: inconclusive)" if thin else ")"),
-                    src=NAMES["temp"], found=f"{rises[-1]:.2f} K at the last hour", exp=f"{oil} K or less", basis=("oil_limit_k / wdg_limit_k", "temp_margin_inconclusive_k"), inconclusive=thin,
-                    fix=None if rises[-1] <= oil else "Top-oil rise exceeds the limit; the sample fails this test unless a reading is wrong.")
+                oil = P["limits"]["oil"]; ov = C["oil_rise"]; how = "as logged" if C["oil_rise_src"] == "logged" else "calculated from the last hour (no rise logged)"
+                um = rule("temp_margin_inconclusive_k"); thin = 0 <= oil - ov < um
+                add("fail" if ov > oil else "warn" if thin else "pass", "Top-oil temperature rise", f"{ov:.2f} K {how} (limit {oil} K" + (f", margin {oil - ov:.1f} K: inconclusive)" if thin else ")"),
+                    src=NAMES["temp"], found=f"{ov:.2f} K ({how})", exp=f"{oil} K or less", basis=("oil_limit_k / wdg_limit_k", "temp_margin_inconclusive_k"), inconclusive=thin,
+                    fix=None if ov <= oil else "Top-oil rise exceeds the limit; the sample fails this test unless a reading is wrong.")
         if wdg_ok:
             with na('Winding temperature rise', NAMES["temp"]):
                 w = P["limits"]["wdg"]
                 for nm, v in (("HV", hv), ("LV", lv)):
                     um = rule("temp_margin_inconclusive_k"); thin = 0 <= w - v < um
-                    add("fail" if v > w else "warn" if thin else "pass", f"{nm} winding temperature rise", f"{v:.1f} K (limit {w} K, margin {w - v:.1f} K" + (": inconclusive)" if thin else ")"),
+                    add("fail" if v > w else "warn" if thin else "pass", f"{nm} winding temperature rise", f"{v:.1f} K {'as logged' if C['wdg_src'] == 'logged' else 'calculated'} (limit {w} K, margin {w - v:.1f} K" + (": inconclusive)" if thin else ")"),
                         src=NAMES["temp"], found=f"{v:.1f} K (margin {w - v:.1f} K)", exp=f"{w} K or less", basis=("oil_limit_k / wdg_limit_k", "temp_margin_inconclusive_k"), inconclusive=thin,
                         fix="Exceeds the limit; check the hot and cold resistance readings." if v > w else
                             f"Inconclusive: within {um:g} K of the limit, so a small reading or correction-factor error could change the verdict. Re-check the hot resistance and the correction factor; the lab's own measurement uncertainty should decide this." if thin else None)
@@ -311,7 +372,7 @@ def validate(d):
             with na('Reported vs computed oil rise', NAMES["temp"]):
                 if abs(T["oil_rise_reported"] - rises[-1]) > .1: add("warn", "Reported vs computed oil rise", f"Logsheet reports {T['oil_rise_reported']} K, last-hour computed {rises[-1]:.2f} K",
                     src=NAMES["temp"], found=f"{T['oil_rise_reported']} K written on the log sheet", exp=f"{rises[-1]:.2f} K (top oil minus mean ambient, last hour)",
-                    fix="Check which hour's readings the written figure was taken from. The report uses the computed value.")
+                    fix="Check which hour's readings the written figure was taken from. The report uses the logged value.", advisory=True)
         if wdg_ok:
             with na('Correction factor', NAMES["temp"]):
                 if abs(T["corr_written"] - cf) > 1e-6: add("warn", "Correction factor", f"Written as {T['corr_written']} at top of page 2 but {cf} used in the formula - confirm",
@@ -322,7 +383,7 @@ def validate(d):
                 iok = abs(T["total"] - T["nll"] - T["fll"]) < .05
                 add("pass" if iok else "warn", "Injected loss = NLL + FLL", f"{T['nll']} + {T['fll']} = {T['nll'] + T['fll']:.2f} W vs {T['total']} W",
                     src=NAMES["temp"], found=f"{T['total']} W injected", exp=f"No-load + full-load loss = {T['nll'] + T['fll']:.2f} W",
-                    fix=None if iok else "The injected loss does not equal the sum of losses; check the figures on the log sheet.")
+                    fix=None if iok else "The injected loss does not equal the sum of losses; check the figures on the log sheet.", advisory=True)
     # 8. pressure / vacuum / leakage
     Pr = d.get("pressure")
     if Pr:
@@ -330,9 +391,9 @@ def validate(d):
             for nm in ("pressure", "vacuum"):
                 x = Pr["type"][nm]; m = max(abs(b - a) for a, b in x["pts"])
                 dok = abs(m - x["max"]) < .01
-                add("pass" if dok else "warn", f"{nm.title()} test deflection", f"Max permanent deflection {m:.2f} mm (logged {x['max']}); {x['obs']}",
+                add("pass" if dok else "warn", f"{nm.title()} test deflection", f"Logged maximum {x['max']} mm (largest before/after difference {m:.2f} mm); {x['obs']}",
                     src=NAMES["pressure"], found=f"{x['max']} mm logged as maximum", exp=f"{m:.2f} mm, the largest before/after difference",
-                    fix=None if dok else "Re-check the deflection readings and the maximum written on the log.")
+                    fix=None if dok else "Re-check the deflection readings and the maximum written on the log.", advisory=True)
         with na('Oil leakage test', NAMES["pressure"]):
             lv = classify_observation(Pr["leak"]["obs"])
             add({True: "pass", False: "fail", None: "warn"}[lv], "Oil leakage test", f"{Pr['leak']['kpa']} kPa for {Pr['leak']['hrs']} h: {Pr['leak']['obs']}",
@@ -437,7 +498,10 @@ def fmt(v, spec=".1f"):
     try: return format(v, spec)
     except (TypeError, ValueError): return "NA"
 
-def build_pdf(j, version=None, verify_url=None):
+def build_pdf(j, version=None, verify_url=None, manifest=None, partial=None):
+    """The test report. partial=dict(version, approved=[names], pending=[names], sections=[(name, revision, sha)]) builds the
+    customer's partial report instead: approved tests' values only, no verdicts, no statement of conformity, no signatures,
+    a PARTIAL - NOT FINAL watermark on every page (NEXT_STEPS.md 7.1)."""
     F, C = validate(j["data"]); d = shown(j["data"]); P, W, Rq = Soft(d.get("proforma", {})), Soft(d.get("work", {})), Soft(d.get("request", {}))
     tp = report_template(); hd = tp["headings"]
     num_ = lambda v: "NA" if v is None else v  # a value that could not be computed prints as NA, never as Python's None
@@ -477,12 +541,14 @@ def build_pdf(j, version=None, verify_url=None):
         return next(r for r in d["noload"]["rows"] if ("112" in str(r[0])) == full)
     E = [Paragraph(xesc(tp["organisation"]), st["Title"]),
          Paragraph(xesc(tp["title"]), st["Heading2"]),
-         kv([("Test report / series no.", j["series"]), ("Sample code no.", j["sample"]), ("Customer", f"{Rq['customer']}, {Rq['address']}"),
+         kv([("Test report / series no.", j["series"]), ("Sample code no.", j["sample"]),
+             ("Customer", ", ".join(x for x in (Rq["customer"], Rq["address"], Rq["city"], Rq["state"], Rq["pin"]) if x and x != "NA") or "NA"),
              ("Date(s) of test", f"{W['start']} to {W['completed']}"), ("Reference standard", W["standard"]),
              ("Tests performed", Rq["tests"] + (" (" + "; ".join(P["tests"]) + "), plus routine tests" if isinstance(P["tests"], list) else "")),
-             ("Witness", Rq["witness"]), ("Report prepared by", W["engineer"] + f" ({tp['engineer_label']})"),
-             ("Decision rule", Rq["conformity"]),
-             ("Report generated", now() + f" by {tp['generator']}" + (f" - version {version}" if version else ""))]),
+             ("Witness", Rq["witness"])] + ([] if partial else [("Report prepared by", W["engineer"] + f" ({tp['engineer_label']})")]) +
+            [("Decision rule", Rq["conformity"]),
+             ("Partial report generated" if partial else "Report generated", now() + f" by {tp['generator']}" +
+              (f" - partial version {partial['version']}" if partial else f" - version {version}" if version else ""))]),
          Paragraph(xesc(hd["sample"]), h),
          kv([("Sample", Rq["sample"]), ("Rating", Rq["rating"]), ("Serial no.", Rq["serial"]), ("Drawing nos.", Rq["drawings"]),
              ("Voltage / phases / freq", f"{P['hv']} V / {P['lv']} V, {P['phases']} ph, {P['freq']} Hz, {P['vector']}, {P['cooling']}"),
@@ -493,7 +559,8 @@ def build_pdf(j, version=None, verify_url=None):
          tbl([["Test", "Result obtained", "Requirement", "Verdict"],
               srow("Short-circuit withstand (dynamic + thermal)", ["sc"], lambda: "; ".join(f"{t}: {a} kA rms / {b} kA pk" for t, (a, b) in C.get("sc", {}).items()) or "NA",
                    lambda: "Within +/-10% of required; no abnormality", ("SC", "Thermal", "Post-test", "Reactance")),
-              srow("Temperature rise", ["temp", "proforma"], lambda: f"Top oil {fmt(C.get('oil_rise'))} K; HV wdg {fmt(C.get('hv_rise'))} K; LV wdg {fmt(C.get('lv_rise'))} K",
+              srow("Temperature rise", ["temp", "proforma"], lambda: f"Top oil {fmt(C.get('oil_rise'))} K{' (as logged)' if C.get('oil_rise_src') == 'logged' else ' (calculated)'}; "
+                   f"HV wdg {fmt(C.get('hv_rise'))} K; LV wdg {fmt(C.get('lv_rise'))} K{' (as logged)' if C.get('wdg_src') == 'logged' else ' (calculated)'}",
                    lambda: f"Oil {Lim['oil']} K; winding {Lim['wdg']} K", ("rise", "Steady")),
               srow("Total loss (75 C)", ["losses", "proforma"], lambda: f"{num_(C.get('t100'))} W (100%); {num_(C.get('t50'))} W (50%)",
                    lambda: f"{P['loss100']} W; {P['loss50']} W", ("Total loss",)),
@@ -509,13 +576,14 @@ def build_pdf(j, version=None, verify_url=None):
              [[f"Additional record: {o.get('title', 'Additional log sheet')}", "Values recorded (see detailed results)", "No limits defined", "RECORDED"]
               for o in (d.get("other") or {}).values()],
              [48 * mm, 62 * mm, 45 * mm, 25 * mm])]
+    if partial:  # no summary of verdicts: only what has been approved so far, and what is still pending
+        E[1] = Paragraph(xesc(tp["title"] + " - PARTIAL REPORT, NOT FINAL"), st["Heading2"])
+        E = E[:5] + [Paragraph("Status of the tests", h),
+                     tbl([["Test", "Status"]] + [[x, "Approved: values below"] for x in partial["approved"]] +
+                         [[x, "Pending: not yet approved"] for x in partial["pending"]], [110 * mm, 70 * mm]),
+                     Paragraph("This partial report shows the values of the approved tests only. It is not a test report: it carries no verdict, "
+                               "no statement of conformity and no signature, and may change until the final report is released.", n)]
     E.append(Paragraph(xesc(hd["details"]), h)); sub = iter(range(1, 20)); sec_no = hd["details"].split(".")[0].strip() or "3"
-    def amb(x):
-        try: return mean(x[3:6])
-        except (TypeError, ValueError): return None
-    def rise(x):
-        try: return x[1] - amb(x)
-        except TypeError: return None
     @contextmanager
     def part(name):
         """One detailed section; if its data is too incomplete to lay out, say so instead of failing the whole report."""
@@ -558,9 +626,13 @@ def build_pdf(j, version=None, verify_url=None):
         with part(NAMES['temp']):
             T = d["temp"]
             E += [num(f"Temperature rise ({T['dates']}; short-circuit method, {T['tap']} tap, {T['current']} A, injected {T['total']} W)"),
-                  tbl([["Hour", "Top oil C", "Bottom oil C", "Mean ambient C", "Oil rise K"]] + [[x[0], x[1], x[2], fmt(amb(x), ".2f"), fmt(rise(x), ".2f")] for x in T["hours"]])]
-            if "hv_rise" in C:
-                E.append(Paragraph(f"Winding rise = (R2/R1)(235+{T['amb_cold']}) - 235 - {T['amb_sd']} + {T['corr']}: HV {C['hv_rise']:.1f} K, LV {C['lv_rise']:.1f} K.", n))
+                  tbl([["Hour", "Top oil C", "Bottom oil C", "Ambient 1 C", "Ambient 2 C", "Ambient 3 C"]] + [[x[0], x[1], x[2], x[3], x[4], x[5]] for x in T["hours"]])]
+            if C.get("oil_rise_src") == "logged": E.append(Paragraph(xesc(f"Top-oil temperature rise as logged: {fmt(C['oil_rise'], '.2f')} K."), n))
+            if "hv_rise" in C and C.get("wdg_src") == "logged":
+                E.append(Paragraph(xesc(f"Winding temperature rise as logged: HV {fmt(C['hv_rise'])} K, LV {fmt(C['lv_rise'])} K."), n))
+            elif "hv_rise" in C:
+                E.append(Paragraph(xesc(f"Winding temperature rise (not logged; calculated from the logged resistances): "
+                                        f"(R2/R1)({T['material_k']}+{T['amb_cold']}) - {T['material_k']} - {T['amb_sd']} + {T['corr']}: HV {C['hv_rise']:.1f} K, LV {C['lv_rise']:.1f} K."), n))
     if has("pressure"):
         with part(NAMES['pressure']):
             Pr = d["pressure"]; ty = Pr["type"]
@@ -576,9 +648,16 @@ def build_pdf(j, version=None, verify_url=None):
             for t in o.get("tables") or []:
                 if t.get("title"): E.append(Paragraph(xesc(str(t["title"])), n))
                 E.append(tbl([t.get("columns") or [""] * len(t["rows"][0])] + t.get("rows", [])))
+    if partial:
+        E += [Spacer(1, 10), Paragraph("Approved data in this partial report", h),
+              tbl([["Test", "Revision", "Data SHA-256"]] + [[a, b, c[:32]] for a, b, c in partial["sections"]], [70 * mm, 20 * mm, 90 * mm])]
+        def wm(canvas, _doc):
+            canvas.saveState(); canvas.setFont("Helvetica-Bold", 54); canvas.setFillColorRGB(.8, .15, .15, alpha=.13)
+            canvas.translate(A4[0] / 2, A4[1] / 2); canvas.rotate(40); canvas.drawCentredString(0, 0, "PARTIAL - NOT FINAL"); canvas.restoreState()
+        doc.build(E, onFirstPage=wm, onLaterPages=wm); buf.seek(0); return buf
     if missing:
         E.append(Paragraph("Source documents not provided (the related tests were not evaluated): " + ", ".join(missing) + ".", n))
-    fails = [f for f in F if f["level"] == "fail"]; warns = [f for f in F if f["level"] == "warn" and not f.get("na")]
+    fails = [f for f in F if f["level"] == "fail"]; warns = [f for f in F if f["level"] == "warn" and not f.get("na") and not f.get("advisory")]
     skipped = list(dict.fromkeys(f["check"] for f in F if f.get("na")))  # checks that could not run because values were NA
     scope = ""
     if missing or skipped:
@@ -599,6 +678,18 @@ def build_pdf(j, version=None, verify_url=None):
                         "* Items flagged by automated validation - to be confirmed by the reviewer before approval:", n), tbl([["Check", "Detail"]] + [[f["check"], f["detail"]] for f in warns])]
     E += [Spacer(1, 14), tbl([[f"{tp['engineer_label']}: " + W["engineer"], f"{tp['approver_label']}: {signed(j['approver'], j.get('approver_id')) or '(pending)'}"]], head=False),
           Paragraph(xesc(tp["footer"]), n)]
+    if manifest:  # traceability annex: what the report was built from (NEXT_STEPS.md 4.4, 6.2)
+        m, msha = manifest
+        E += [Spacer(1, 10), Paragraph("Traceability of this report", h)]
+        if m.get("supersedes"):
+            E.append(Paragraph(xesc(f"This version supersedes version {m['supersedes']['version']}. Reason for the amendment: {m['supersedes']['reason']}"), n))
+        E.append(tbl([["Test", "Rev.", "Data SHA-256", "Source file SHA-256", "Template", "Uploaded by", "Verified by"]] +
+                     [[s["test"], s["revision"], (s["data_sha256"] or "-")[:16], (s["file_sha256"] or "-")[:16], s["template"] or "-",
+                       (s["uploaded_by"] or "-") + (f" ({s['bay']})" if s.get("bay") else ""), s["verified_by"] or ("not applicable" if s["state"] == "na" else "-")]
+                      for s in m["sections"] if s["key"] != "request"], [36 * mm, 9 * mm, 27 * mm, 27 * mm, 24 * mm, 30 * mm, 27 * mm]))
+        E.append(Paragraph(xesc(f"Intake received by {m['intake']['received_by'] or '-'}, checked against the original form by {m['intake']['checked_by'] or '-'}; "
+                                f"data signed off by {m['signed_off_by'] or '-'}. Software {m['software']['code']}, schema {m['software']['schema']}. "
+                                f"Manifest SHA-256: {msha}"), n))
     if verify_url:
         from reportlab.graphics.barcode.qr import QrCodeWidget
         from reportlab.graphics.shapes import Drawing
@@ -624,6 +715,11 @@ app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 @app.errorhandler(vision.VisionError)
 def bad_file(e): return jsonify(error=[str(e)]), 400
 
+@app.errorhandler(404)
+def not_found(e):
+    if request.path.startswith("/api/"): return jsonify(error=["Not found, or not visible to your account"]), 404
+    return e
+
 @app.errorhandler(413)
 def too_big(e): return jsonify(error=["File is too large (20 MB maximum)"]), 413
 
@@ -636,10 +732,11 @@ def upload(b):
     if not raw: raise importers.ImportError_("The file is empty")
     return str(b.get("filename") or "upload")[:200], raw
 
-def check_ids(b):
-    """Only the series number is required (it identifies the record). Other fields may be left empty and are stored as NA;
-    a sample code that is given must still have the CPRI format."""
+def check_ids(b, auto=False):
+    """Only the series number is required (it identifies the record), unless it is to be allocated (auto). Other fields may be
+    left empty and are stored as NA; a sample code that is given must still have the CPRI format."""
     err = []
+    if auto: b["series"] = "CPRIBLRSCL00T0000"  # placeholder, replaced inside the insert transaction
     if not str(b.get("series") or "").strip(): err.append("Test series number is required (it identifies the record)")
     elif not re.fullmatch(SERIES_RE, str(b["series"]).strip()): err.append("Series must look like CPRIBLRSCL25T1654")
     sample = str(b.get("sample") or "").strip()
@@ -649,39 +746,111 @@ def check_ids(b):
         for f in ("sample", "customer", "rating"): b[f] = str(b.get(f) or "").strip() or "NA"
     return err
 
-def data_changed(j, d, event):
-    """Any change to test data sends the job back to 'Data Imported': checks and the report must be redone."""
-    stale = j["stage"] >= 3
-    # record details left as NA are filled from the imported documents (request form, work instruction)
+def org_problem(b):
+    """The customer organisation a job belongs to (whose customer accounts may follow it). Optional until intake is tightened."""
+    o = b.get("org_id")
+    if o in (None, ""): b["org_id"] = None; return []
+    with db() as c: ok = isinstance(o, int) and c.execute("SELECT 1 FROM orgs WHERE id=?", (o,)).fetchone()
+    return [] if ok else ["Unknown customer organisation"]
+
+def after_change(c, jid, event):
+    """Inside the write transaction that changed some sections: the checks and any generated report must be redone, and
+    record details left as NA are filled from the imported documents (request form, work instruction)."""
+    r = c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone(); d = integrity.job_data(c, jid)
     rq, wk = d.get("request") or {}, d.get("work") or {}
     found = dict(customer=rq.get("customer") or wk.get("customer"), rating=rq.get("rating"), sample=wk.get("sample"))
-    fill = {k: str(v).strip() for k, v in found.items() if j.get(k) in (None, "", "NA") and v and str(v).strip()
+    fill = {k: str(v).strip() for k, v in found.items() if r[k] in (None, "", "NA") and v and str(v).strip()
             and (k != "sample" or re.fullmatch(SAMPLE_RE, str(v).strip()))}
     has_data = any(k != "request" for k in d)
-    save(j["id"], data=d, stage=1 if has_data else 0, findings=[], approver=None, approver_id=None, verdict=None,
-         archived=0 if has_data else j.get("archived", 0), **fill)
-    with db() as c: log(c, j["id"], event + (" - earlier report is now out of date" if stale else ""))
+    sets = dict(stage=1 if has_data else 0, findings="[]", approver=None, approver_id=None, verdict=None,
+                archived=0 if has_data else r["archived"], updated=now(), signed_off_by=None, signed_off_at=None, **fill)
+    c.execute(f"UPDATE jobs SET {','.join(k + '=?' for k in sets)} WHERE id=?", (*sets.values(), jid))
+    log(c, jid, event + (" - earlier report is now out of date" if r["stage"] >= 3 else ""), kind="data")
+
+def locked(j):
+    """A released report and everything it was built from are frozen (corrections go through an amendment)."""
+    if j.get("released"): return jsonify(error=["This report has been released: its record and data are locked and cannot be changed"]), 409
+    return None
+
+def refuse(c, jid, msg, status=403):
+    """A workflow rule said no: tell the user why and keep the refusal in the audit trail (rule 2.4.6)."""
+    log(c, jid, f"Refused: {msg}", kind="denied")
+    return jsonify(error=[msg[0].upper() + msg[1:]]), status
+
+def write_check(c, i, keys):
+    """None, or (reason, status) refusing this user's write to one of these sections: 403 when it is not theirs to write
+    (ownership, certification), 409 when the section is verified and locked."""
+    u = auth.current()
+    am = workflow.loads(c.execute("SELECT amend FROM jobs WHERE id=?", (i,)).fetchone()[0], None)
+    for k in keys:
+        if am and k not in am["sections"] and k != "ids":
+            return f"{NAMES.get(k, k)} is not part of the open amendment (only {', '.join(NAMES.get(x, x) for x in am['sections'])} may change)", 409
+        why = workflow.may_write(c, i, k, u)
+        if why: return f"{NAMES.get(k, k)}: {why}", 403
+        row = c.execute("SELECT state FROM sections WHERE job_id=? AND key=?", (i, k)).fetchone()
+        if row and row["state"] == "verified" and k not in workflow.MERGED:
+            return f"{NAMES.get(k, k)} has been verified and is locked; a verifier must reopen it (with a reason) first", 409
+    return None
+
+def bay_of(b):
+    """(id, name) of the test bay named in the request, or None. An unknown or retired bay is an error."""
+    bid = b.get("bay_id")
+    if bid in (None, ""): return None
+    with db() as c: r = c.execute("SELECT id, name FROM bays WHERE id=? AND active=1", (bid,)).fetchone()
+    if not r: raise importers.ImportError_("Unknown or retired test bay")
+    return (r["id"], r["name"])
+
+def conflict(e):
+    r = e.row
+    if r is None: return jsonify(error=["This section was removed by someone else in the meantime. Reload the page; your changes were not saved."]), 409
+    with db() as c: who = c.execute("SELECT full_name FROM users WHERE id=?", (r["uploaded_by"],)).fetchone()
+    return jsonify(error=[f"This section was changed by {who[0] if who else 'someone else'} at {str(r['uploaded_at'])[11:16]} "
+                          f"(now revision {r['revision']}). Reload the page and check their change; yours was not saved."]), 409
+
+def manifest(j, version):
+    """What this report version was built from: each section's revision and data hash, its source file's hash, the template
+    version that read it, who uploaded and verified it, plus the intake, sign-off, signer and software. Its own SHA-256 is
+    printed on the report, so a reader can check later that nothing behind the report changed (NEXT_STEPS.md 6.2)."""
+    with db() as c:
+        secs = [dict(test=NAMES.get(r["key"], {"ids": "Identifiers on each sheet", "other": "Additional log sheets"}.get(r["key"], r["key"])), key=r["key"],
+                     revision=r["revision"], state=r["state"], data_sha256=r["data_sha256"], file=r["fname"], file_sha256=r["fsha"],
+                     template=f"{r['tkey']} v{r['tver']}" if r["tkey"] else None, uploaded_by=r["up"], verified_by=r["ver"], bay=r["bay"])
+                for r in c.execute("""SELECT s.*, f.name AS fname, f.sha256 AS fsha, t.key AS tkey, t.version AS tver, u.full_name AS up, v.full_name AS ver
+                                      FROM sections s LEFT JOIN files f ON f.id=s.file_id LEFT JOIN templates t ON t.id=s.template_id
+                                      LEFT JOIN users u ON u.id=s.uploaded_by LEFT JOIN users v ON v.id=s.verified_by
+                                      WHERE s.job_id=? ORDER BY s.key""", (j["id"],))]
+        prev = c.execute("SELECT MAX(version) FROM reports WHERE job_id=? AND approver IS NOT NULL", (j["id"],)).fetchone()[0]
+    it = j.get("intake") or {}
+    am = j.get("amend")
+    return dict(series=j["series"], sample=j["sample"], report_version=version, built_at=now(), software=dict(code=code_id(), schema=integrity.SCHEMA_VERSION),
+                sections=secs, intake=dict(received_by=it.get("received_by"), arrived_at=it.get("arrived_at"), checked_by=it.get("checked_by")),
+                signed_off_by=(j.get("signoff") or {}).get("by"), approver=j.get("approver"), approver_id=j.get("approver_id"),
+                supersedes=dict(version=prev, reason=am["reason"]) if am and prev else None)
 
 def freeze(j):
     """Build the PDF once and store it: every generated/approved report is an immutable, hash-verifiable version."""
     with db() as c: v = (c.execute("SELECT MAX(version) FROM reports WHERE job_id=?", (j["id"],)).fetchone()[0] or 0) + 1
     token = secrets.token_urlsafe(12)
-    pdf = build_pdf(j, v, request.host_url + "verify/" + token).getvalue()
+    m = manifest(j, v); msha = integrity.sha(integrity.canon(m))
+    pdf = build_pdf(j, v, request.host_url + "verify/" + token, manifest=(m, msha)).getvalue()
     sha = hashlib.sha256(pdf).hexdigest()
-    with db() as c: c.execute("INSERT INTO reports(job_id,version,token,sha256,pdf,approver,approver_id,at) VALUES(?,?,?,?,?,?,?,?)",
-                         (j["id"], v, token, sha, pdf, j.get("approver"), j.get("approver_id"), now()))
+    with db() as c: c.execute("INSERT INTO reports(job_id,version,token,sha256,pdf,approver,approver_id,at,approver_user_id,generated_by,manifest,manifest_sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (j["id"], v, token, sha, pdf, j.get("approver"), j.get("approver_id"), now(), me() if j.get("approver") else None, me(), integrity.canon(m), msha))
     return v, sha
 
 @app.get("/")
+@auth.public
 def index(): return send_from_directory(app.static_folder, "index.html")
 
 # Searched text: record details plus what the request and work instruction say (tests, standard, engineer, dates) and the outcome
-SEARCHED = ("series", "sample", "customer", "rating", "verdict", "tested", "json_extract(data,'$.request.tests')", "json_extract(data,'$.request.criteria')",
-            "json_extract(data,'$.request.address')", "json_extract(data,'$.work.standard')", "json_extract(data,'$.work.engineer')",
-            "json_extract(data,'$.work.start')", "json_extract(data,'$.work.completed')", "approver")
+RQ, WK = (f"(SELECT data FROM sections WHERE job_id=jobs.id AND key='{k}')" for k in ("request", "work"))
+SEARCHED = ("series", "sample", "customer", "rating", "verdict", "tested", f"json_extract({RQ},'$.tests')", f"json_extract({RQ},'$.criteria')",
+            f"json_extract({RQ},'$.address')", f"json_extract({WK},'$.standard')", f"json_extract({WK},'$.engineer')",
+            f"json_extract({WK},'$.start')", f"json_extract({WK},'$.completed')", "approver")
 DAY = "COALESCE(NULLIF(tested,''), substr(created,1,10))"  # test date from a register, else the day the request was captured
 
 @app.get("/api/jobs")
+@auth.require("jobs.view")
 def jobs():
     """One query for the whole list (no per-job lookups). Filters: q (text), stage (0-4, or 'h' for historical records),
     verdict ('comply', 'not', 'none'), from / to (YYYY-MM-DD)."""
@@ -693,8 +862,10 @@ def jobs():
         where.append({"comply": "verdict LIKE 'Complies%'", "not": "verdict='Does not comply'", "none": "verdict IS NULL"}[v])
     for k, op in (("from", ">="), ("to", "<=")):
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.get(k, "")): where.append(f"{DAY} {op} ?"); args.append(a[k])
+    cust = auth.is_customer()
+    if cust: where.append("org_id IS NOT NULL AND org_id=? AND archived=0"); args.append(auth.current().get("org_id") or -1)
     sql = (f"SELECT id,series,sample,customer,rating,stage,approver,approver_id,created,updated,archived,verdict,tested,"
-           f"(SELECT group_concat(key) FROM json_each(jobs.data)) AS secs,"
+           f"(SELECT group_concat(key) FROM sections WHERE job_id=jobs.id AND data IS NOT NULL) AS secs,"
            + ",".join(f"(SELECT COUNT(*) FROM json_each(jobs.findings) WHERE json_extract(value,'$.level')='{l}') AS n_{l}" for l in ("pass", "warn", "fail"))
            + " FROM jobs WHERE " + " AND ".join(where) + " ORDER BY updated DESC, id DESC")
     with db() as c: rows = [dict(r) for r in c.execute(sql, args)]
@@ -702,14 +873,19 @@ def jobs():
         j["sections"] = (j.pop("secs") or "").split(",") if j.get("secs") else []
         j["counts"] = {l: j.pop("n_" + l) for l in ("pass", "warn", "fail")}
         j["stage_name"] = "Historical record" if j["archived"] else STAGES[j["stage"]]
+    if cust: rows = [{k: j[k] for k in ("id", "series", "sample", "customer", "rating", "stage", "stage_name", "created", "updated", "verdict")}
+                     | {"verdict": j["verdict"] if j["stage"] == 4 else None} for j in rows]
     return jsonify(rows)
 
 def insert_job(c, b, event, archived=False):
     rq = {**(b.get("request") or {})}
-    cur = c.execute("INSERT INTO jobs(series,sample,customer,rating,data,created,updated,archived,verdict,tested) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (b["series"], b["sample"], b["customer"].strip(), b["rating"].strip(), json.dumps({"request": rq}), now(), now(),
-                     int(archived), b.get("verdict") or None, b.get("tested") or None))
-    log(c, cur.lastrowid, event); return cur.lastrowid
+    # never reuse the id of a deleted job: its audit entries keep pointing at that id for good
+    nid = c.execute("SELECT MAX(x) + 1 FROM (SELECT MAX(id) x FROM jobs UNION ALL SELECT MAX(job_id) FROM audit UNION ALL SELECT 0)").fetchone()[0]
+    cur = c.execute("INSERT INTO jobs(id,series,sample,customer,rating,data,created,updated,archived,verdict,tested,org_id,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (nid, b["series"], b["sample"], b["customer"].strip(), b["rating"].strip(), "{}", now(), now(),
+                     int(archived), b.get("verdict") or None, b.get("tested") or None, b.get("org_id"), me()))
+    integrity.write_section(c, cur.lastrowid, "request", rq, me(), event)
+    log(c, cur.lastrowid, event, kind="job"); return cur.lastrowid
 
 def iso_day(s):
     """A register's test date as YYYY-MM-DD when it can be read (2024-03-18, 18-03-2024, 18/03/2024, 18.03.2024); otherwise kept as written."""
@@ -728,19 +904,29 @@ def register_verdict(s):
     return t
 
 @app.post("/api/jobs")
+@auth.require("job.create")
 def create():
-    b = body(); err = check_ids(b)
+    """New job. With auto_ids the series number (and the sample code, if not typed) is allocated by the system, atomically."""
+    b = body(); auto = bool(b.get("auto_ids"))
+    err = check_ids(b, auto=auto) + org_problem(b)
     if err: return jsonify(error=err), 400
     try:
-        with db() as c: return jsonify(id=insert_job(c, b, "Customer request captured")), 201
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")  # numbering and insert in one write transaction: two people cannot get the same number
+            if auto:
+                b["series"] = integrity.allocate(c, "series")
+                if b["sample"] == "NA": b["sample"] = integrity.allocate(c, "sample")
+            i = insert_job(c, b, "Customer request captured" + (f" (series {b['series']} allocated)" if auto else ""))
+        return jsonify(id=i, series=b["series"], sample=b["sample"]), 201
     except sqlite3.IntegrityError: return jsonify(error=["Series number already exists"]), 409
 
 @app.post("/api/jobs/from-file")
+@auth.require("job.create")
 def create_from_file():
     """New request from a data file: the series number and request details come from the file (or the form, if typed)."""
     b = body(); name, raw = upload(b)
     typed = str(b.get("series") or "").strip().upper() or None
-    content, kind, notes = importers.load_test_data(name, raw, typed)
+    content, kind, notes, used = excel_routes.load_any(name, raw, typed)
     if not isinstance(content, dict) or not content: return jsonify(error=["No test data found in this file"]), 400
     rq, wk = content.get("request") or {}, content.get("work") or {}
     ids = (content.get("ids") or {}).get("work") or [None, None]
@@ -754,13 +940,15 @@ def create_from_file():
     try:
         with db() as c: i = insert_job(c, new, f"Customer request created from {name}")
     except sqlite3.IntegrityError: return jsonify(error=[f"Series {series} already exists. Open that job, or type a different series number."]), 409
-    r = apply_import(getjob(i), i, name, content, kind, notes)
+    r = apply_import(getjob(i), i, name, content, kind, notes, raw, templates=used)
     if isinstance(r, tuple): return jsonify(id=i, warning=r[0].get_json().get("error")), 201  # job exists; import problem shown on its page
     return jsonify(id=i, **r.get_json()), 201
 
 @app.post("/api/read-scan")
+@auth.require("job.create")
 def read_scan():
     """AI reading of a customer request form or work instruction before the job exists (pre-fills the New request form)."""
+    if not scan_on(): return scan_off()
     b = body(); k = b.get("section") if b.get("section") in ("request", "work") else "request"
     name, raw = upload(b)
     if len(raw) > importers.MAX_BYTES: raise importers.ImportError_("File is too large (20 MB maximum)")
@@ -770,43 +958,88 @@ def read_scan():
     return jsonify(out)
 
 @app.get("/api/jobs/<int:i>")
-def one(i): return jsonify(getjob(i))
+@auth.require("jobs.view")
+def one(i):
+    j = getjob(i)
+    return jsonify(customer_view(j) if auth.is_customer() else j)
+
+def partial_list(i):
+    with db() as c: return [dict(version=r[0], at=r[1], sha256=r[2]) for r in c.execute("SELECT version, at, sha256 FROM partials WHERE job_id=? ORDER BY version DESC", (i,))]
+
+def customer_view(j):
+    """What a customer sees of their own job: progress per test and the released report. No values, findings, files or
+    names of laboratory staff (values only appear once a report section is approved)."""
+    rels = [r for r in j["reports"] if r["approver"]]
+    rel = rels[0] if rels else None
+    reasons = {a["from_version"]: a["reason"] for a in j["amendments"]}
+    versions = [dict(version=r["version"], at=r["at"], token=r["token"], sha256=r["sha256"], superseded=n > 0,
+                     amendment_reason=reasons.get(r["version"]) if n > 0 else None) for n, r in enumerate(rels)]
+    return dict(id=j["id"], series=j["series"], sample=j["sample"], customer=j["customer"], rating=j["rating"], created=j["created"], versions=versions,
+                amendment_open=bool(j.get("amend")), amendment_reason=(j.get("amend") or {}).get("reason"), target=j.get("cutoff"),
+                partials=partial_list(j["id"]),
+                stage=j["stage"], stage_name=j["stage_name"], released=bool(rel), verdict=j.get("verdict") if rel else None,
+                progress=[{k: p[k] for k in ("key", "name", "state")} for p in j["progress"]], counts=j["counts"],
+                report=dict(version=rel["version"], token=rel["token"], at=rel["at"], sha256=rel["sha256"]) if rel else None)
 
 # ---- data collection: JSON, CSV, Excel, SQLite database
 @app.post("/api/jobs/<int:i>/import")
+@auth.require("data.write")
 def imp(i):
     j = getjob(i); b = body(); notes = []
-    if isinstance(b.get("content"), dict): name, content, kind = str(b.get("filename") or "upload"), b["content"], "json"
+    if locked(j): return locked(j)
+    bay = bay_of(b)
+    if isinstance(b.get("content"), dict):
+        name, content, kind = str(b.get("filename") or "upload"), b["content"], "json"; raw = integrity.canon(content).encode()
     else:
-        name, raw = upload(b); content, kind, notes = importers.load_test_data(name, raw, j["series"])
-    return apply_import(j, i, name, content, kind, notes)
+        name, raw = upload(b); content, kind, notes, used = excel_routes.load_any(name, raw, j["series"])
+        return apply_import(j, i, name, content, kind, notes, raw, bay, templates=used)
+    return apply_import(j, i, name, content, kind, notes, raw, bay)
 
-def apply_import(j, i, name, content, kind, notes):
-    """Merge imported sections into a job (also used when a job is created from a file)."""
+MIMES = {"json": "application/json", "csv": "text/csv", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "sqlite": "application/vnd.sqlite3"}
+
+def apply_import(j, i, name, content, kind, notes, raw, bay=None, templates=None):
+    """Write the imported sections (also used when a job is created from a file). The file is kept byte-for-byte with its
+    SHA-256; each section it brings becomes a new revision of that section only, so other people's sections are untouched."""
     ok = set(NAMES) | {"ids", "other"}
     if not isinstance(content, dict) or not content or not set(content) <= ok:
         return jsonify(error=["Unrecognised file: expected sections " + ", ".join(NAMES)]), 400
     bad = [k for k, v in content.items() if not isinstance(v, dict)]
     if bad: return jsonify(error=[f"Section '{k}' must contain named fields" for k in bad]), 400
     sha = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
-    try:
-        brought = {k: (sorted(map(str, v)) if k in ("ids", "other") else True) for k, v in content.items() if k != "request"}
-        with db() as c: c.execute("INSERT INTO imports(job_id,source,kind,sha256,at,sections) VALUES(?,?,?,?,?,?)",
-                                  (i, name, kind, sha, now(), json.dumps(brought)))
-    except sqlite3.IntegrityError: return jsonify(error=["Duplicate file - identical content already imported for this job"]), 409
     if isinstance(content.get("other"), dict):  # additional log sheets: cleaned, added alongside any already on the job
         content["other"] = {str(k): clean_other(v) for k, v in content["other"].items() if isinstance(v, dict)}
-    d = j["data"]
-    for k, v in content.items(): d[k] = {**d.get(k, {}), **v} if k in ("ids", "request", "other") else v
+    brought = {k: (sorted(map(str, v)) if k in ("ids", "other") else True) for k, v in content.items() if k != "request"}
     label = {"json": "JSON", "csv": "CSV", "xlsx": "Excel", "sqlite": "database"}[kind]
-    data_changed(j, d, f"Imported {label} file {name} ({', '.join(content)})" + (f" [{'; '.join(notes)}]" if notes else ""))
+    event = f"Imported {label} file {name} ({', '.join(content)})" + (f" [{'; '.join(notes)}]" if notes else "")
+    try:
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            why = write_check(c, i, list(content))
+            if why: return refuse(c, i, *why)
+            fid = integrity.store_file(c, i, name, raw, MIMES[kind], me())
+            imp_id = c.execute("INSERT INTO imports(job_id,source,kind,sha256,at,sections,user_id,file_id) VALUES(?,?,?,?,?,?,?,?)",
+                               (i, name, kind, sha, now(), json.dumps(brought), me(), fid)).lastrowid
+            for k, v in content.items():
+                if k in integrity.MERGED: v = {**(integrity.read_section(c, i, k) or {}), **v}  # read and write in one transaction
+                sb = bay
+                if not sb:  # no bay chosen at upload: the bay the test was assigned to
+                    r = c.execute("SELECT b.id, b.name FROM assignments a JOIN bays b ON b.id=a.bay_id WHERE a.job_id=? AND a.key=?", (i, k)).fetchone()
+                    sb = (r[0], r[1]) if r else None
+                integrity.write_section(c, i, k, v, me(), f"Imported from {name}" + (f" (bay {sb[1]})" if sb else ""), file_id=fid, import_id=imp_id, bay=sb,
+                                        template_id=(templates or {}).get(k))
+            after_change(c, i, event + (f" in bay {bay[1]}" if bay else "") + f" (file SHA-256 {integrity.sha(raw)[:12]}...)")
+            notify.on_uploaded(c, i, list(content))
+    except sqlite3.IntegrityError: return jsonify(error=["Duplicate file - identical content already imported for this job"]), 409
     return jsonify(ok=True, kind=kind, sections=list(content), notes=notes)
 
 @app.delete("/api/jobs/<int:i>/imports/<int:imp>")
+@auth.require("data.write")
 def remove_import(i, imp):
     """Undo one imported data file: the documents it brought in are taken out of the job (the customer request stays, and
-    a document edited by hand since then goes too). The same file can then be imported again. Checks and report are redone."""
+    a document edited by hand since then goes too). The same file can then be imported again. Checks and report are redone.
+    The stored file and every earlier revision of the sections stay in the history."""
     j = getjob(i)
+    if locked(j): return locked(j)
     if j["stage"] >= 3: return jsonify(error=["A report has been generated from this data. Withdraw the report first, then remove the file."]), 409
     row = next((x for x in j["imports"] if x["id"] == imp), None)
     if not row: return jsonify(error=["This file is not part of the job"]), 404
@@ -815,26 +1048,51 @@ def remove_import(i, imp):
         if len(j["imports"]) > 1: return jsonify(error=["This file was imported before the app recorded which documents it contained. "
                                                         "Remove its documents one by one under Sources instead."]), 409
         secs = {k: True for k in j["data"] if k != "request"}  # the only import: everything but the request came from it or was typed
-    d = j["data"]
-    for k, sub in secs.items():
-        if k == "request": continue
-        if sub is True: d.pop(k, None)
-        elif isinstance(d.get(k), dict):
-            for x in sub: d[k].pop(x, None)
-            if not d[k]: del d[k]
-    with db() as c: c.execute("DELETE FROM imports WHERE id=? AND job_id=?", (imp, i))
-    data_changed(j, d, f"Imported file {row['source']} removed ({', '.join({'ids': 'Identifiers on each sheet', 'other': 'additional log sheets'}.get(k) or NAMES.get(k, k) for k in secs if k != 'request') or 'no documents'})")
+    what = ', '.join({'ids': 'Identifiers on each sheet', 'other': 'additional log sheets'}.get(k) or NAMES.get(k, k) for k in secs if k != 'request') or 'no documents'
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        why = write_check(c, i, [k for k in secs if k != "request"])
+        if why: return refuse(c, i, *why)
+        for k, sub in secs.items():
+            if k == "request": continue
+            if sub is True: integrity.write_section(c, i, k, None, me(), f"Removed with imported file {row['source']}")
+            else:
+                cur = integrity.read_section(c, i, k)
+                if isinstance(cur, dict):
+                    for x in sub: cur.pop(x, None)
+                    integrity.write_section(c, i, k, cur or None, me(), f"Removed with imported file {row['source']}")
+        c.execute("DELETE FROM imports WHERE id=? AND job_id=?", (imp, i))
+        after_change(c, i, f"Imported file {row['source']} removed ({what})")
     return jsonify(ok=True, stage=getjob(i, False)["stage"])
 
 @app.post("/api/jobs/<int:i>/section")
+@auth.require("data.write")
 def section(i):
-    """Save one section typed or corrected by hand (also used to accept an AI reading after review)."""
+    """Save one section typed or corrected by hand (also used to accept an AI reading after review).
+    revision: the section revision the editor started from. If someone changed it since, nothing is saved (409)."""
     j = getjob(i); b = body(); k = b.get("section")
+    if locked(j): return locked(j)
     if k == "other": return save_other(j, b)
     if k not in set(NAMES) | {"ids"} or not isinstance(b.get("data"), dict): return jsonify(error=["Choose a section and provide its fields"]), 400
-    d = j["data"]; d[k] = b["data"]
-    data_changed(j, d, f"{NAMES.get(k, 'Identifiers')} {'entered from AI reading of ' + str(b['source'])[:120] + ' after review' if b.get('source') else 'edited by hand'}")
+    how = 'entered from AI reading of ' + str(b['source'])[:120] + ' after review' if b.get('source') else 'edited by hand'
+    try:
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            why = write_check(c, i, [k])
+            if why: return refuse(c, i, *why)
+            integrity.write_section(c, i, k, b["data"], me(), f"{NAMES.get(k, 'Identifiers')} {how}", expect=expected(c, i, k, b), bay=bay_of(b))
+            after_change(c, i, f"{NAMES.get(k, 'Identifiers')} {how}")
+            notify.on_uploaded(c, i, [k])
+    except Conflict as e: return conflict(e)
     return jsonify(ok=True)
+
+def expected(c, i, k, b):
+    """The revision an edit must start from. A section that already exists cannot be overwritten blind."""
+    rev = b.get("revision")
+    if isinstance(rev, int) and not isinstance(rev, bool): return rev
+    row = c.execute("SELECT * FROM sections WHERE job_id=? AND key=?", (i, k)).fetchone()
+    if row: raise Conflict(k, row)
+    return 0
 
 def clean_other(o):
     """An additional log sheet: title, labelled fields and tables, whatever their shape when they arrive."""
@@ -856,37 +1114,58 @@ def clean_other(o):
 
 def save_other(j, b):
     if not isinstance(b.get("data"), dict): return jsonify(error=["Provide the sheet's fields"]), 400
-    d = j["data"]; others = d.setdefault("other", {})
-    key = str(b.get("key") or "")
-    if not re.fullmatch(r"x\d{1,4}", key):
-        n = 1
-        while f"x{n}" in others: n += 1
-        key = f"x{n}"
-    sheet = clean_other(b["data"]); others[key] = sheet
-    data_changed(j, d, f"Additional log sheet '{sheet['title']}' " + (f"entered from AI reading of {str(b['source'])[:120]} after review" if b.get("source") else "edited by hand"))
+    i = j["id"]; sheet = clean_other(b["data"])
+    how = f"entered from AI reading of {str(b['source'])[:120]} after review" if b.get("source") else "edited by hand"
+    try:
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            exp = expected(c, i, "other", b)
+            others = integrity.read_section(c, i, "other") or {}
+            key = str(b.get("key") or "")
+            if not re.fullmatch(r"x\d{1,4}", key):
+                n = 1
+                while f"x{n}" in others: n += 1
+                key = f"x{n}"
+            others[key] = sheet
+            integrity.write_section(c, i, "other", others, me(), f"Additional log sheet '{sheet['title']}' {how}", expect=exp)
+            after_change(c, i, f"Additional log sheet '{sheet['title']}' {how}")
+    except Conflict as e: return conflict(e)
     return jsonify(ok=True, key=key)
 
 @app.delete("/api/jobs/<int:i>/section/<k>")
+@auth.require("data.write")
 def remove_section(i, k):
-    """Detach one document's data from the job; the checks and the report must be redone. The customer request stays."""
+    """Detach one document's data from the job; the checks and the report must be redone. The customer request stays.
+    The removed data stays in the section history."""
+    j = getjob(i)
+    if locked(j): return locked(j)
     if k.startswith("other:"):
-        j = getjob(i); d = j["data"]; key = k[6:]
-        if key not in (d.get("other") or {}): return jsonify(error=["This log sheet is not part of the job"]), 404
-        title = d["other"].pop(key).get("title", "Additional log sheet")
-        if not d["other"]: del d["other"]
-        data_changed(j, d, f"Additional log sheet '{title}' removed from the job"); return jsonify(ok=True)
+        key = k[6:]
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            others = integrity.read_section(c, i, "other") or {}
+            if key not in others: return jsonify(error=["This log sheet is not part of the job"]), 404
+            title = others.pop(key).get("title", "Additional log sheet")
+            integrity.write_section(c, i, "other", others or None, me(), f"Additional log sheet '{title}' removed")
+            after_change(c, i, f"Additional log sheet '{title}' removed from the job")
+        return jsonify(ok=True)
     if k not in set(NAMES) - {"request"} | {"ids"}: return jsonify(error=["This document cannot be removed"]), 400
-    j = getjob(i); d = j["data"]
-    if k not in d: return jsonify(error=["This document is not part of the job"]), 404
-    del d[k]
-    data_changed(j, d, f"{NAMES.get(k, 'Identifiers on each sheet')} removed from the job")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        why = write_check(c, i, [k])
+        if why: return refuse(c, i, *why)
+        if integrity.write_section(c, i, k, None, me(), f"{NAMES.get(k, 'Identifiers on each sheet')} removed") is None:
+            return jsonify(error=["This document is not part of the job"]), 404
+        after_change(c, i, f"{NAMES.get(k, 'Identifiers on each sheet')} removed from the job")
     return jsonify(ok=True)
 
 @app.get("/api/jobs/<int:i>/export/<fmt>")
+@auth.require("data.export")
 def export(i, fmt):
     j = getjob(i, False); return send_export(j["data"], fmt, j["series"])
 
 @app.get("/api/template/<fmt>")
+@auth.require("data.export")
 def template(fmt): return send_export(load_demo(), fmt, "ALETHEIA_template", series="CPRIBLRSCL25T1654")
 
 def send_export(d, fmt, name, series=None):
@@ -899,6 +1178,7 @@ def send_export(d, fmt, name, series=None):
 
 # ---- existing registers: bulk-create historical records from a spreadsheet, CSV or database
 @app.post("/api/import-register")
+@auth.require("register.import")
 def register():
     name, raw = upload(body()); recs, table = importers.load_register(name, raw); made, skipped = [], []
     for n, r in enumerate(recs, 1):
@@ -913,12 +1193,17 @@ def register():
     return jsonify(created=len(made), ids=made, skipped=skipped, table=table, rows=len(recs))
 
 @app.get("/api/register-template.csv")
+@auth.require("register.import")
 def register_template():
     rows = ("series,sample,customer,rating,address,serial,tests,standard,witness,conformity,test date,result\n"
             "CPRIBLRSCL25T1601,HVD25S0801,Example Transformers Pvt Ltd,100 kVA / 11 kV / 433 V,\"Plot 1, Industrial Area, Bengaluru\",2201,Type test,IS 1180,,,2025-01-14,Complies\n")
     return send_file(io.BytesIO(rows.encode("utf-8-sig")), mimetype="text/csv", as_attachment=True, download_name="ALETHEIA_register_template.csv")
 
 # ---- source documents (scans / photographs kept as evidence) and optional AI reading
+# Scanning (AI reading of photographed sheets) is an optional fallback since Excel became the primary input (NEXT_STEPS.md 8).
+scan_on = lambda: app.config.get("FEATURE_SCAN", os.environ.get("ALETHEIA_FEATURE_SCAN", "0") == "1")
+def scan_off(): return jsonify(error=["Scanning (AI reading of sheets) is turned off on this server; set ALETHEIA_FEATURE_SCAN=1 to enable it"]), 404
+
 def sniff(raw):
     if raw.startswith(b"%PDF-"): return "application/pdf"
     if raw.startswith(b"\x89PNG\r\n\x1a\n"): return "image/png"
@@ -927,8 +1212,11 @@ def sniff(raw):
     raise importers.ImportError_("Source documents must be PDF, PNG, JPEG or WebP")
 
 @app.post("/api/jobs/<int:i>/sources")
+@auth.require("data.write")
 def add_source(i):
-    getjob(i, False); name, raw = upload(body())
+    j = getjob(i, False)
+    if locked(j): return locked(j)
+    name, raw = upload(body())
     if len(raw) > importers.MAX_BYTES: raise importers.ImportError_("File is too large (20 MB maximum)")
     try:
         with db() as c: return jsonify(id=insert_source(c, i, name, raw)), 201
@@ -937,28 +1225,34 @@ def add_source(i):
 def insert_source(c, i, name, raw):
     """Store a scanned sheet with its fingerprint. Raises IntegrityError if the same file is already attached to the job."""
     mime = sniff(raw); sha = hashlib.sha256(raw).hexdigest()
-    cur = c.execute("INSERT INTO sources(job_id,filename,mime,sha256,content,at) VALUES(?,?,?,?,?,?)", (i, name, mime, sha, raw, now()))
-    log(c, i, f"Source document attached: {name} (SHA-256 {sha[:12]}...)"); return cur.lastrowid
+    cur = c.execute("INSERT INTO sources(job_id,filename,mime,sha256,content,at,user_id) VALUES(?,?,?,?,?,?,?)", (i, name, mime, sha, raw, now(), me()))
+    log(c, i, f"Source document attached: {name} (SHA-256 {sha[:12]}...)", kind="data"); return cur.lastrowid
 
 def source_row(sid):
     with db() as c: r = c.execute("SELECT * FROM sources WHERE id=?", (sid,)).fetchone()
     if not r: abort(404)
+    getjob(r["job_id"], False)  # same visibility rule as the job itself
     return r
 
 @app.get("/api/sources/<int:sid>")
+@auth.require("sources.view")
 def get_source(sid):
     r = source_row(sid); resp = send_file(io.BytesIO(r["content"]), mimetype=r["mime"], download_name=r["filename"])
     resp.headers["X-Content-Type-Options"] = "nosniff"; return resp
 
 @app.delete("/api/sources/<int:sid>")
+@auth.require("data.write")
 def del_source(sid):
     r = source_row(sid)
-    with db() as c: c.execute("DELETE FROM sources WHERE id=?", (sid,)); log(c, r["job_id"], f"Source document removed: {r['filename']}")
+    if locked(getjob(r["job_id"], False)): return locked(getjob(r["job_id"], False))
+    with db() as c: c.execute("DELETE FROM sources WHERE id=?", (sid,)); log(c, r["job_id"], f"Source document removed: {r['filename']}", kind="data")
     return jsonify(ok=True)
 
 @app.post("/api/sources/<int:sid>/extract")
+@auth.require("data.write")
 def extract(sid):
     """Ask Gemini for a proposal for one section. Nothing is saved until the engineer reviews it and posts it to /section."""
+    if not scan_on(): return scan_off()
     r = source_row(sid); b = body(); k = b.get("section")
     if k not in NAMES and k != "other": return jsonify(error=["Choose which document this is"]), 400
     example = vision.OTHER_LAYOUT if k == "other" else load_demo().get(k, {})
@@ -966,146 +1260,588 @@ def extract(sid):
         out = vision.extract(c, r["content"], r["mime"], k, NAMES.get(k, "Other laboratory log sheet"), example, app.config.get("VISION_TRANSPORT"),
                              sha=r["sha256"], cache_path=AI_CACHE, fresh=bool(b.get("fresh")),
                              part=b.get("part") if isinstance(b.get("part"), int) else None)
-        log(c, r["job_id"], f"AI reading {'reused from cache' if out['cached'] else 'requested'} for {r['filename']} as {NAMES.get(k, 'other log sheet')} (proposal only, not saved)")
+        log(c, r["job_id"], f"AI reading {'reused from cache' if out['cached'] else 'requested'} for {r['filename']} as {NAMES.get(k, 'other log sheet')} (proposal only, not saved)", kind="data")
     return jsonify(out)
 
 # ---- validate, generate, approve
 @app.post("/api/jobs/<int:i>/validate")
+@auth.require("data.check")
 def val(i):
-    j = getjob(i); F, _ = safe_validate(j["data"]); fails = sum(f["level"] == "fail" for f in F); blocks = len(blocking(F))
+    j = getjob(i)
+    if locked(j): return locked(j)
+    F, _ = safe_validate(j["data"]); fails = sum(f["level"] == "fail" for f in F); blocks = len(blocking(F))
     done = {(f["check"], f["detail"]) for f in j["findings"] if f.get("reviewed")}  # unchanged items keep their review
     for f in F:
         if f["level"] in ("warn", "fail") and not f.get("blocks") and (f["check"], f["detail"]) in done: f["reviewed"] = True
     # only data errors hold the job back; a sample that fails a requirement goes on to a "does not comply" report
     save(i, findings=F, stage=max(j["stage"], 2) if not blocks else min(j["stage"], 1), verdict=verdict_of(F))
     with db() as c: log(c, i, f"Validation run: {sum(f['level'] == 'pass' for f in F)} pass, {sum(f['level'] == 'warn' for f in F)} warn, {fails} fail"
-                         + (f" ({blocks} data error{'s' if blocks > 1 else ''} to correct)" if blocks else ""))
+                         + (f" ({blocks} data error{'s' if blocks > 1 else ''} to correct)" if blocks else ""), kind="check")
     return jsonify(findings=F)
 
 @app.post("/api/jobs/<int:i>/review")
+@auth.require("data.check")
 def review(i):
     """Mark one flagged check as reviewed, or confirm a failed requirement as a genuine result (it is then reported as not met).
     Data errors (blocks) cannot be reviewed: they must be corrected."""
     j = getjob(i); b = body(); F = j["findings"]; n = b.get("index")
+    if locked(j): return locked(j)
     if not isinstance(n, int) or not 0 <= n < len(F): return jsonify(error=["No such check"]), 400
     if F[n].get("blocks"): return jsonify(error=["This is a data error and cannot be marked as reviewed: correct the data and run the checks again"]), 409
     if F[n]["level"] not in ("warn", "fail"): return jsonify(error=["Only flagged items need review"]), 400
     F[n]["reviewed"] = bool(b.get("reviewed", True)); save(i, findings=F)
     what = ("Failure confirmed" if F[n]["reviewed"] else "Failure confirmation withdrawn") if F[n]["level"] == "fail" else ("Reviewed" if F[n]["reviewed"] else "Review withdrawn")
-    with db() as c: log(c, i, f"{what}: {F[n]['check']} - {F[n]['detail'][:90]}")
+    with db() as c: log(c, i, f"{what}: {F[n]['check']} - {F[n]['detail'][:90]}", kind="check")
     return jsonify(findings=F)
 
 @app.post("/api/jobs/<int:i>/generate")
+@auth.require("report.generate")
 def gen(i):
     j = getjob(i)
+    if locked(j): return locked(j)
     if j["stage"] < 2: return jsonify(error=["Run the checks and correct any data errors before generating"]), 409
-    left = [f["check"] for f in j["findings"] if f["level"] in ("warn", "fail") and not f.get("reviewed")]
+    left = [f["check"] for f in j["findings"] if f["level"] in ("warn", "fail") and not f.get("reviewed") and not f.get("advisory")]
     if left: return jsonify(error=[f"Review every flagged item before the report is built ({len(left)} left)"]), 409
+    if j["signoff_blockers"]: return jsonify(error=["Every test must be verified (or marked not applicable) first:"] + j["signoff_blockers"]), 409
+    if not j["signoff"]: return jsonify(error=["A verifier must sign off the job ('all data correct') before the report is built"]), 409
     t = dt.datetime.now()
     try: v, sha = freeze(j)
     except Exception as e:  # noqa: BLE001
         return jsonify(error=[f"The report could not be built from this data ({type(e).__name__}: {e}). Correct the data and run the checks again."]), 400
     ms = int((dt.datetime.now() - t).total_seconds() * 1000)
     save(i, stage=max(j["stage"], 3))
-    with db() as c: log(c, i, f"Report generated in {ms} ms (version {v}, SHA-256 {sha[:12]}...)")
+    with db() as c:
+        log(c, i, f"Report generated in {ms} ms (version {v}, SHA-256 {sha[:12]}...)", kind="report")
+        notify.on_ready_to_approve(c, i)
     return jsonify(ms=ms, version=v, sha256=sha)
 
 @app.post("/api/jobs/<int:i>/approve")
+@auth.require("report.approve")
 def approve(i):
-    """The approver's name and employee ID are both required; both are printed on the report and kept with each version."""
-    j = getjob(i); b = body(); name, emp = str(b.get("name") or "").strip(), str(b.get("employee_id") or "").strip().upper()
+    """The approver is the signed-in account: name and employee ID come from the user record and are printed on the report.
+    The approver re-enters their password to sign, and must not have imported, entered or checked this job's data."""
+    j = getjob(i); b = body(); u = auth.current()
     if j["stage"] < 3: return jsonify(error=["Generate the report before approving it"]), 409
-    err = ([] if name else ["Enter the approver's name"]) + (
-        ["Enter the approver's employee ID"] if not emp else [] if re.fullmatch(EMP_RE, emp) else ["Employee ID must be 2-20 letters, digits, '-' or '/'"])
-    if err: return jsonify(error=err), 400
+    if not u.get("employee_id"): return jsonify(error=["Your account has no employee ID; ask an administrator to add it"]), 400
+    gaps = workflow.intake_complete(j)
+    if gaps: return jsonify(error=gaps + ["Complete the intake (Intake details on the job page) before release: the report is a legal document"]), 409
+    if app.config.get("REAUTH_ON_RELEASE", True) and not auth.reauth(b.get("password")):
+        with db() as c: log(c, i, "Release signature refused: password not confirmed", kind="denied")
+        return jsonify(error=["Re-enter your password to sign the release"]), 403
+    with db() as c:
+        touched = c.execute("SELECT 1 FROM audit WHERE job_id=? AND user_id=? AND kind IN ('data','check','verify') LIMIT 1", (i, u["id"])).fetchone()
+        if touched:
+            log(c, i, "Approval refused: the approver worked on this job's data or checks", kind="denied")
+            return jsonify(error=["You imported, entered or checked data on this job, so a different person must approve it"]), 403
     person = lambda s: re.sub(r"[^a-z]", "", str(s or "").lower())
-    if person(name) and person(name) == person((j["data"].get("work") or {}).get("engineer")):
+    if person(u["full_name"]) and person(u["full_name"]) == person((j["data"].get("work") or {}).get("engineer")):
         return jsonify(error=["The test engineer who prepared this report cannot also approve it; a second person must approve"]), 403
-    staff = {x.strip().upper() for x in os.environ.get("ALETHEIA_APPROVERS", "").split(",") if x.strip()}
-    if staff and emp not in staff: return jsonify(error=[f"Employee ID {emp} is not on the list of authorised approvers"]), 403
-    save(i, stage=4, approver=name, approver_id=emp); v, sha = freeze(getjob(i))
-    with db() as c: log(c, i, f"Approved by {signed(name, emp)}; released for export (version {v}, SHA-256 {sha[:12]}...)")
+    name, emp = u["full_name"], u["employee_id"]
+    try: v, sha = freeze(dict(j, approver=name, approver_id=emp, stage=4))
+    except Exception as e:  # noqa: BLE001
+        return jsonify(error=[f"The report could not be built ({type(e).__name__}: {e}); nothing was released"]), 400
+    with db() as c:
+        done = now(); same = (done <= j["cutoff"] + ":59") if j.get("cutoff") else None  # the same-day target (7.2)
+        c.execute("UPDATE jobs SET stage=4, approver=?, approver_id=?, amend=NULL, updated=?, completed_at=COALESCE(completed_at, ?), "
+                  "same_day=COALESCE(same_day, ?) WHERE id=?", (name, emp, done, done, None if same is None else int(same), i))
+        notify.on_released(c, i, v)
+        if j.get("amend"):
+            c.execute("UPDATE amendments SET closed_at=?, new_version=? WHERE job_id=? AND closed_at IS NULL", (now(), v, i))
+        log(c, i, f"Approved by {signed(name, emp)}; released for export (version {v}, SHA-256 {sha[:12]}...)"
+                  + (f"; supersedes the earlier release (amendment: {j['amend']['reason']})" if j.get("amend") else ""), kind="approve")
     return jsonify(ok=True, version=v)
+
+@app.post("/api/jobs/<int:i>/amend")
+@auth.require("report.amend")
+def amend(i):
+    """Correct a released report by superseding it (NEXT_STEPS.md 6.5). An approver and a second approver sign the reason;
+    only the named tests reopen; the usual upload, verify, sign-off and approval give version n+1. The released version
+    stays stored, downloadable and verifiable, marked superseded once the new one is released."""
+    j = getjob(i); b = body(); u = auth.current()
+    if not j["released"]: return jsonify(error=["Only a released report is amended; an unreleased job is simply corrected"]), 409
+    reason = re.sub(r"\s+", " ", str(b.get("reason") or "")).strip()
+    keys = [k for k in (b.get("sections") or []) if isinstance(k, str)]
+    err = ([] if len(reason) >= 10 else ["Give the reason for the amendment (it is printed on the new version)"]) + \
+          ([] if keys else ["Name the tests that must be corrected"]) + \
+          [f"Unknown test: {k}" for k in keys if k not in NAMES and k not in ("ids", "other")]
+    if err: return jsonify(error=err), 400
+    if not auth.reauth(b.get("password")): return jsonify(error=["Re-enter your password to sign the amendment"]), 403
+    second, why = auth.second_signer((b.get("second") or {}).get("username"), (b.get("second") or {}).get("password"), "approver")
+    if not second: return jsonify(error=[why]), 403
+    rel = next(r for r in j["reports"] if r["approver"])
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        am = dict(reason=reason, sections=keys, opened_by=u["full_name"], second_signer=second["full_name"], opened_at=now(), from_version=rel["version"])
+        c.execute("UPDATE jobs SET amend=?, stage=1, approver=NULL, approver_id=NULL, findings='[]', verdict=NULL, signed_off_by=NULL, signed_off_at=NULL, updated=? WHERE id=?",
+                  (json.dumps(am), now(), i))
+        c.execute("INSERT INTO amendments(job_id,from_version,reason,sections,opened_by,second_signer,opened_at) VALUES(?,?,?,?,?,?,?)",
+                  (i, rel["version"], reason, json.dumps(keys), u["id"], second["id"], now()))
+        for k in keys:
+            if k == "request":  # the intake must be read back against the original again
+                it = workflow.loads(c.execute("SELECT intake FROM jobs WHERE id=?", (i,)).fetchone()[0], {})
+                c.execute("UPDATE jobs SET intake=? WHERE id=?", (json.dumps(dict(it, checked_by=None, checked_at=None)), i)); continue
+            if c.execute("SELECT 1 FROM sections WHERE job_id=? AND key=?", (i, k)).fetchone():
+                integrity.set_state(c, i, k, "returned", u["id"], f"Reopened by amendment: {reason}", note=f"Amendment: {reason}")
+        log(c, i, f"Amendment of version {rel['version']} opened by {u['full_name']} with {second['full_name']} as second signer; "
+                  f"tests reopened: {', '.join(NAMES.get(k, k) for k in keys)}; reason: {reason}", kind="approve")
+    return jsonify(ok=True, from_version=rel["version"])
 
 def latest(i):
     with db() as c: return c.execute("SELECT * FROM reports WHERE job_id=? ORDER BY version DESC LIMIT 1", (i,)).fetchone()
 
 @app.get("/api/jobs/<int:i>/report.pdf")
+@auth.require("report.view")
 def pdf(i):
     j = getjob(i, False); r = latest(i) if j["stage"] >= 3 else None
+    if auth.is_customer():  # the newest released version, or an earlier one asked for by number
+        with db() as c:
+            q = "SELECT * FROM reports WHERE job_id=? AND approver IS NOT NULL" + (" AND version=?" if request.args.get("v", "").isdigit() else "") + " ORDER BY version DESC LIMIT 1"
+            r = c.execute(q, (i, int(request.args["v"])) if request.args.get("v", "").isdigit() else (i,)).fetchone()
+        if not r: return jsonify(error=["The report has not been released yet"]), 409
+    elif request.args.get("v", "").isdigit():
+        with db() as c: r = c.execute("SELECT * FROM reports WHERE job_id=? AND version=?", (i, int(request.args["v"]))).fetchone()
     if not r: return jsonify(error=["Report not generated yet"]), 409
     return send_file(io.BytesIO(r["pdf"]), mimetype="application/pdf", as_attachment=request.args.get("dl") == "1", download_name=f"TestReport_{j['series']}_v{r['version']}.pdf")
 
 @app.get("/api/verify/<token>")
+@auth.public
 def verify(token):
     with db() as c:
         r = c.execute("SELECT * FROM reports WHERE token=?", (token,)).fetchone()
         if not r: return jsonify(error=["Unknown report code"]), 404
         j = c.execute("SELECT series,sample,customer,stage FROM jobs WHERE id=?", (r["job_id"],)).fetchone()
         newest = c.execute("SELECT MAX(version) FROM reports WHERE job_id=?", (r["job_id"],)).fetchone()[0]
-    intact = hashlib.sha256(r["pdf"]).hexdigest() == r["sha256"]; current = r["version"] == newest and j["stage"] >= 3
+        later = c.execute("SELECT MIN(version) FROM reports WHERE job_id=? AND approver IS NOT NULL AND version>?", (r["job_id"], r["version"])).fetchone()[0]
+        am = c.execute("SELECT reason, opened_at FROM amendments WHERE job_id=? AND from_version=? ORDER BY id DESC LIMIT 1", (r["job_id"], r["version"])).fetchone()
+    intact = hashlib.sha256(r["pdf"]).hexdigest() == r["sha256"]
+    released = bool(r["approver"])
+    current = (released and later is None) or (not released and r["version"] == newest and j["stage"] in (3,))
+    m = json.loads(r["manifest"]) if r["manifest"] else None
     return jsonify(series=j["series"], sample=j["sample"], customer=j["customer"], version=r["version"], sha256=r["sha256"], generated=r["at"],
-                   approver=r["approver"], approver_id=r["approver_id"], intact=intact, current=current, approved=bool(r["approver"]) and current and j["stage"] == 4)
+                   approver=r["approver"], approver_id=r["approver_id"], intact=intact, current=current, approved=released and later is None,
+                   superseded_by=later, amendment=dict(reason=am["reason"], opened_at=am["opened_at"]) if am else None,
+                   manifest_sha256=r["manifest_sha256"], manifest_ok=(integrity.sha(r["manifest"]) == r["manifest_sha256"]) if r["manifest"] else None,
+                   sections=[{k: s.get(k) for k in ("test", "revision", "data_sha256", "file_sha256", "template", "uploaded_by", "verified_by")} for s in m["sections"] if s["key"] != "request"] if m else None)
 
 @app.get("/api/verify/<token>/report.pdf")
+@auth.public
 def verify_pdf(token):
-    """The customer's copy: anyone holding the link (or the QR code) can download the report, but only while it is the
-    current, approved version. Superseded or withdrawn versions are not handed out."""
+    """The customer's copy: anyone holding the link (or the QR code) can download a released version. A superseded version
+    is still handed out (it is part of the record); the verification page says it was superseded and why."""
     with db() as c:
         r = c.execute("SELECT * FROM reports WHERE token=?", (token,)).fetchone()
         if not r: return jsonify(error=["Unknown report code"]), 404
         j = c.execute("SELECT series,stage FROM jobs WHERE id=?", (r["job_id"],)).fetchone()
         newest = c.execute("SELECT MAX(version) FROM reports WHERE job_id=?", (r["job_id"],)).fetchone()[0]
-    if not (r["approver"] and r["version"] == newest and j["stage"] == 4):
-        return jsonify(error=["This version is not the current approved report"]), 409
-    return send_file(io.BytesIO(r["pdf"]), mimetype="application/pdf", as_attachment=True, download_name=f"TestReport_{j['series']}_v{r['version']}.pdf")
+    if not r["approver"]: return jsonify(error=["This version was never released (a draft)"]), 409
+    resp = send_file(io.BytesIO(r["pdf"]), mimetype="application/pdf", as_attachment=True,
+                     download_name=f"TestReport_{j['series']}_v{r['version']}{'' if r['version'] == newest and j['stage'] == 4 else '_SUPERSEDED'}.pdf")
+    return resp
 
 @app.get("/verify/<token>")
+@auth.public
 def verify_page(token): return send_from_directory(app.static_folder, "index.html")
 
 @app.post("/api/jobs/<int:i>/edit")
+@auth.require("job.edit")
 def edit(i):
-    """Edit record details. A generated report is rebuilt as a new version; an approved one goes back for re-approval."""
+    """Edit record details before release. A generated (unreleased) report is rebuilt as a new version."""
     j = getjob(i); b = body(); err = check_ids(b)
+    if locked(j): return locked(j)
     if err: return jsonify(error=err), 400
-    d = j["data"]; rq = d.setdefault("request", {})
-    for k in REQ_KEYS:
-        if k in b: rq[k] = str(b[k]).strip()
     try:
-        save(i, series=b["series"], sample=b["sample"], customer=b["customer"].strip(), rating=b["rating"].strip(), data=d,
-             stage=3 if j["stage"] == 4 else j["stage"], approver=None if j["stage"] == 4 else j["approver"],
-             approver_id=None if j["stage"] == 4 else j.get("approver_id"))
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            why = write_check(c, i, ["request"]) if j.get("amend") else None
+            if why: return refuse(c, i, *why)
+            rq = integrity.read_section(c, i, "request") or {}
+            new = {**rq, **{k: str(b[k]).strip() for k in REQ_KEYS if k in b}}
+            if new != rq: integrity.write_section(c, i, "request", new, me(), "Record details edited")
+            c.execute("UPDATE jobs SET series=?, sample=?, customer=?, rating=?, updated=? WHERE id=?",
+                      (b["series"], b["sample"], b["customer"].strip(), b["rating"].strip(), now(), i))
     except sqlite3.IntegrityError: return jsonify(error=["Series number already exists"]), 409
     note = ""
     if j["stage"] >= 3:
-        try: note = f" - report rebuilt as version {freeze(getjob(i))[0]}" + (", re-approval needed" if j["stage"] == 4 else "")
+        try: note = f" - report rebuilt as version {freeze(getjob(i))[0]}"
         except Exception: save(i, stage=1, findings=[]); note = " - report withdrawn, run the checks again"  # noqa: BLE001
-    with db() as c: log(c, i, "Record details edited" + note)
+    with db() as c: log(c, i, "Record details edited" + note, kind="job")
     return jsonify(ok=True)
 
 @app.post("/api/jobs/<int:i>/discard")
+@auth.require("report.approve")
 def discard(i):
-    """Withdraw the generated report; record and imported data are kept (stage returns to 'Validated'). Stored versions stay verifiable as superseded."""
+    """Withdraw a generated report that has not been released; record and data are kept (stage returns to 'Validated').
+    Stored versions stay verifiable as superseded. A released report cannot be withdrawn: it is superseded by an amendment."""
     j = getjob(i)
+    if locked(j): return jsonify(error=["A released report cannot be withdrawn or deleted. Open an amendment to supersede it."]), 409
     if j["stage"] < 3: return jsonify(error=["No generated report to delete"]), 409
     save(i, stage=2, approver=None, approver_id=None)
-    with db() as c: log(c, i, "Generated report withdrawn (record kept)")
+    with db() as c: log(c, i, "Generated report withdrawn (record kept)", kind="report")
     return jsonify(ok=True)
 
 @app.delete("/api/jobs/<int:i>")
+@auth.require("job.delete")
 def delete(i):
-    """Delete the whole record: job, imports, source documents, report versions and history.
-    Not allowed once a report has been released: its QR code must keep working, so the record and its history stay."""
+    """Delete a record that never had a released report (a job created by mistake). Released records are kept for good:
+    the database refuses to delete them even if this check were bypassed."""
     getjob(i, False)
     with db() as c:
         if c.execute("SELECT 1 FROM reports WHERE job_id=? AND approver IS NOT NULL", (i,)).fetchone():
-            return jsonify(error=["A report for this record has been released. It is kept so the customer's copy can still be verified; "
-                                  "withdraw the report instead if it must no longer be used."]), 409
-        for t in ("imports", "audit", "sources", "reports"): c.execute(f"DELETE FROM {t} WHERE job_id=?", (i,))
-        c.execute("DELETE FROM jobs WHERE id=?", (i,))
+            return jsonify(error=["A report for this record has been released. It is kept for as long as records are retained, "
+                                  "so the customer's copy can always be verified."]), 409
+        series = c.execute("SELECT series FROM jobs WHERE id=?", (i,)).fetchone()[0]
+        c.execute("DELETE FROM jobs WHERE id=?", (i,))  # first, so the verified-section lock (which needs the job) lets go
+        for t in ("imports", "sources", "reports", "sections", "section_history", "files", "assignments"): c.execute(f"DELETE FROM {t} WHERE job_id=?", (i,))
+        log(c, None, f"Unreleased record {series} (job {i}) deleted with its data, files and report drafts; its audit entries are kept", kind="admin")
     return jsonify(ok=True)
 
-CODE_FILES = ("app.py", "importers.py", "rules.py", "vision.py")
+@app.get("/api/audit")
+@auth.require("audit.read")
+def audit_log():
+    """The audit trail across all jobs. Filters: job (series or id), user (name or username), kind, from / to (YYYY-MM-DD)."""
+    a = request.args; where, args = ["1=1"], []
+    if a.get("job", "").strip():
+        t = a["job"].strip(); where.append("(j.series LIKE ? OR a.job_id=?)"); args += [f"%{t}%", int(t) if t.isdigit() else -1]
+    if a.get("user", "").strip(): where.append("a.actor LIKE ?"); args.append(f"%{a['user'].strip()}%")
+    if a.get("kind", "").strip(): where.append("COALESCE(a.kind,'event')=?"); args.append(a["kind"].strip())
+    for k, op in (("from", ">="), ("to", "<=")):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.get(k, "")): where.append(f"substr(a.at,1,10) {op} ?"); args.append(a[k])
+    with db() as c:
+        rows = [dict(r) for r in c.execute("SELECT a.id,a.job_id,j.series,a.event,a.at,a.actor,a.role,a.ip,a.kind FROM audit a LEFT JOIN jobs j ON j.id=a.job_id "
+                                           "WHERE " + " AND ".join(where) + " ORDER BY a.id DESC LIMIT 501", args)]
+    return jsonify(rows=rows[:500], more=len(rows) > 500)
+
+# ---- workflow: per-section verification, assignment, sign-off (NEXT_STEPS.md section 3)
+def section_action(i, k, state, verb, need_reason=False, need_data=True, allowed_from=("uploaded", "returned")):
+    j = getjob(i); b = body(); u = auth.current()
+    if locked(j): return locked(j)
+    if k not in NAMES and k not in ("ids", "other") or k == "request": return jsonify(error=["Unknown test"]), 404
+    reason = str(b.get("reason") or "").strip()
+    if need_reason and len(reason) < 4: return jsonify(error=["Give the reason (it is recorded and shown to the tester)"]), 400
+    try:
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT * FROM sections WHERE job_id=? AND key=?", (i, k)).fetchone()
+            if need_data and (not row or row["data"] is None): return jsonify(error=[f"{NAMES.get(k, k)} has no data to {verb}"]), 409
+            if row and row["state"] not in allowed_from: return jsonify(error=[f"{NAMES.get(k, k)} is {row['state']}; it cannot be {verb} now"]), 409
+            if row and row["uploaded_by"] == u["id"] and state in ("verified", "returned"):
+                return refuse(c, i, f"you uploaded {NAMES.get(k, k)}, so someone else must {verb} it")
+            rev = b.get("revision") if isinstance(b.get("revision"), int) and not isinstance(b.get("revision"), bool) else None
+            if state in ("verified", "returned") and rev is None: return jsonify(error=["Reload the page: the revision you checked is missing"]), 400
+            integrity.set_state(c, i, k, state, u["id"], f"{NAMES.get(k, k)} {verb}" + (f": {reason}" if reason else ""), note=reason or None, expect=rev)
+            c.execute("UPDATE jobs SET signed_off_by=NULL, signed_off_at=NULL, updated=? WHERE id=?", (now(), i))
+            log(c, i, f"{NAMES.get(k, 'Additional log sheets' if k == 'other' else 'Identifiers on each sheet' if k == 'ids' else k)} {verb}"
+                + (f" (revision {rev})" if rev else "") + (f": {reason}" if reason else ""), kind="verify")
+            notify.on_section(c, i, k, state, reason)
+    except Conflict as e: return conflict(e)
+    portal.refresh(i)  # the customer's partial report follows the approved tests
+    return jsonify(ok=True)
+
+@app.post("/api/jobs/<int:i>/sections/<k>/verify")
+@auth.require("section.verify")
+def verify_section(i, k):
+    """The verifier confirms the data in the app is what is in the source file. revision: the one they looked at."""
+    return section_action(i, k, "verified", "verified")
+
+@app.post("/api/jobs/<int:i>/sections/<k>/return")
+@auth.require("section.verify")
+def return_section(i, k):
+    """Send a section back to its tester with the reason; they correct and upload again."""
+    return section_action(i, k, "returned", "returned", need_reason=True)
+
+@app.post("/api/jobs/<int:i>/sections/<k>/reopen")
+@auth.require("section.verify")
+def reopen_section(i, k):
+    """Unlock a verified (or not-applicable) section so it can be corrected; the reason is recorded."""
+    return section_action(i, k, "uploaded", "reopened", need_reason=True, need_data=False, allowed_from=("verified", "na"))
+
+@app.post("/api/jobs/<int:i>/sections/<k>/na")
+@auth.require("section.verify")
+def na_section(i, k):
+    """This test does not apply to this job (recorded with the reason, and listed as such)."""
+    return section_action(i, k, "na", "marked not applicable", need_reason=True, need_data=False, allowed_from=("uploaded", "returned"))
+
+@app.post("/api/jobs/<int:i>/assign")
+@auth.require("job.assign")
+def assign(i):
+    """Who does which test, and in which bay.
+    Admin: assign or reassign any test (key) or every unstarted, unassigned test of the job (all=true) to a tester, with a bay.
+    Tester: take a test nobody is assigned to and nobody has started (user_id is themselves), choosing the bay; or give back
+    a test they took and have not started."""
+    j = getjob(i, False); b = body(); u = auth.current(); admin = "admin" in u["roles"]
+    if locked(j): return locked(j)
+    uid = b.get("user_id") if admin else (b.get("user_id") or u["id"])
+    bay = bay_of(b) if b.get("bay_id") not in (None, "") else None
+    if b.get("all"):
+        if not admin: return jsonify(error=["Only an administrator assigns a whole job"]), 403
+        keys = [k for k in (j["plan"] or [p["key"] for p in j["progress"]]) if k in NAMES and k != "request"]
+    else:
+        keys = [b.get("key")]
+        if keys[0] not in NAMES or keys[0] == "request": return jsonify(error=["Unknown test"]), 400
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        t = None
+        if uid not in (None, ""):
+            t = c.execute("SELECT id, full_name, roles, test_types, active FROM users WHERE id=?", (uid,)).fetchone()
+            if not t or not t["active"] or "tester" not in t["roles"].split(","): return jsonify(error=["Choose an active test engineer"]), 400
+        if not admin and uid != u["id"]: return refuse(c, i, "test engineers can only take tests themselves; an administrator assigns others")
+        done, skipped = [], []
+        for k in keys:
+            cur = c.execute("SELECT user_id FROM assignments WHERE job_id=? AND key=?", (i, k)).fetchone()
+            started = c.execute("SELECT 1 FROM sections WHERE job_id=? AND key=? AND data IS NOT NULL", (i, k)).fetchone()
+            if b.get("all") and (cur or started): skipped.append(f"{NAMES[k]} (already {'assigned' if cur else 'started'})"); continue
+            if not admin:
+                if started: return refuse(c, i, f"{NAMES[k]} has already been started")
+                if cur and cur[0] != u["id"]: return refuse(c, i, f"{NAMES[k]} is assigned to someone else; only an administrator can reassign it")
+            if t is None:
+                if not cur: continue
+                c.execute("DELETE FROM assignments WHERE job_id=? AND key=?", (i, k)); log(c, i, f"{NAMES[k]}: assignment removed", kind="job"); done.append(k); continue
+            tt = [x for x in str(t["test_types"] or "").split(",") if x]
+            if tt and k not in tt:
+                if b.get("all"): skipped.append(f"{NAMES[k]} (not certified)"); continue
+                return jsonify(error=[f"{t['full_name']} is not certified for {NAMES[k]}"]), 400
+            c.execute("INSERT INTO assignments(job_id,key,user_id,assigned_by,at,bay_id) VALUES(?,?,?,?,?,?) ON CONFLICT(job_id,key) DO UPDATE SET "
+                      "user_id=excluded.user_id, assigned_by=excluded.assigned_by, at=excluded.at, bay_id=excluded.bay_id", (i, k, t["id"], u["id"], now(), bay[0] if bay else None))
+            how = "taken by" if t["id"] == u["id"] and not admin else "reassigned to" if cur else "assigned to"
+            log(c, i, f"{NAMES[k]} {how} {t['full_name']}" + (f", bay {bay[1]}" if bay else ""), kind="job")
+            if t["id"] != u["id"]: notify.notify(c, [t["id"]], i, "assigned", f"{j['series']}: {NAMES[k]} assigned to you" + (f" ({bay[1]})" if bay else ""), section=k)
+            done.append(k)
+    return jsonify(ok=True, assigned=done, skipped=skipped)
+
+@app.post("/api/jobs/<int:i>/signoff")
+@auth.require("section.verify")
+def signoff(i):
+    """The verifier's whole-job 'all data correct' (B5): every test verified or not applicable, checks run without data errors."""
+    j = getjob(i); u = auth.current()
+    if locked(j): return locked(j)
+    if j["signoff_blockers"]: return jsonify(error=["Not ready for sign-off:"] + j["signoff_blockers"]), 409
+    if j["stage"] < 2: return jsonify(error=["Run the checks (without data errors) before signing off"]), 409
+    with db() as c:
+        if c.execute("SELECT 1 FROM sections WHERE job_id=? AND uploaded_by=? AND key!='request' AND data IS NOT NULL", (i, u["id"])).fetchone():
+            return refuse(c, i, "you uploaded data on this job, so another verifier must sign it off")
+        c.execute("UPDATE jobs SET signed_off_by=?, signed_off_at=?, updated=? WHERE id=?", (u["id"], now(), now(), i))
+        log(c, i, "Job signed off by the verifier: all data checked against the source files", kind="verify")
+    return jsonify(ok=True)
+
+# ---- intake (NEXT_STEPS.md section 3.6): nothing missing, nothing wrong, before a number is allocated
+def intake_problems(b):
+    errs, warns, clean = workflow.check_intake(b)
+    plan, perr = workflow.check_plan(b.get("plan"), NAMES)
+    errs += perr
+    o = b.get("org_id")
+    with db() as c:
+        if not (isinstance(o, int) and c.execute("SELECT 1 FROM orgs WHERE id=?", (o,)).fetchone()):
+            errs.append("Customer organisation: choose or create it (its customer accounts follow this job)")
+    if warns and not b.get("confirm_warnings"): errs += [f"Confirm: {w}" for w in warns]
+    return errs, warns, clean, plan
+
+@app.post("/api/intake/check")
+@auth.require("job.create")
+def intake_check():
+    """Dry run of the intake form: every missing or malformed value, so the engineer sees the whole list at once."""
+    errs, warns, _, _ = intake_problems(body())
+    return jsonify(errors=errs, warnings=warns, ok=not errs)
+
+def intake_record(clean, prior=None):
+    u = auth.current()
+    return dict(prior or {}, valid=True, arrived_at=clean.pop("arrived_at"), opened_by=clean.pop("opened_by"),
+                received_by=u["full_name"], received_by_id=u["id"], recorded_at=now(), checked_by=None, checked_at=None)
+
+@app.post("/api/intake")
+@auth.require("job.create")
+def intake_create():
+    """Create a job from a complete, valid customer request: the series and sample numbers are allocated only now."""
+    b = body(); errs, warns, clean, plan = intake_problems(b)
+    if errs: return jsonify(error=errs, warnings=warns), 400
+    rec = intake_record(clean); req = dict(clean)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        series, sample = integrity.allocate(c, "series"), integrity.allocate(c, "sample")
+        i = insert_job(c, dict(series=series, sample=sample, customer=clean["customer"], rating=clean["rating"], request=req, org_id=b["org_id"]),
+                       f"Customer request received (intake); series {series} and sample {sample} allocated")
+        c.execute("UPDATE jobs SET plan=?, intake=?, cutoff=? WHERE id=?", (json.dumps(plan), json.dumps(rec), notify.cutoff_for(c, rec["arrived_at"]), i))
+        if b.get("customer_form_id"):
+            f = c.execute("SELECT * FROM customer_forms WHERE id=? AND status='received'", (b["customer_form_id"],)).fetchone()
+            if f:
+                web = f["kind"] == "web"  # kept with the record: the workbook, or the online form as submitted
+                integrity.store_file(c, i, "Customer request (filled online).json" if web else "Customer request form - " + f["filename"], f["content"],
+                                     MIMES["json"] if web else MIMES["xlsx"], me())
+                c.execute("UPDATE customer_forms SET status='used', job_id=? WHERE id=?", (i, f["id"]))
+                log(c, i, f"Customer's request form {f['filename']} (SHA-256 {f['sha256'][:12]}...) used for this intake", kind="job")
+        for k, uid in (b.get("assign") or {}).items():  # at intake an engineer can only take tests themselves
+            if k in plan and uid and (uid == me() or "admin" in auth.current()["roles"]):
+                t = c.execute("SELECT full_name, roles, test_types, active FROM users WHERE id=?", (uid,)).fetchone()
+                tt = [x for x in str(t["test_types"] or "").split(",") if x] if t else []
+                if t and t["active"] and "tester" in t["roles"].split(",") and (not tt or k in tt):
+                    c.execute("INSERT INTO assignments(job_id,key,user_id,assigned_by,at) VALUES(?,?,?,?,?)", (i, k, uid, me(), now()))
+                    log(c, i, f"{NAMES[k]} assigned to {t['full_name']}", kind="job")
+        if b.get("form_file"):
+            name, raw = upload(b["form_file"])
+            try: insert_source(c, i, "Customer request form - " + name, raw)
+            except sqlite3.IntegrityError: pass
+        log(c, i, f"Intake recorded: arrived {rec['arrived_at']}, box opened by {rec['opened_by']}, received by {rec['received_by']}; "
+                  f"test plan: {', '.join(NAMES[k] for k in plan)}" + (f"; confirmed: {'; '.join(warns)}" if warns else ""), kind="job")
+    return jsonify(id=i, series=series, sample=sample), 201
+
+@app.post("/api/jobs/<int:i>/intake")
+@auth.require("job.edit")
+def intake_complete(i):
+    """Complete or correct the intake of an existing job (one created before strict intake, or from a data file)."""
+    j = getjob(i, False); b = body()
+    if locked(j): return locked(j)
+    errs, warns, clean, plan = intake_problems(b)
+    if errs: return jsonify(error=errs, warnings=warns), 400
+    rec = intake_record(clean, {k: v for k, v in j["intake"].items() if k not in ("checked_by", "checked_at")})
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        why = write_check(c, i, ["request"]) if j.get("amend") else None
+        if why: return refuse(c, i, *why)
+        rq = integrity.read_section(c, i, "request") or {}
+        integrity.write_section(c, i, "request", {**rq, **clean}, me(), "Intake details completed")
+        c.execute("UPDATE jobs SET customer=?, rating=?, org_id=?, plan=?, intake=?, updated=?, cutoff=COALESCE(cutoff, ?) WHERE id=?",
+                  (clean["customer"], clean["rating"], b["org_id"], json.dumps(plan), json.dumps(rec), now(), notify.cutoff_for(c, rec["arrived_at"]), i))
+        log(c, i, "Intake details completed and validated" + (f"; confirmed: {'; '.join(warns)}" if warns else ""), kind="job")
+    return jsonify(ok=True)
+
+@app.post("/api/jobs/<int:i>/intake/checked")
+@auth.require("job.edit")
+def intake_checked(i):
+    """The receiving engineer has read the entered values back against the customer's original form."""
+    j = getjob(i, False)
+    if locked(j): return locked(j)
+    if not j["intake"].get("valid"): return jsonify(error=["Complete the intake details first"]), 409
+    rec = dict(j["intake"], checked_by=auth.current()["full_name"], checked_at=now())
+    with db() as c:
+        c.execute("UPDATE jobs SET intake=?, updated=? WHERE id=?", (json.dumps(rec), now(), i))
+        log(c, i, "Intake checked against the customer's original request form", kind="job")
+    return jsonify(ok=True)
+
+@app.get("/api/intake/fields")
+@auth.require("job.create", "jobs.view")  # customers fill in the same request form themselves
+def intake_fields():
+    return jsonify(fields=[dict(key=k, label=l, kind=t, na_ok=n) for k, l, t, n in workflow.INTAKE_FIELDS], states=workflow.STATES_UT,
+                   tests={k: v for k, v in NAMES.items() if k != "request"})
+
+# ---- test bays, testers, "My work"
+@app.get("/api/bays")
+@auth.require("staff.view")
+def bays():
+    with db() as c: return jsonify([dict(r) for r in c.execute("SELECT id, name, active FROM bays ORDER BY active DESC, name")])
+
+@app.post("/api/bays")
+@auth.require("bays.manage")
+def add_bay():
+    name = re.sub(r"\s+", " ", str(body().get("name") or "")).strip()
+    if not name: return jsonify(error=["Name the bay"]), 400
+    try:
+        with db() as c:
+            bid = c.execute("INSERT INTO bays(name, created_at) VALUES(?,?)", (name, now())).lastrowid
+            log(c, None, f"Test bay added: {name}", kind="admin")
+    except sqlite3.IntegrityError: return jsonify(error=["A bay with that name exists"]), 409
+    return jsonify(id=bid), 201
+
+@app.post("/api/bays/<int:bid>")
+@auth.require("bays.manage")
+def set_bay(bid):
+    """Retire or reactivate a bay. Bays are never deleted: uploads keep naming the bay they came from."""
+    active = int(bool(body().get("active")))
+    with db() as c:
+        r = c.execute("SELECT name FROM bays WHERE id=?", (bid,)).fetchone()
+        if not r: abort(404)
+        c.execute("UPDATE bays SET active=? WHERE id=?", (active, bid)); log(c, None, f"Test bay {r[0]} {'reactivated' if active else 'retired'}", kind="admin")
+    return jsonify(ok=True)
+
+@app.get("/api/testers")
+@auth.require("staff.view")
+def testers():
+    with db() as c:
+        return jsonify([dict(id=r["id"], name=r["full_name"], tests=[x for x in str(r["test_types"] or "").split(",") if x])
+                        for r in c.execute("SELECT id, full_name, roles, test_types FROM users WHERE active=1 ORDER BY full_name")
+                        if "tester" in r["roles"].split(",")])
+
+def unassigned(c, open_jobs):
+    """Planned tests nobody is assigned to and nobody has started, oldest job first."""
+    out = []
+    for r in c.execute(f"SELECT j.id, j.series, j.plan, j.created, j.cutoff FROM jobs j WHERE {open_jobs} AND j.plan IS NOT NULL ORDER BY COALESCE(j.cutoff, j.created)").fetchall():
+        for k in workflow.loads(r["plan"], []):
+            if c.execute("SELECT 1 FROM assignments WHERE job_id=? AND key=?", (r["id"], k)).fetchone(): continue
+            if c.execute("SELECT 1 FROM sections WHERE job_id=? AND key=? AND (data IS NOT NULL OR state='na')", (r["id"], k)).fetchone(): continue
+            out.append(dict(id=r["id"], series=r["series"], key=k, at=r["created"], cutoff=r["cutoff"]))
+    return out
+
+@app.get("/api/my-work")
+@auth.require("staff.view")
+def my_work():
+    """What is waiting on the signed-in person, oldest first (the same-day target makes the oldest the most urgent)."""
+    u = auth.current(); out = {}
+    open_jobs = "j.archived=0 AND j.stage<4"
+    with db() as c:
+        q = lambda sql, *a: [dict(r) for r in c.execute(sql, a)]
+        if "tester" in u["roles"]:
+            out["returned"] = q(f"SELECT j.id, j.series, s.key, s.note, s.uploaded_at AS at FROM sections s JOIN jobs j ON j.id=s.job_id "
+                               f"WHERE {open_jobs} AND s.state='returned' AND s.uploaded_by=? ORDER BY s.uploaded_at", u["id"])
+            out["assigned"] = q(f"SELECT j.id, j.series, a.key, a.at FROM assignments a JOIN jobs j ON j.id=a.job_id LEFT JOIN sections s ON s.job_id=a.job_id AND s.key=a.key "
+                               f"WHERE {open_jobs} AND a.user_id=? AND (s.id IS NULL OR s.data IS NULL) ORDER BY a.at", u["id"])
+            out["uploaded"] = q(f"SELECT j.id, j.series, s.key, s.state, s.uploaded_at AS at FROM sections s JOIN jobs j ON j.id=s.job_id "
+                               f"WHERE {open_jobs} AND s.uploaded_by=? AND s.key!='request' AND s.data IS NOT NULL ORDER BY s.uploaded_at DESC LIMIT 50", u["id"])
+            out["intake"] = q(f"SELECT j.id, j.series, j.created AS at FROM jobs j WHERE {open_jobs} AND (j.intake IS NULL OR json_extract(j.intake,'$.checked_by') IS NULL) ORDER BY j.created")
+            out["assigned"] = [dict(x, bay=(c.execute("SELECT b.name FROM assignments a JOIN bays b ON b.id=a.bay_id WHERE a.job_id=? AND a.key=?", (x["id"], x["key"])).fetchone() or [None])[0])
+                               for x in out["assigned"]]
+            tt = [x for x in str(u.get("test_types") or "").split(",") if x]
+            out["available"] = [x for x in unassigned(c, open_jobs) if not tt or x["key"] in tt]
+            out["requests"] = q("SELECT f.id, o.name AS org, f.filename, f.at FROM customer_forms f LEFT JOIN orgs o ON o.id=f.org_id WHERE f.status='received' ORDER BY f.id")
+        if "verifier" in u["roles"]:
+            out["to_verify"] = q(f"SELECT j.id, j.series, s.key, s.uploaded_at AS at, uu.full_name AS by FROM sections s JOIN jobs j ON j.id=s.job_id LEFT JOIN users uu ON uu.id=s.uploaded_by "
+                                f"WHERE {open_jobs} AND s.state='uploaded' AND s.key!='request' AND s.data IS NOT NULL AND COALESCE(s.uploaded_by,-1)!=? ORDER BY s.uploaded_at", u["id"])
+            out["to_signoff"] = [dict(id=j["id"], series=j["series"], at=j["updated"]) for j in
+                                 (getjob(r["id"], False) for r in c.execute(f"SELECT j.id FROM jobs j WHERE {open_jobs} AND j.signed_off_by IS NULL AND j.stage>=2"))
+                                 if not j["signoff_blockers"]]
+        if "approver" in u["roles"]:
+            out["to_approve"] = q("SELECT j.id, j.series, j.updated AS at FROM jobs j WHERE j.archived=0 AND j.stage=3 AND NOT EXISTS "
+                                  "(SELECT 1 FROM audit a WHERE a.job_id=j.id AND a.user_id=? AND a.kind IN ('data','check','verify')) ORDER BY j.updated", u["id"])
+        if "admin" in u["roles"]:  # the administrator sees everything that is waiting, and on whom
+            out["to_approve"] = q("SELECT j.id, j.series, j.customer, j.updated AS at FROM jobs j WHERE j.archived=0 AND j.stage=3 ORDER BY j.updated")
+            out["unassigned"] = unassigned(c, open_jobs)
+            out["requests"] = q("SELECT f.id, o.name AS org, f.filename, f.at FROM customer_forms f LEFT JOIN orgs o ON o.id=f.org_id WHERE f.status='received' ORDER BY f.id")
+            out["awaiting_verification"] = q(f"SELECT j.id, j.series, s.key, s.uploaded_at AS at, uu.full_name AS by FROM sections s JOIN jobs j ON j.id=s.job_id "
+                                             f"LEFT JOIN users uu ON uu.id=s.uploaded_by WHERE {open_jobs} AND s.state='uploaded' AND s.key!='request' AND s.data IS NOT NULL ORDER BY s.uploaded_at")
+            out["locked_accounts"] = q("SELECT id, username AS series, full_name AS name, locked_until AS at FROM users WHERE locked_until > ?", now())
+    for lst in out.values():
+        for x in lst:
+            if "key" in x: x["name"] = NAMES.get(x["key"], "Identifiers on each sheet" if x["key"] == "ids" else "Additional log sheets" if x["key"] == "other" else x["key"])
+    return jsonify(out)
+
+@app.get("/api/audit/verify")
+@auth.require("audit.read")
+def audit_verify():
+    """Recompute the audit hash chain. 'tip' is the hash of the newest entry: write it down (or export it) daily, so that even
+    removing the newest entries can be detected later."""
+    with db() as c: r = integrity.verify_chain(c)
+    with db() as c: log(c, None, "Audit chain checked: " + ("intact" if r["ok"] else f"BROKEN at entry {r['broken_at']} ({r['reason']})"), kind="admin")
+    return jsonify(r)
+
+@app.get("/api/jobs/<int:i>/history")
+@auth.require("sources.view")
+def section_history(i):
+    """Every revision of every section of the job: who wrote it, when, from which file, and the data's fingerprint."""
+    getjob(i, False)
+    with db() as c:
+        rows = [dict(r) for r in c.execute("SELECT h.key,h.revision,h.state,h.data_sha256,h.event,h.at,u.full_name AS by,f.name AS file,f.sha256 AS file_sha256 "
+                                           "FROM section_history h LEFT JOIN users u ON u.id=h.user_id LEFT JOIN files f ON f.id=h.file_id "
+                                           "WHERE h.job_id=? ORDER BY h.id", (i,))]
+    return jsonify(rows)
+
+@app.get("/api/files/<int:fid>")
+@auth.require("sources.view")
+def get_file(fid):
+    """An uploaded data file, exactly as received."""
+    with db() as c: r = c.execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
+    if not r: abort(404)
+    getjob(r["job_id"], False)
+    resp = send_file(io.BytesIO(r["content"]), mimetype=r["mime"] or "application/octet-stream", as_attachment=True, download_name=r["name"])
+    resp.headers["X-Content-Type-Options"] = "nosniff"; return resp
+
+CODE_FILES = ("app.py", "importers.py", "rules.py", "vision.py", "auth.py", "integrity.py", "workflow.py", "xltemplates.py", "excel_routes.py", "retention.py")
 def code_id():
     """Fingerprint of the Python code on disk. Taken once at start-up and again on request, it shows whether the running
     server is older than its files (the page is always served fresh, so an unrestarted server and a new page can disagree)."""
@@ -1118,9 +1854,11 @@ def code_id():
 STARTED_CODE = code_id()
 
 @app.get("/api/version")
+@auth.public
 def version(): return jsonify(running=STARTED_CODE, on_disk=code_id(), stale=STARTED_CODE != code_id())
 
 @app.get("/api/stats")
+@auth.require("stats")
 def stats():
     """Pipeline counts cover jobs in progress or released here; historical records from registers are counted separately.
     Turnaround = time from capturing the request to approving the report (the first approval of each released job),
@@ -1135,6 +1873,7 @@ def stats():
                          "WHERE j.archived=0 AND j.stage=4 GROUP BY j.id").fetchall()
         open_ = [r[0] for r in c.execute("SELECT created FROM jobs WHERE archived=0 AND stage<4")]
         verdicts = {r[0]: r[1] for r in c.execute("SELECT COALESCE(verdict,'Not yet checked'),COUNT(*) FROM jobs WHERE archived=0 GROUP BY 1")}
+        sd = c.execute("SELECT COUNT(*), COALESCE(SUM(same_day),0) FROM jobs WHERE archived=0 AND same_day IS NOT NULL").fetchone()
         ai = vision.status(c)
     hours = lambda a, b: (dt.datetime.fromisoformat(b) - dt.datetime.fromisoformat(a)).total_seconds() / 3600
     tat = [hours(a, b) for a, b in done if a and b]
@@ -1142,18 +1881,21 @@ def stats():
     return jsonify(total=sum(by), by_stage=by, stages=STAGES, historical=hist, avg_gen_ms=int(mean(ms)) if ms else None, imports=kinds,
                    turnaround_h=dict(avg=round(mean(tat), 2), best=round(min(tat), 2), worst=round(max(tat), 2), n=len(tat)) if tat else None,
                    open_age_h=dict(avg=round(mean(ages), 2), oldest=round(max(ages), 2), n=len(ages)) if ages else None, verdicts=verdicts,
-                   ai={k: ai[k] for k in ("configured", "model", "provider", "kind", "calls_today", "daily_limit")}, sections=NAMES)
+                   ai={k: ai[k] for k in ("configured", "model", "provider", "kind", "calls_today", "daily_limit")}, sections=NAMES,
+                   same_day=dict(n=sd[0], same_day=sd[1]))
 
 @app.post("/api/demo")
+@auth.require("job.create")
 def demo():
     """Load the demo job with its scanned sheets. If it is already loaded, attach any scans it is missing and return it."""
     data = load_demo(); w = data["work"]
     with db() as c: old = c.execute("SELECT id FROM jobs WHERE series=?", (w["series"],)).fetchone()
     if old: i = old[0]
     else:
-        r = app.test_client()
-        i = r.post("/api/jobs", json=dict(series=w["series"], sample=w["sample"], customer=data["request"]["customer"], rating=data["request"]["rating"], request=data["request"])).get_json()["id"]
-        r.post(f"/api/jobs/{i}/import", json=dict(filename=os.path.basename(DEMO), content={k: v for k, v in data.items() if k != "request"}))
+        with db() as c: i = insert_job(c, dict(series=w["series"], sample=w["sample"], customer=data["request"]["customer"],
+                                               rating=data["request"]["rating"], request=data["request"]), "Customer request captured (demo data)")
+        content = {k: v for k, v in data.items() if k != "request"}
+        apply_import(getjob(i), i, os.path.basename(DEMO), content, "json", [], integrity.canon(content).encode())
     added = attach_demo_scans(i)
     return jsonify(id=i, existing=bool(old), scans_added=added), 200 if old else 201
 
@@ -1168,6 +1910,13 @@ def attach_demo_scans(i):
             if hashlib.sha256(raw).hexdigest() not in have: insert_source(c, i, f, raw); n += 1
     return n
 
+auth.setup(app, db, log, os.path.dirname(os.path.abspath(DB)))
 init()
+excel_routes.install(sys.modules[__name__])  # template registry and Excel routes (they use this module's helpers)
+retention.install(sys.modules[__name__])     # backups, audit tip, export packages
+notify.install(sys.modules[__name__])        # notifications, same-day board, settings
+portal.install(sys.modules[__name__])        # partial reports, approved values, customers' request forms
 if __name__ == "__main__":
+    retention.schedule()                     # one backup a day while the server runs
+    notify.worker()                          # email outbox and cut-off warnings
     app.run(debug=False, port=int(os.environ.get("PORT", 5000)))
