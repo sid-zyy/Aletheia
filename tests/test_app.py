@@ -227,7 +227,7 @@ class ImportFormats(Base):
         self.assertEqual(self.gen(i).status_code, 200)
 
     def test_ollama_reader_uses_native_api_with_json_and_context(self):
-        i = self.job(); sid = self.c.post(f"/api/jobs/{i}/sources", json=up("scan.png", PNG)).json["id"]
+        i = self.job(); sid = self.c.post(f"/api/jobs/{i}/sources", json=dict(section="work", **up("scan.png", PNG))).json["id"]
         os.environ.update(AI_BASE_URL="http://localhost:11434/v1", AI_MODEL="qwen2.5vl:3b", AI_NUM_CTX="6000"); sent = []
         try:
             def fake(model, key, body):
@@ -521,10 +521,22 @@ class ReportsAndSources(Base):
         self.c.post(f"/api/jobs/{i}/import", json=dict(filename="d.json", content={k: v for k, v in DEMO.items() if k != "request"}))
         self.c.post(f"/api/jobs/{i}/validate"); self.assertEqual(self.gen(i).status_code, 200)
 
+    def test_files_are_uploaded_for_one_test_only(self):
+        i = self.job(); full = raw("AP_Transformers_25T1654.csv")
+        r = self.c.post(f"/api/jobs/{i}/import", json=dict(section="sc", **up("lab.csv", full))); self.assertEqual(r.status_code, 200, r.json)
+        self.assertEqual(sorted(k for k in self.get(i)["data"] if k not in ("request", "ids")), ["sc"])  # nothing allocated to other tests
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/import", json=dict(section="request", **up("lab2.csv", full))).status_code, 400)
+        only_temp = b"section,field,value" + bytes([10]) + b"temp,tap,LT" + bytes([10])
+        self.assertIn("no data for", self.c.post(f"/api/jobs/{i}/import", json=dict(section="sc", **up("t.csv", only_temp))).json["error"][0])
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/sources", json=dict(section="sc", **up("scan.png", PNG))).status_code, 201)
+        self.assertEqual(self.get(i)["sources"][0]["section"], "sc")
+
     def test_sources_and_ai_reading(self):
-        i = self.job(); r = self.c.post(f"/api/jobs/{i}/sources", json=up("scan.png", PNG)); self.assertEqual(r.status_code, 201); sid = r.json["id"]
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/sources", json=up("copy.png", PNG)).status_code, 409)
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/sources", json=up("x.exe", b"MZ....")).status_code, 400)
+        i = self.job()
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/sources", json=up("scan.png", PNG)).status_code, 400)  # no test chosen: refused
+        r = self.c.post(f"/api/jobs/{i}/sources", json=dict(section="temp", **up("scan.png", PNG))); self.assertEqual(r.status_code, 201); sid = r.json["id"]
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/sources", json=dict(section="temp", **up("copy.png", PNG))).status_code, 409)
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/sources", json=dict(section="temp", **up("x.exe", b"MZ...."))).status_code, 400)
         self.assertEqual(self.c.get(f"/api/sources/{sid}").data, PNG)
         r = self.c.post(f"/api/sources/{sid}/extract", json=dict(section="work")); self.assertEqual(r.status_code, 400); self.assertIn("not set up", r.json["error"][0])
         os.environ["GEMINI_API_KEY"] = "test"; os.environ["ALETHEIA_DAILY_CALL_LIMIT"] = "2"; sent = []
@@ -554,7 +566,7 @@ class ReportsAndSources(Base):
         buf = io.BytesIO(); pdf = canvas.Canvas(buf)
         for t in ("page one", "page two"): pdf.drawString(72, 720, t); pdf.showPage()
         pdf.save()
-        i = self.job(); sid = self.c.post(f"/api/jobs/{i}/sources", json=up("sheet.pdf", buf.getvalue())).json["id"]
+        i = self.job(); sid = self.c.post(f"/api/jobs/{i}/sources", json=dict(section="work", **up("sheet.pdf", buf.getvalue()))).json["id"]
         os.environ.update(AI_BASE_URL="http://localhost:8000/v1", AI_MODEL="qwen2.5vl:7b"); sent = []
         try:
             def fake(model, key, body):

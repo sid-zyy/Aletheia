@@ -65,7 +65,7 @@ def init():
         if "sections" not in {r[1] for r in c.execute("PRAGMA table_info(imports)")}: c.execute("ALTER TABLE imports ADD COLUMN sections TEXT")
         auth.init_db(c)
         # who did it: every row that records an action carries the signed-in user (accounts are never deleted)
-        for t, cols in (("jobs", (("org_id", "INT"), ("created_by", "INT"))), ("imports", (("user_id", "INT"),)), ("sources", (("user_id", "INT"),)),
+        for t, cols in (("jobs", (("org_id", "INT"), ("created_by", "INT"))), ("imports", (("user_id", "INT"),)), ("sources", (("user_id", "INT"), ("section", "TEXT"))),
                         ("reports", (("approver_user_id", "INT"), ("generated_by", "INT"))),
                         ("audit", (("user_id", "INT"), ("actor", "TEXT"), ("role", "TEXT"), ("ip", "TEXT"), ("kind", "TEXT")))):
             have = {r[1] for r in c.execute(f"PRAGMA table_info({t})")}
@@ -119,7 +119,7 @@ def getjob(jid, full=True):
             j["imports"] = [dict(a, sections=json.loads(a["sections"]) if a["sections"] else None)
                             for a in c.execute("SELECT i.id,i.source,i.kind,i.sha256,i.at,i.sections,i.file_id,f.sha256 AS file_sha256,u.full_name AS by "
                                                "FROM imports i LEFT JOIN files f ON f.id=i.file_id LEFT JOIN users u ON u.id=i.user_id WHERE i.job_id=? ORDER BY i.id", (jid,))]
-            j["sources"] = [dict(a) for a in c.execute("SELECT id,filename,mime,sha256,at FROM sources WHERE job_id=? ORDER BY id", (jid,))]
+            j["sources"] = [dict(a) for a in c.execute("SELECT id,filename,mime,sha256,at,section FROM sources WHERE job_id=? ORDER BY id", (jid,))]
             j["reports"] = [dict(a) for a in c.execute("SELECT version,token,sha256,approver,approver_id,at,manifest_sha256 FROM reports WHERE job_id=? ORDER BY version DESC", (jid,))]
         return j
 
@@ -770,8 +770,25 @@ def imp(i):
         name, content, kind = str(b.get("filename") or "upload"), b["content"], "json"; raw = integrity.canon(content).encode()
     else:
         name, raw = upload(b); content, kind, notes, used = excel_routes.load_any(name, raw, j["series"])
+        if b.get("section"): content, notes = for_test(content, b["section"]), notes + [f"uploaded for {NAMES.get(b['section'], b['section'])}"]
         return apply_import(j, i, name, content, kind, notes, raw, bay, templates=used)
+    if b.get("section"): content = for_test(content, b["section"])
     return apply_import(j, i, name, content, kind, notes, raw, bay)
+
+def test_key(k):
+    """A test a file can be uploaded for: one of the job's documents (not the customer's request) or an additional log sheet."""
+    if k not in NAMES and k != "other" or k == "request": raise importers.ImportError_("Choose the test this file belongs to")
+    return k
+
+def for_test(content, k):
+    """Only what a file brings for the test it was uploaded for (nothing is allocated to other tests by itself)."""
+    k = test_key(k)
+    if not isinstance(content, dict) or k not in content:
+        raise importers.ImportError_(f"This file holds no data for {NAMES.get(k, 'an additional log sheet')}; upload it from the row of the test it belongs to")
+    out = {k: content[k]}
+    ids = (content.get("ids") or {}) if isinstance(content.get("ids"), dict) else {}
+    if k in ids: out["ids"] = {k: ids[k]}
+    return out
 
 MIMES = {"json": "application/json", "csv": "text/csv", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "sqlite": "application/vnd.sqlite3"}
 
@@ -992,17 +1009,18 @@ def sniff(raw):
 def add_source(i):
     j = getjob(i, False)
     if locked(j): return locked(j)
-    name, raw = upload(body())
+    b = body(); sec = test_key(b.get("section")); name, raw = upload(b)
     if len(raw) > importers.MAX_BYTES: raise importers.ImportError_("File is too large (20 MB maximum)")
     try:
-        with db() as c: return jsonify(id=insert_source(c, i, name, raw)), 201
+        with db() as c: return jsonify(id=insert_source(c, i, name, raw, sec)), 201
     except sqlite3.IntegrityError: return jsonify(error=["This document is already attached to the job"]), 409
 
-def insert_source(c, i, name, raw):
-    """Store a scanned sheet with its fingerprint. Raises IntegrityError if the same file is already attached to the job."""
+def insert_source(c, i, name, raw, section=None):
+    """Store a scanned sheet with its fingerprint, attached to one test. Raises IntegrityError if the same file is already
+    attached to the job."""
     mime = sniff(raw); sha = hashlib.sha256(raw).hexdigest()
-    cur = c.execute("INSERT INTO sources(job_id,filename,mime,sha256,content,at,user_id) VALUES(?,?,?,?,?,?,?)", (i, name, mime, sha, raw, now(), me()))
-    log(c, i, f"Source document attached: {name} (SHA-256 {sha[:12]}...)", kind="data"); return cur.lastrowid
+    cur = c.execute("INSERT INTO sources(job_id,filename,mime,sha256,content,at,user_id,section) VALUES(?,?,?,?,?,?,?,?)", (i, name, mime, sha, raw, now(), me(), section))
+    log(c, i, f"Source document attached to {NAMES.get(section, 'the job') if section else 'the job'}: {name} (SHA-256 {sha[:12]}...)", kind="data"); return cur.lastrowid
 
 def source_row(sid):
     with db() as c: r = c.execute("SELECT * FROM sources WHERE id=?", (sid,)).fetchone()
@@ -1686,14 +1704,17 @@ def demo():
     return jsonify(id=i, existing=bool(old), scans_added=added), 200 if old else 201
 
 def attach_demo_scans(i):
-    """The form page matches each section to its scan by file name (e.g. 'Logsheet for temp. rise' -> temperature rise)."""
+    """The demo job's scanned sheets, each attached to the test it belongs to (named after the printed sheet)."""
+    by = (("Customer request", "other"), ("Proforma", "proforma"), ("Work instruction", "work"), ("Datasheet for losses", "losses"),
+          ("Logsheet for losses", "resistance"), ("no load current", "noload"), ("short circuit", "sc"), ("temp. rise", "temp"), ("pressure", "pressure"))
     names = sorted(f for f in os.listdir(DEMO_SCANS) if os.path.splitext(f)[1].lower() in (".pdf", ".png", ".jpg", ".jpeg", ".webp")) if os.path.isdir(DEMO_SCANS) else []
     with db() as c:
         have = {r[0] for r in c.execute("SELECT sha256 FROM sources WHERE job_id=?", (i,))}
         n = 0
         for f in names:
             with open(os.path.join(DEMO_SCANS, f), "rb") as fh: raw = fh.read()
-            if hashlib.sha256(raw).hexdigest() not in have: insert_source(c, i, f, raw); n += 1
+            sec = next((k for w, k in by if w.lower() in f.lower()), "other")
+            if hashlib.sha256(raw).hexdigest() not in have: insert_source(c, i, f, raw, sec); n += 1
     return n
 
 auth.setup(app, db, log, os.path.dirname(os.path.abspath(DB)))

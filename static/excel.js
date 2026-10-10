@@ -22,7 +22,7 @@ function sheetBlock(r,open){return `<details class="xs" ${open?'open':''}><summa
  ${r.errors.length?`<div class="errs" style="margin:10px"><ul>${r.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`:''}${r.warnings.length?`<div class="warns" style="margin:10px">${r.warnings.map(esc).join('<br>')}</div>`:''}${fieldsTable(r.fields)}</details>`}
 
 /* ---------------------------------------------------------------- one job: preview, then import exactly that */
-function xlPreview(id,f){return new Promise(async done=>{let b;try{b={filename:f.name,b64:await b64(f)};const r=await api(`/api/jobs/${id}/excel/preview`,b);
+function xlPreview(id,f,sec){return new Promise(async done=>{let b;try{b={filename:f.name,b64:await b64(f),section:sec};const r=await api(`/api/jobs/${id}/excel/preview`,b);
   if(!r.sheets.length)return done(false);  /* not a logsheet workbook: the generic importer reads it */
   modal(`<h2>Read from ${esc(f.name)}</h2><p class="note">Every value with the cell it was read from. Nothing is stored until you import. ${r.unmatched.length?`Sheets not recognised (not read): ${r.unmatched.map(esc).join(', ')}.`:''}</p>
    ${r.problems.length?`<div class="errs"><ul>${r.problems.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`:''}<div style="max-height:58vh;overflow:auto">${r.sheets.map((x,i)=>sheetBlock(x,i==0||x.errors.length)).join('')}</div>

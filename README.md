@@ -73,6 +73,8 @@ what is not assigned and the customer tickets to answer), **My work** (what wait
 (test engineers and the admin: the intake inbox), **Report Workflow**, **Records & Search** (with Excel export of many jobs), **Report
 Preview**; for Admin also **Users & customers**, **Templates**, **Audit log**, **Customer tickets**, **Backups**, **Settings**.
 The job page lists only the source documents the job needs: the request, the tests in its plan, and anything uploaded.
+Every file is uploaded from the row of the test it belongs to (*Upload* on that row): a data file only fills that test,
+a scan is attached to that test. Nothing is allocated by itself (no general drop area, no workbook routed to several jobs).
 Pages for customers: **Open requests** (their jobs and their test requests, *New test request*), **Tickets**, **Notifications**.
 Required fields on every form are marked with a red asterisk.
 
@@ -82,7 +84,6 @@ Required fields on every form are marked with a red asterisk.
 |---|---|
 | Whole chain | Sign in as a customer: *New test request*, fill in the form, send it. Sign in as a tester: *Customer requests*, open it, record sheet 3, accept; take each test, upload its logsheet (`sample_data/`), run checks, review flagged items. Sign in as a verifier: verify each test, sign off. Tester: generate. Sign in as an approver (not anyone who uploaded or verified): approve. |
 | Excel logsheets | Job page -> *This job as filled logsheets*, or a test's blank logsheet from Templates (Admin): drop the workbook on a job to see the preview with source cells |
-| Several jobs in one workbook | Report Workflow -> *Upload a workbook for several jobs* |
 | Failing sample | `test-files/3 - failing job (top-oil rise over limit).csv`: the logged top-oil rise is over its limit, so the report says the sample does NOT comply |
 | Customer | Create a customer account for the job's organisation, sign in: progress, approved values, partial report |
 | Tickets | As the customer: *Tickets* -> *Raise a ticket*. As the admin: *Customer tickets*, answer, close |

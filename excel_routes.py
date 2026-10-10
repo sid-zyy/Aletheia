@@ -334,6 +334,9 @@ def install(app_module):
         """What would be read from this workbook, value by value with its cell. Nothing is stored."""
         j = A.getjob(i, False); b = A.body(); name, raw = file_arg(b)
         with db() as c: sheets, unmatched = read_workbook(c, name, raw, b.get("template_id"))
+        if b.get("section"):  # uploaded for one test: only that test's sheet is read
+            A.test_key(b["section"]); unmatched += [r["sheet"] for r in sheets if r["section"] != b["section"]]
+            sheets = [r for r in sheets if r["section"] == b["section"]]
         js = norm_series(j["series"])
         for r in sheets:
             s = norm_series(r["series_on_sheet"])
@@ -351,7 +354,8 @@ def install(app_module):
         bay = A.bay_of(b)
         with db() as c: sheets, _ = read_workbook(c, name, raw, b.get("template_id"))
         if b.get("sheets"): sheets = [r for r in sheets if r["sheet"] in b["sheets"]]
-        if not sheets: return jsonify(error=["No sheet of this workbook matches a logsheet template"]), 400
+        if b.get("section"): A.test_key(b["section"]); sheets = [r for r in sheets if r["section"] == b["section"]]
+        if not sheets: return jsonify(error=["No sheet of this workbook matches " + (f"the {A.NAMES.get(b['section'], 'chosen')} template" if b.get("section") else "a logsheet template")]), 400
         errs = [f"{r['sheet']}: {e}" for r in sheets for e in r["errors"]]
         content, dup = to_content(sheets)
         if errs or dup: return jsonify(error=dup + errs), 400
