@@ -212,7 +212,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
 | `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `tickets.js`, `assistant.js` |
 | `docs/` | [NEXT_STEPS.md](docs/NEXT_STEPS.md) (plan and progress), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VALIDITY.md](docs/VALIDITY.md), [LAB_WORKFLOW.md](docs/LAB_WORKFLOW.md), [CHECKLIST.md](docs/CHECKLIST.md), [NOTES.md](docs/NOTES.md) |
-| `sample_data/tests/` | the demo job's data as one CSV per test (proforma, work instruction, losses, resistance, no-load, routine, short circuit, temperature rise, pressure), to upload test by test |
+| `sample_data/tests/` | the demo job's data per test, as a CSV and as a filled Excel logsheet (template layout, read by the upload preview) (proforma, work instruction, losses, resistance, no-load, routine, short circuit, temperature rise, pressure), to upload test by test |
 | `sample_data/`, `test-files/` | demo job in every format with its scans (including the scanned CPRI/QAF/01A request form), the sample report, legacy registers; three CSV demo jobs |
 
 ## Limits to know about
