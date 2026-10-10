@@ -107,7 +107,6 @@ async function intakePage(id){id=+id||null;const [F,orgs,testers,j]=await Promis
   $('#iv').innerHTML=(e.length?`<div class="errs" role="alert"><b>${e.length} problem${e.length==1?'':'s'} to fix</b><ul>${e.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:'')+
    (w.length?`<div class="warns"><b>Please confirm</b><ul>${w.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-weight:600"><input type="checkbox" id="icw"> I have checked these against the customer's form</label></div>`:'')+
    (!e.length&&!w.length?'<div class="okb">Nothing missing, nothing malformed.</div>':'')};
-  try{const r=await api('/api/orgs',{name,email:$('#i_email').value});const o=document.createElement('option');o.value=r.id;o.textContent=name;o.selected=true;$('#i_org').prepend(o)}catch(e){toast(e,1);$('#i_org').value=''}};
  $('#ick').onclick=async()=>{try{show(await api('/api/intake/check',await collect()))}catch(e){toast(e,1)}};
  $('#isv').onclick=async()=>{const b=await collect();try{const r=await api(id?`/api/jobs/${id}/intake`:'/api/intake',b);toast(id?'Intake details saved':`Job ${r.series} created (sample ${r.sample})`);go('job/'+(id||r.id))}
   catch(e){try{show(await api('/api/intake/check',b))}catch(x){toast(e,1)}scrollTo(0,$('#iv').offsetTop-80)}}}
