@@ -1,9 +1,11 @@
 # Aletheia - Automated Test Report Generation System
 
-Web application for the CPRI Short Circuit Laboratory. Test engineers receive the customer's request, upload each test's
-**Excel logsheet** (several testers on one job, in any order, from any bay), verifiers check every value against its source
-cell, and an approver releases a signed, hash-verifiable PDF test report. Customers follow their jobs in a portal: what is
-approved, what is pending, and a partial report built from approved tests only.
+Web application for the CPRI Short Circuit Laboratory. Customers raise their test request online on the **Customer Request
+Form CPRI/QAF/01A**; test engineers receive it when the sample arrives, upload each test's **Excel logsheet** (several testers
+on one job, in any order, from any bay), verifiers check every value against its source cell, and an approver releases a
+signed, hash-verifiable PDF test report in the lab's **Transformer Test report format**. Customers follow their jobs in a
+portal (what is approved, what is pending, a partial report built from approved tests only) and raise **tickets** to the
+laboratory's administrators.
 
 It runs on one ordinary lab PC (Flask + SQLite, no other services) and is used over the lab's local network.
 The plan this build follows, with the status of every phase, is in [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
@@ -62,9 +64,11 @@ is recorded in the audit log.
    customer is notified. Corrections after release are **amendments**: a new version that supersedes the old one, which stays
    verifiable.
 
-Pages: **Dashboard** (with each person's tasks: what to test, take, verify, approve; for Admin what waits for approval and what is not assigned), **My work** (what waits on you, oldest first), **Report Workflow**,
-**Records & Search** (with Excel export of many jobs), **Report Preview**; for Admin: **Users & customers**, **Templates**,
-**Audit log**, **Backups**, **Settings**; **Customer tickets**; for customers: **My jobs** (with their test requests), **Tickets** and **Notifications**.
+Pages for staff: **Dashboard** (each person's tasks: what to test, take, verify, approve; for Admin what waits for approval,
+what is not assigned and the customer tickets to answer), **My work** (what waits on you, oldest first), **Customer requests**
+(test engineers: the intake inbox), **Report Workflow**, **Records & Search** (with Excel export of many jobs), **Report
+Preview**; for Admin also **Users & customers**, **Templates**, **Audit log**, **Customer tickets**, **Backups**, **Settings**.
+Pages for customers: **My jobs** (their jobs and their test requests, *New test request*), **Tickets**, **Notifications**.
 
 ### Demo
 
@@ -75,6 +79,7 @@ Pages: **Dashboard** (with each person's tasks: what to test, take, verify, appr
 | Several jobs in one workbook | Report Workflow -> *Upload a workbook for several jobs* |
 | Failing sample | `test-files/3 - failing job (top-oil rise over limit).csv`: the logged top-oil rise is over its limit, so the report says the sample does NOT comply |
 | Customer | Create a customer account for the job's organisation, sign in: progress, approved values, partial report |
+| Tickets | As the customer: *Tickets* -> *Raise a ticket*. As the admin: *Customer tickets*, answer, close |
 
 ## Customer tickets
 
@@ -104,7 +109,8 @@ report, in words), description of the sample, summary of tests conducted (IS 118
 drawings, routine test results, short-circuit withstand, reactance / inspection / oil leakage / routine pressure, temperature
 rise, type pressure / vacuum and no-load current at 112.5 %, with the conclusion; the last sheet carries the notes, the
 accreditation mark, the verification QR code and the traceability annex. A full job gives 11 sheets; sheets without data are
-left out and the sheet references follow. Values are printed as logged. Laboratory details, clause numbers and notes are in
+left out and the sheet references follow. Values are printed as logged. The cover takes the customer, sample, witnesses and
+requirement from the customer's request, and the deviations from sheet 3 of the request form. Laboratory details, clause numbers and notes are in
 `report_template.json`. Energy efficiency, coil, core and winding details (proforma) and the atmospheric pressure (pressure
 logsheet) are optional template fields; when a logsheet does not carry them the report prints NA or the construction text.
 
@@ -113,6 +119,8 @@ logsheet) are optional template fields; when a logsheet does not carry them the 
 - One database row per test section, with revisions: concurrent uploads to different tests never overwrite each other, and an
   edit from an out-of-date page is refused with who changed it.
 - Every revision of every test and every uploaded file is kept, with SHA-256 fingerprints.
+- The customer's request is kept exactly as sent (with its SHA-256) and is never edited by the laboratory; a data file never
+  changes it. A correction is a new request from the customer, linked to the one it replaces.
 - The audit log records who did what, from which workstation, and is a hash chain (Admin -> Audit log -> *Check the chain*);
   write down the daily chain tip shown on the Backups page.
 - Released reports, their data and files are locked by the application and by database triggers.
@@ -188,16 +196,16 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `report.py` | the test report PDF in the lab's *Transformer Test report format* (and the customer's partial report) |
 | `auth.py` | accounts, sessions, CSRF, roles and the permission gate |
 | `integrity.py` | sections and history, files, numbering, audit hash chain, database triggers, migrations |
-| `workflow.py` | intake rules (PIN-code table), ownership, progress, sign-off readiness |
+| `workflow.py` | the Customer Request Form CPRI/QAF/01A (fields, sheet 3) and its rules (PIN-code table), ownership, progress, sign-off readiness |
 | `xltemplates.py`, `seed_templates.py`, `excel_routes.py` | Excel template engine, version-1 templates, template registry and Excel routes |
 | `retention.py` | backups, backup check, audit tip, record packages |
 | `tickets.py` | customer tickets to the administrators: thread, status, notifications |
-| `notify.py`, `portal.py` | notifications, email outbox, settings; partial reports, approved values, customer forms |
+| `notify.py`, `portal.py` | notifications, email outbox, settings; partial reports, approved values, customers' test requests |
 | `rules.py` | every engineering threshold with its source and status |
 | `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
 | `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `tickets.js`, `assistant.js` |
-| `docs/` | [NEXT_STEPS.md](docs/NEXT_STEPS.md) (plan and progress), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VALIDITY.md](docs/VALIDITY.md), [NOTES.md](docs/NOTES.md) |
-| `sample_data/`, `test-files/` | demo job in every format with its scans, legacy registers; three CSV demo jobs |
+| `docs/` | [NEXT_STEPS.md](docs/NEXT_STEPS.md) (plan and progress), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VALIDITY.md](docs/VALIDITY.md), [LAB_WORKFLOW.md](docs/LAB_WORKFLOW.md), [CHECKLIST.md](docs/CHECKLIST.md), [NOTES.md](docs/NOTES.md) |
+| `sample_data/`, `test-files/` | demo job in every format with its scans (including the scanned CPRI/QAF/01A request form), the sample report, legacy registers; three CSV demo jobs |
 
 ## Limits to know about
 

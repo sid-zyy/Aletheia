@@ -27,15 +27,17 @@ Verifiers clear "My work" at fixed times (e.g. 11:00, 14:00, 16:30), so tests do
 *Aletheia:* the verification queue is sorted oldest first, verifiers are notified of every upload, and a test can be verified
 while others are still being tested.
 
-## 6. Customer form checklist at intake
-Send customers the Excel request form in advance (they can download and return it through the portal). At intake, check the
-entered values against the product and the original form before confirming. *Aletheia:* missing or malformed values (PIN
-code, phone, email, rating, witness) are listed at once; a PIN that does not match the state needs confirmation; release is
-blocked until the intake is confirmed against the original.
+## 6. Customers raise their request online
+Give each customer organisation a portal account and ask them to raise every test request online, on the Customer Request
+Form CPRI/QAF/01A (sheets 1 and 2), before the sample is sent. At intake, compare the request with the product, record
+sheet 3 and confirm. *Aletheia:* the form is checked as the customer types (PIN code, phone, email, rating, storage /
+disposal, decision rule, declarations); a request with something missing or wrong is returned to the customer with the
+reason instead of being corrected by the laboratory; a PIN that does not match the state needs confirmation; release is
+blocked until the intake is checked.
 
 ## 7. A single point of intake
 Security and the receiving engineer hand over at a fixed point, so the arrival time is
-unambiguous. *Aletheia:* records arrival time, who opened the box and who received it.
+unambiguous. *Aletheia:* records the arrival time, the physical condition on receipt and who accepted the job (sheet 3).
 
 ## 8. Weekly review of open jobs
 Review the jobs still open and the customers' open tickets. *Aletheia:* release records when each report was finished; the
@@ -51,5 +53,5 @@ Never re-issue a report by editing it. An approver and a second approver open an
 tests are corrected and re-verified; the new version supersedes the old one, which stays verifiable.
 
 ## 11. Daily routine for the administrator
-Note the audit chain tip shown on the Backups page in the paper register; copy the `backups` folder to a second disk weekly;
+Answer the open customer tickets (dashboard: *Customer tickets to answer*). Note the audit chain tip shown on the Backups page in the paper register; copy the `backups` folder to a second disk weekly;
 use *Check* on one backup a month (the restore drill).

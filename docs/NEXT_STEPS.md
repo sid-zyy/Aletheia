@@ -11,10 +11,14 @@ Main focus of this plan: **the workflow, the roles, and login.**
 | # | Decision | Effect on the plan |
 |---|---|---|
 | D1 | **Intake is done by the test engineer** who receives the filled customer request form. No separate Intake/Security role. | Roles reduced to Admin, Tester, Verifier, Approver, Customer. "Create job" is a Tester permission (§2, §3). |
-| D2 | **The 15-day limit is ignored.** Target is **same day / that evening**. | SLA clock becomes a same-day cut-off (§7.2). Verification must keep pace with uploads. |
+| D2 | **The 15-day limit is ignored.** ~~Target is same day / that evening.~~ Superseded by D7. | ~~SLA clock becomes a same-day cut-off (§7.2).~~ |
 | D3 | **Customer sees how much is approved, what is pending, and the partial report so far.** | Progress view + a continuously updated *partial report* built from approved sections (§7.1). |
 | D4 | **"Pin code" meant location (postal PIN code)**, only as an example that **nothing may be missing or wrong**. It is not a sign-off PIN. | No sign-off PIN. Instead: strict required-field and format validation at intake (§3.6), plus the integrity rules (§6). Re-entering the password at release stays optional. |
 | D5 | **All customers are on localhost.** The system **sends a mail/notification when something is uploaded.** | Customer portal is on the same LAN host, no external exposure. Notification centre + optional SMTP email (§7.3). |
+| D6 | **The test report follows the lab's "Transformer Test report format"** (Word file, 11 sheets). | `report.py` lays the PDF out sheet by sheet; laboratory details, clauses and notes in `report_template.json` (Q7 answered: PDF in the lab's layout). |
+| D7 | **No same-day target.** The cut-off was an exaggeration to stay on time. | Today board, cut-off, carry-over and same-day flag removed; release still records `completed_at`. |
+| D8 | **Only the customer raises a new test request**, filled in **exactly as the printed Customer Request Form CPRI/QAF/01A**, and it is received by the CPRI side. | Online form = sheets 1-2; the laboratory records sheet 3 at intake, or returns the request with the reason. Staff cannot create a job without a customer's request (Q14 answered by the form). |
+| D9 | **Customers can raise tickets, which go to the admin.** | `tickets.py`: thread, open / answered / closed, notifications; customers see only their own, never staff names. |
 
 Still assumed (flag if wrong): the customer sees **values only for approved sections**; sections that are uploaded but not yet verified show as *Pending verification* with no numbers, so a customer never sees data that may later be corrected.
 
@@ -33,6 +37,7 @@ Priorities set on 2026-10-10: **data integrity**, **separate roles (customer fir
 | 5. Integrity (amendments, manifest, retention) | **Done 2026-10-10** | See below | 125 pass (+ 6 in `tests/test_amend.py`) |
 | 6. Customer portal, partial report, notifications | **Done 2026-10-10** | See below | 133 pass (+ 8 in `tests/test_portal.py`) |
 | 7. Hardening | **Done 2026-10-10** | See below | 135 pass (+ load test, + scan switch test) |
+| 8. Report format, customer-only requests, tickets, no same-day target | **Done 2026-10-10** | See *Follow-up 2026-10-10 (evening)* | 143 pass (+ format, caching, request form, return and correction, tickets) |
 
 ### Phase 1 (done): what changed
 
@@ -214,6 +219,33 @@ Not done (flag if needed): **PDF/A** output. ReportLab does not produce PDF/A wi
 - **Architecture** page and ARCHITECTURE.md rewritten for the current system (roles, modules, data layer, life of a job, who assigns tests).
 
 Not done, by decision: moving `trocr-env/` and the stray `sersenzy…test.db` out of the parent folder (`ATRG-Merged/`). They are outside this repository, and I did not move your files without asking.
+
+### Follow-up 2026-10-10 (evening)
+
+- **Test report in the lab's format (D6), `report.py` (new):** CPRI header, report number and date box, the ULR / laboratory
+  footer with *Sheet n of N* and the test engineer's signature line on every sheet. Sheets: cover (documents constituting the
+  report, in words), description of the sample, summary of tests conducted (IS 1180 clauses with the sheet of each test),
+  list of drawings, routine results (winding resistance and impedance / load loss at 75 C as logged, ratio with tapping %,
+  phase displacement, no-load), routine contd. (energy efficiency, IR, induced, separate source), short-circuit withstand
+  (conditions, current calculation, oscillograms per tap, thermal shot), reactance and inspection, oil leakage and routine
+  pressure, temperature rise, type pressure / vacuum, no-load current at 112.5 % with the conclusion, notes with the
+  accreditation mark, verification QR and traceability annex. Sheet numbers are learnt by laying the report out twice. Partial
+  reports use the same layout (watermark, no signatures, no ULR). New optional template fields: energy efficiency, coil, core,
+  winding details (proforma), atmospheric pressure (pressure logsheet).
+- **No same-day target (D7):** `/api/today`, the Today page, carry-over, the cut-off setting and warnings, and the same-day flag
+  are gone.
+- **Caches:** the page and scripts are revalidated on every load (`Cache-Control: no-cache`), API answers are never cached
+  (`no-store`), so a browser never runs an old script after an update.
+- **Customer request form (D8):** `workflow.REQUEST_FIELDS` / `LAB_FIELDS` follow CPRI/QAF/01A. The customer fills in sheets 1-2
+  online (`static/request.js` lays it out as the printed form, checked as they type, with the tests to tick). The request waits
+  in **Customer requests**; the engineer sees it as sent, records sheet 3 and the plan and accepts it (numbers allocated), or
+  returns it with the reason (`/api/request-forms/<id>/return`); the customer corrects it and sends it again (the old one is
+  marked replaced). `/api/intake`, `/api/jobs` and `/api/jobs/from-file` need a customer's request; data files never change
+  the request section; record edits are limited to the identifiers; the staff *New request* page, the assistant's new-request
+  flow, the Excel intake and the customers' Excel upload are removed; the demo loader needs `ALETHEIA_DEMO=1`.
+- **Customer tickets (D9), `tickets.py` and `static/tickets.js` (new):** customers raise tickets (category, subject, message,
+  optionally a job); administrators are notified, see them as a dashboard task, answer, close and re-open them.
+
 ---
 
 ## 0. Where the code stands today (what the plan builds on)
@@ -676,6 +708,9 @@ Suggested checkpoint demos: end of phase 1 (login + roles), end of phase 3 (two 
 | Q3 | Customer sees approved vs pending and the partial report so far (D3). Assumption to confirm: numbers only for approved sections (Q3b). |
 | Q4 | "Pin code" = location example of nothing missing or wrong (D4). No sign-off PIN. |
 | Q5 | All customers are on localhost; notification/email on upload (D5). |
+| Q7 | The official report is the PDF in the lab's "Transformer Test report format" (D6). |
+| Q12 | Not needed: the same-day target was dropped (D7). |
+| Q14 | The request form is CPRI/QAF/01A (Issue 02); its fields are implemented as printed (D8). |
 
 **Still open**
 
@@ -683,14 +718,13 @@ Suggested checkpoint demos: end of phase 1 (login + roles), end of phase 3 (two 
 |---|---|---|
 | Q3b | Confirm: should a customer see values from sections that are uploaded but not yet verified, or only approved ones? | Default in the plan is approved only |
 | Q6 | Is a QR code on the *report* acceptable (verification link), given there is no QR on the product box? | Today's verify page depends on it |
-| Q7 | Is the official report the Excel template or the PDF? Is installing LibreOffice acceptable? | §5.7 |
 | Q8 | How many test types, templates and test bays exist today? Can we get every current logsheet as `.xlsx`? Are cells already named? | Template work estimate |
 | Q9 | Who may approve (list)? Is a second signer needed for amendments? | Role seeding |
 | Q10 | Required retention: how long, and must records be kept in a specific format (PDF/A)? Any regulator audit requirements? | §6.6 |
 | Q11 | Is a recalculated figure ever legitimately needed (e.g. the standard demands a derived number)? If so, is it entered as a logged value by the tester? | F5 edge case |
-| Q12 | What is the working-day cut-off time for the same-day target, and what happens to jobs that arrive late in the day? | §7.2 default |
 | Q13 | Is there an SMTP server or mail account the lab PC can use, or do we ship in-app notifications only for now? | §7.3 |
-| Q14 | Exact list of mandatory fields on the customer request form (get a filled sample). | §3.6 |
+| Q15 | Confirm the report's "Limit as per the standard" values (35 / 40 C) and the IS 1180 clause numbers in `report_template.json`. | Printed on every report |
+| Q16 | Should address, contact, phone and email stay separate lines on the online form (they are one block on the printed form)? | Checks and notifications use them |
 
 ---
 
@@ -702,7 +736,6 @@ Suggested checkpoint demos: end of phase 1 (login + roles), end of phase 3 (two 
 | Roles proliferate beyond the number of people | "Different person per step per job", not "different person overall"; one user can hold several roles |
 | Data-model migration breaks existing jobs | Backup, scripted migration, run the existing tests on a migrated copy |
 | Over-strict locking blocks a genuine correction | Amendment flow (§6.5), not an admin override |
-| Same-day target stalls on verification | Verifier queue sorted by oldest, notify on every upload, verify while testing continues (§7.2) |
 | Customer sees data later corrected | Show numbers only for approved sections; partial is watermarked and versioned (§7.1) |
 | Email unreliable on a lab PC | In-app notifications are primary; email is a queued extra that never blocks work |
 | Clock drift or lost DB on a single PC | Daily backup, restore drill, clock warning |
@@ -712,11 +745,17 @@ Suggested checkpoint demos: end of phase 1 (login + roles), end of phase 3 (two 
 
 ## 14. Immediate next actions
 
-Status 2026-10-10: phases 1-7 are implemented (see the progress section at the top). What remains needs the lab:
+Status 2026-10-10 (evening): phases 1-7 and the evening follow-up (report format, customer-only requests, tickets, no same-day
+target) are implemented. What remains needs the lab:
 
-1. Get a **filled sample of the customer request form** (Q14) and **every current logsheet as `.xlsx`** (Q8). The intake field list (`workflow.INTAKE_FIELDS`) and the version-1 templates are assumptions until then; each real logsheet becomes a new template version (Admin -> Templates: sample, bind cells, test on past uploads, activate).
-2. Confirm **Q3b** (customers see values of approved tests only: implemented that way), **Q12** (cut-off time and late arrivals: default 18:00, arrivals after it get the next day's), **Q11** (logged winding rise and the other figures marked *derived* in `docs/VALIDITY.md`).
+1. **Every current logsheet as `.xlsx`** (Q8): each becomes a new template version (Admin -> Templates: sample, bind cells, test
+   on past uploads, activate). The version-1 templates are Aletheia's own layouts until then.
+2. Confirm **Q15** (temperature-rise limits and clause numbers printed on the report), **Q16** (address block of the online
+   form), **Q3b** (customers see values of approved tests only: implemented that way) and **Q11** (logged winding rise and the
+   figures marked *derived* in `docs/VALIDITY.md`).
 3. **Q13** (SMTP): in-app notifications work now; set the mail server in Admin -> Settings when one is available.
-4. **Q6** (QR code on the report) and **Q7** (PDF vs the lab's Excel report): the PDF with QR verification stays until answered.
-5. Before using real data: create the administrator on the lab PC, set the cut-off, create the testers / verifiers / approvers with their certified tests, the customer organisations and the bays; run one job end to end with the lab's own sheets.
-6. Done (was items 3-6 here): backup and login (phase 1), the `validate()` audit (phase 4, `docs/VALIDITY.md`), strict intake (phase 3). The `trocr-env/` folder and the stray `.db` file in `ATRG-Merged/` are outside the repository and were left in place.
+4. **Q6** (QR code on the report): kept on the last sheet until answered.
+5. Before using real data: create the administrator on the lab PC, the testers / verifiers / approvers with their certified
+   tests, the customer organisations with a customer account each, and the bays; let one customer raise a request and run the
+   job end to end with the lab's own sheets.
+6. The `trocr-env/` folder and the stray `.db` file in `ATRG-Merged/` are outside the repository and were left in place.

@@ -5,11 +5,11 @@ One Flask process and one SQLite database on a lab PC; browsers on the lab netwo
 ```mermaid
 flowchart LR
     subgraph People
-        T[Test engineer: intake, takes tests, uploads]
+        T[Test engineer: receives requests, takes tests, uploads]
         V[Verifier: verify, sign off]
         AP[Approver: release, amend]
-        AD[Admin: assigns tests, users, templates, backups]
-        CU[Customer: fills in requests, portal]
+        AD[Admin: assigns tests, answers tickets, users, templates, backups]
+        CU[Customer: raises requests and tickets, portal]
     end
     subgraph Gate["auth.py"]
         G[Sessions, CSRF, roles, permission per route]
@@ -18,7 +18,7 @@ flowchart LR
         X1[Logsheet workbooks -> xltemplates.py with versioned templates]
         X2[Flat files CSV / Excel / SQLite / JSON -> importers.py]
         X3[Scans as evidence; optional AI reading -> vision.py]
-        X4[Customer request: online form or Excel -> intake rules, workflow.py]
+        X4[Customer Request Form CPRI/QAF/01A, online -> workflow.py rules; sheet 3 at intake]
     end
     subgraph Store["integrity.py + SQLite"]
         S1[(sections + section_history, files, jobs)]
@@ -28,12 +28,13 @@ flowchart LR
     end
     subgraph Engine["app.py"]
         E1[Checks: validate, values as logged]
-        E2[Report: build_pdf, manifest, QR]
+        E2[Report: report.py in the lab's format, manifest, QR]
     end
-    subgraph Ops["notify.py, portal.py, retention.py"]
+    subgraph Ops["notify.py, portal.py, tickets.py, retention.py"]
         O1[Notifications + email outbox]
         O2[Partial reports, approved values]
         O3[Backups, audit tip, record packages]
+        O4[Customer tickets to the admins]
     end
     T & V & AP & AD & CU --> G
     G --> X1 & X2 & X3 & X4 --> S1
@@ -42,10 +43,12 @@ flowchart LR
     S1 --> O2 --> CU
     S1 & S3 --> O1
     S1 & S2 & S3 --> O3
+    CU --> O4 --> AD
 ```
 
 Data flow: every input becomes one row per test section (`sections`), written in a single transaction per upload, with every
-revision copied to `section_history` and the uploaded file kept in `files`. The job's data dict is assembled from its
+revision copied to `section_history` and the uploaded file kept in `files`. A job starts only from a customer's request: its
+values become the `request` section (kept as sent, never edited by the laboratory or by a data file). The job's data dict is assembled from its
 sections when read, so `validate` and `build_pdf` see one structure. Every action writes an audit entry, chained to the
 previous one by hash.
 
@@ -57,17 +60,18 @@ previous one by hash.
 | `app.py` | REST API, job lifecycle, checks (`validate`), report (`build_pdf`, which calls `report.py`), workflow routes (verify, sign-off, intake), approval and amendment, search, statistics |
 | `auth.py` | Users and customer organisations, password hashing, sessions (idle/absolute timeout, lock-out), CSRF, `PERMS` and the `before_request` gate that refuses any route without a rule |
 | `integrity.py` | Section rows with revisions (optimistic locking), section history, files, series/sample allocation, audit hash chain, database triggers, numbered migrations with backup |
-| `workflow.py` | Intake validation (required fields, formats, PIN-code table; also the customer's own online request), test plan, ownership and certification, progress, sign-off readiness |
+| `workflow.py` | The Customer Request Form CPRI/QAF/01A: fields of sheets 1-2 (customer) and sheet 3 (laboratory) and their rules (required fields, formats, PIN-code table, choices, declarations), test plan, ownership and certification, progress, sign-off readiness |
 | `xltemplates.py` | Template engine: read a sheet (names, labels, cells, tables; statuses per value), draw blank and filled sheets, diff and validate mappings |
-| `seed_templates.py` | Version 1 of the logsheet templates and the customer request form (seeds the registry once) |
+| `seed_templates.py` | Version 1 of the logsheet templates and of an Excel request form kept in the registry (seeds it once) |
 | `excel_routes.py` | Template registry (draft / active / retired), upload preview and import, several jobs per workbook, Excel downloads |
 | `notify.py` | In-app notifications, email outbox and worker, settings |
-| `portal.py` | Partial reports, approved values with logsheet labels, requests filled in online by customers, Excel request forms |
+| `tickets.py` | Customer tickets to the administrators: thread (append-only), status open / answered / closed, notifications |
+| `portal.py` | Partial reports, approved values with logsheet labels, customers' test requests (send, check, correct, the laboratory's inbox) |
 | `retention.py` | Backups with checksums, backup check, audit tip, record packages, server clock |
 | `importers.py` | Flat-layout readers and exporters (CSV, Excel, SQLite, JSON), legacy registers |
 | `vision.py` | Optional AI reading of scanned sheets (off unless `ALETHEIA_FEATURE_SCAN=1`) |
 | `rules.py` | Engineering thresholds with source and status |
-| `static/` | Single-page UI: `index.html` (pages, job page, report), `auth.js` (sign-in, roles, Admin and customer pages), `workflow.js` (verification card, intake, My work, amendments), `excel.js` (upload preview, templates), `portal.js` (notifications, Today, Settings, customer additions), `ui.js` (user menu, dashboard tasks, take / assign tests, customer request form, dashboard emblem) |
+| `static/` | Single-page UI: `index.html` (pages, job page, report), `auth.js` (sign-in, roles, Admin and customer pages), `workflow.js` (verification card, intake, My work, amendments), `excel.js` (upload preview, templates), `portal.js` (notifications, Settings, customer additions), `request.js` (Customer Request Form laid out as the printed form, customer requests, intake inbox and receiving a request), `tickets.js` (tickets for customers and administrators), `ui.js` (user menu, dashboard tasks, take / assign tests, dashboard emblem) |
 
 ## Data model (`aletheia.db`, schema version 2)
 
@@ -85,7 +89,8 @@ previous one by hash.
 | `partials` | Every partial report version shown to the customer, with its hash |
 | `templates` | Template versions with mapping, status, sample sheet |
 | `assignments`, `bays`, `counters` | Test-to-engineer assignments with the bay, test bays, series/sample counters |
-| `notifications`, `outbox`, `settings`, `customer_forms` | Notices, queued emails, lab settings, customers' requests (filled online, or Excel) |
+| `notifications`, `outbox`, `settings`, `customer_forms` | Notices, queued emails, lab settings, customers' requests as sent (status received / returned with reason / used / replaced) |
+| `tickets`, `ticket_messages` | Customer tickets and their messages (messages cannot be changed or removed) |
 | `audit` | Every action: who, role, workstation, kind, text, previous hash, own hash |
 | `schema_version` | Migrations applied |
 
@@ -98,14 +103,14 @@ previous one by hash.
 
 Uploads without a bay use the bay of the assignment. Each person's dashboard lists their tasks: engineers what to test and what is
 free to take, verifiers what to verify and sign off, approvers what to approve, the administrator what waits for approval,
-tests not assigned, customer requests waiting, and locked accounts.
+tests not assigned, customer requests waiting, customer tickets to answer, and locked accounts.
 
 ## Job lifecycle
 
 | Stage | Reached when |
 |---|---|
-| (before) Request | The customer fills in the request online (or sends the Excel form); it waits in the intake inbox |
-| 0 Request captured | Intake recorded (or request created from a file) |
+| (before) Request | The customer fills in the Customer Request Form online; it waits in the intake inbox, or is returned to them with the reason |
+| 0 Request captured | The laboratory received the request: sheet 3 recorded, numbers allocated |
 | 1 Data imported | Any test data uploaded or changed (also voids the sign-off) |
 | 2 Validated | Checks run without data-layout errors |
 | 3 Report ready | Flagged items reviewed, every planned test verified or not applicable, job signed off, report generated |
