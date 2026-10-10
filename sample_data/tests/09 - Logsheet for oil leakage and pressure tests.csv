@@ -1,0 +1,39 @@
+﻿section,field,value
+pressure,amb,25
+pressure,plate_m,1.6
+pressure,routine.kpa,35
+pressure,routine.min,10
+pressure,routine.date,14-11-2025
+pressure,routine.obs,No leakage at any point
+pressure,type.date,14-11-2025 / 17-11-2025
+pressure,type.pressure.kpa,80
+pressure,type.pressure.min,30
+pressure,type.pressure.max,1.08
+pressure,type.pressure.obs,Within limits
+pressure,type.pressure.pts[0][0],259.99
+pressure,type.pressure.pts[0][1],259.64
+pressure,type.pressure.pts[1][0],174.3
+pressure,type.pressure.pts[1][1],174.44
+pressure,type.pressure.pts[2][0],181.35
+pressure,type.pressure.pts[2][1],181.13
+pressure,type.pressure.pts[3][0],276.99
+pressure,type.pressure.pts[3][1],275.91
+pressure,type.vacuum.mmhg,500
+pressure,type.vacuum.min,30
+pressure,type.vacuum.max,2.87
+pressure,type.vacuum.obs,Within limits
+pressure,type.vacuum.pts[0][0],259.4
+pressure,type.vacuum.pts[0][1],261.26
+pressure,type.vacuum.pts[1][0],174.19
+pressure,type.vacuum.pts[1][1],174.93
+pressure,type.vacuum.pts[2][0],186.01
+pressure,type.vacuum.pts[2][1],186.28
+pressure,type.vacuum.pts[3][0],231.09
+pressure,type.vacuum.pts[3][1],233.96
+pressure,leak.kpa,28
+pressure,leak.head_kpa,14
+pressure,leak.hrs,8
+pressure,leak.date,13-11-2025
+pressure,leak.obs,No leakage at any point
+ids,pressure[0],25T1654
+ids,pressure[1],HVD25S0847

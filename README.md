@@ -2,7 +2,7 @@
 
 Web application for the CPRI Short Circuit Laboratory. Customers raise their test request online on the **Customer Request
 Form CPRI/QAF/01A**; test engineers receive it when the sample arrives, upload each test's **Excel logsheet** (several testers
-on one job, in any order, from any bay), verifiers check every value against its source cell, and an approver releases a
+on one job, in any order), verifiers check every value against its source cell, and an approver releases a
 signed, hash-verifiable PDF test report in the lab's **Transformer Test report format**. Customers follow their jobs in a
 portal (what is approved, what is pending, a partial report built from approved tests only) and raise **tickets** to the
 laboratory's administrators.
@@ -21,7 +21,7 @@ Browsers re-check the page and its scripts on every load and never cache API ans
 
 **First start:** the page asks for the first administrator account. This works only on the server PC itself and closes for
 good once the account exists. The administrator then creates the staff accounts (*New staff user*), the customers (*New
-customer*: just a username; its organisation is made for it) and the test bays.
+customer*: just a username; its organisation is made for it).
 
 **Testing phase: no passwords.** Everyone signs in with the username only, and approval and amendments ask for no password.
 Set `ALETHEIA_PASSWORDS=1` to switch every password rule back on (temporary passwords, lock-out, re-entry at release).
@@ -33,8 +33,8 @@ Set `ALETHEIA_PASSWORDS=1` to switch every password rule back on (temporary pass
 
 | Role | Does | Cannot |
 |---|---|---|
-| **Admin** | receives (captures) customer requests like a test engineer; assigns tests (or a whole job) to test engineers with the bay; answers and closes **customer tickets**; users, customer organisations, test bays, Excel templates, settings, backups, audit log; sees what waits for approval | enter or verify data, sign reports |
-| **Tester** (test engineer) | intake: receives a customer's request (records sheet 3 of the form, the test plan; series/sample numbers are allocated) or returns it to the customer with the reason; takes unassigned tests and chooses the bay, uploads the logsheets of their tests, corrects returned tests | raise or change a customer's request, take a test assigned to someone else, verify their own upload, sign off or approve a job they worked on |
+| **Admin** | receives (captures) customer requests like a test engineer; assigns tests (or a whole job) to test engineers; answers and closes **customer tickets**; users, customer organisations, Excel templates, settings, backups, audit log; sees what waits for approval | enter or verify data, sign reports |
+| **Tester** (test engineer) | intake: receives a customer's request (records sheet 3 of the form, the test plan; series/sample numbers are allocated) or returns it to the customer with the reason; takes unassigned tests, uploads the logsheets of their tests, corrects returned tests | raise or change a customer's request, take a test assigned to someone else, verify their own upload, sign off or approve a job they worked on |
 | **Verifier** | checks each uploaded test against its source cells: verify, return (with reason), reopen, not applicable; signs the job off ("all data correct") | verify their own upload |
 | **Approver** | approves and releases the report (re-enters password); with a second approver, amends a released report | approve a job they uploaded, entered or verified data on |
 | **Customer** | the only one who raises a test request: fills in the Customer Request Form (CPRI/QAF/01A, sheets 1-2) online and corrects it when returned; raises **tickets** to the laboratory (questions or problems, optionally about a job); sees their organisation's jobs: progress, approved values, partial report, released reports | see other customers' jobs, values of tests not yet approved, staff names |
@@ -56,8 +56,9 @@ is recorded in the audit log.
    suitable, capability, externally provided products/services; later the deviations noticed during testing), chooses the
    test plan and may take tests. Accepting allocates the series and sample numbers; a request with something missing or
    wrong is **returned** to the customer with the reason, and they correct it and send it again.
-3. **Assignment and testing**: the administrator assigns tests (or the whole job) with the bay, or an engineer takes an
-   unassigned test and chooses the bay. Testers, in any order and bay, upload each test's Excel logsheet. The upload preview shows every value with
+3. **Assignment and testing**: the administrator assigns tests (or the whole job), or an engineer takes an unassigned
+   test. The engineer gets one notification per assignment, however many tests it covers; the same test assigned on several
+   jobs at once is one notification listing the jobs. Testers, in any order, upload each test's Excel logsheet (or CSV). The upload preview shows every value with
    the cell it was read from; a required empty cell blocks the test (never stored as NA). Each test keeps its full history.
 4. **Verification** (Verifier): compare each test's values with its source file, then verify, or return it with a reason.
    A verified test is locked. Checks (`validate`) run on the data; recomputations of logged figures are advisory only.
@@ -71,6 +72,7 @@ Pages for staff: **Dashboard** (each person's tasks: what to test, take, verify,
 what is not assigned and the customer tickets to answer), **My work** (what waits on you, oldest first), **Customer requests**
 (test engineers and the admin: the intake inbox), **Report Workflow**, **Records & Search** (with Excel export of many jobs), **Report
 Preview**; for Admin also **Users & customers**, **Templates**, **Audit log**, **Customer tickets**, **Backups**, **Settings**.
+The job page lists only the source documents the job needs: the request, the tests in its plan, and anything uploaded.
 Pages for customers: **Open requests** (their jobs and their test requests, *New test request*), **Tickets**, **Notifications**.
 Required fields on every form are marked with a red asterisk.
 
@@ -186,7 +188,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `test_validity.py` | one mutation test per engineering check |
 | `test_auth.py` | every route x every role, CSRF, lock-out, timeouts, first run, customers, separation of duties |
 | `test_integrity.py` | concurrent uploads, revisions, atomic numbering, audit chain, release locks, schema migration |
-| `test_workflow.py` | request form and sheet 3 rules, verify / return / reopen, ownership, sign-off, bays, My work |
+| `test_workflow.py` | request form and sheet 3 rules, verify / return / reopen, ownership, sign-off, assignment notifications, My work |
 | `test_excel.py` | template round trips, preview, layout drift, formulas, refused files, several jobs per workbook, template versions |
 | `test_amend.py` | manifest, amendments, record packages, backups and tamper detection |
 | `test_portal.py` | approved values only, partial reports, notifications and email, customer-only requests, return and correction, no same-day board |
@@ -210,6 +212,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
 | `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `tickets.js`, `assistant.js` |
 | `docs/` | [NEXT_STEPS.md](docs/NEXT_STEPS.md) (plan and progress), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VALIDITY.md](docs/VALIDITY.md), [LAB_WORKFLOW.md](docs/LAB_WORKFLOW.md), [CHECKLIST.md](docs/CHECKLIST.md), [NOTES.md](docs/NOTES.md) |
+| `sample_data/tests/` | the demo job's data as one CSV per test (proforma, work instruction, losses, resistance, no-load, routine, short circuit, temperature rise, pressure), to upload test by test |
 | `sample_data/`, `test-files/` | demo job in every format with its scans (including the scanned CPRI/QAF/01A request form), the sample report, legacy registers; three CSV demo jobs |
 
 ## Limits to know about

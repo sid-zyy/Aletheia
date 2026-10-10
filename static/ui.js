@@ -1,4 +1,4 @@
-/* User menu, the dashboard's "Your tasks", taking / assigning tests with a bay, (the customer's request form is in request.js),
+/* User menu, the dashboard's "Your tasks", taking / assigning tests, (the customer's request form is in request.js),
    and the dashboard emblem. */
 (()=>{const s=document.createElement('style');s.textContent=`
 input.in,select{height:46px;box-sizing:border-box}
@@ -51,7 +51,7 @@ async function dashTasks(){if(!ME||isCust())return;const h=$('#app .hero');if(!h
   G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:'Request '+x.id,href:'#/intake/r'+x.id})),x=>ago(x.at))+G('Awaiting verification',w.awaiting_verification,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`)+
   G('Locked accounts',(w.locked_accounts||[]).map(x=>({...x,href:'#/users'})),x=>`until ${esc((x.at||'').slice(11,16))}`,1)+
   G('Customer tickets to answer',(w.tickets||[]).map(x=>({...x,href:'#/tickets/'+x.id})),x=>ago(x.at),1,'tickets');
- if(ME.roles.includes('tester'))g+=G('Returned to you',w.returned,x=>`<span style="color:var(--er)">${esc(x.note||'')}</span>`,1)+G('To test',w.assigned,x=>(x.bay?esc(x.bay)+' &middot; ':'')+'assigned '+ago(x.at),1)+
+ if(ME.roles.includes('tester'))g+=G('Returned to you',w.returned,x=>`<span style="color:var(--er)">${esc(x.note||'')}</span>`,1)+G('To test',w.assigned,x=>'assigned '+ago(x.at),1)+
   G('Available to take',(w.available||[]).map(take),x=>'not assigned')+G('Intake to complete',w.intake,x=>'intake not confirmed against the original')+
   G('Customer requests waiting',(w.requests||[]).map(x=>({...x,series:x.org||'Customer',name:'Request '+x.id,href:'#/intake/r'+x.id})),x=>ago(x.at)+' &middot; open it when the sample arrives');
  if(ME.roles.includes('verifier'))g+=G('To verify',w.to_verify,x=>`uploaded by ${esc(x.by||'-')} ${ago(x.at)}`,1)+G('Ready for your sign-off',w.to_signoff,x=>'every test verified');
@@ -60,18 +60,16 @@ async function dashTasks(){if(!ME||isCust())return;const h=$('#app .hero');if(!h
  c.innerHTML=`<div class="wh"><h2 style="margin:0">Your tasks</h2>${ME.roles.includes('admin')?'':'<a class="lk" href="#/mywork">Open My work</a>'}</div>${g?`<div class="tasks">${g}</div>`:'<p class="note">Nothing is waiting on you right now.</p>'}`;
  h.after(c)}
 
-/* ---------------------------------------------------------------- tests: take one (engineer) or assign (admin), with the bay */
-async function bayOptions(sel){const b=(await api('/api/bays')).filter(x=>x.active);return `<option value="">No bay yet</option>`+b.map(x=>`<option value="${x.id}" ${sel==x.id?'selected':''}>${esc(x.name)}</option>`).join('')}
-async function takeTest(id,key,name){modal(`<h2>Take: ${esc(name)}</h2><p class="note">The test is assigned to you. Choose the bay where you will do it; uploads without a bay use this one.</p><div class="frm"><label for="tk_b">Test bay</label><select id="tk_b">${await bayOptions(bay())}</select></div>
+/* ---------------------------------------------------------------- tests: take one (engineer) or assign (admin) */
+async function takeTest(id,key,name){modal(`<h2>Take: ${esc(name)}</h2><p class="note">The test is assigned to you; you upload its logsheet when it is done.</p>
  <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn g" onclick="closeModal()">Cancel</button><button class="btn" id="tk_ok">Take this test</button></div>`);
- $('#tk_ok').onclick=async()=>{try{await api(`/api/jobs/${id}/assign`,{key,bay_id:+$('#tk_b').value||null});if($('#tk_b').value)setBay($('#tk_b').value);closeModal();toast('Assigned to you');route()}catch(e){toast(e,1)}}}
+ $('#tk_ok').onclick=async()=>{try{await api(`/api/jobs/${id}/assign`,{key});closeModal();toast('Assigned to you');route()}catch(e){toast(e,1)}}}
 async function giveBack(id,key){try{await api(`/api/jobs/${id}/assign`,{key,user_id:null});toast('Given back');job(id)}catch(e){toast(e,1)}}
 async function assignModal(id,key,name,all){const t=await api('/api/testers');
- modal(`<h2>${all?'Assign the whole job':'Assign: '+esc(name)}</h2><p class="note">${all?'Every planned test nobody has started or taken goes to this engineer (tests they are not certified for are skipped).':'The engineer is notified; uploads without a bay use the bay chosen here.'}</p>
- <div class="frm"><label for="as_u">Test engineer</label><select id="as_u">${all?'':'<option value="">Nobody (remove the assignment)</option>'}${t.filter(x=>all||!x.tests.length||x.tests.includes(key)).map(x=>`<option value="${x.id}">${esc(x.name)}${x.tests.length?' ('+esc(x.tests.join(', '))+')':''}</option>`).join('')}</select>
- <label for="as_b">Test bay</label><select id="as_b">${await bayOptions()}</select></div>
+ modal(`<h2>${all?'Assign the whole job':'Assign: '+esc(name)}</h2><p class="note">${all?'Every planned test nobody has started or taken goes to this engineer (tests they are not certified for are skipped).':'The engineer is notified.'}</p>
+ <div class="frm"><label for="as_u">Test engineer</label><select id="as_u">${all?'':'<option value="">Nobody (remove the assignment)</option>'}${t.filter(x=>all||!x.tests.length||x.tests.includes(key)).map(x=>`<option value="${x.id}">${esc(x.name)}${x.tests.length?' ('+esc(x.tests.join(', '))+')':''}</option>`).join('')}</select></div>
  <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn g" onclick="closeModal()">Cancel</button><button class="btn" id="as_ok">Assign</button></div>`);
- $('#as_ok').onclick=async()=>{try{const r=await api(`/api/jobs/${id}/assign`,all?{all:true,user_id:+$('#as_u').value,bay_id:+$('#as_b').value||null}:{key,user_id:+$('#as_u').value||null,bay_id:+$('#as_b').value||null});
+ $('#as_ok').onclick=async()=>{try{const r=await api(`/api/jobs/${id}/assign`,all?{all:true,user_id:+$('#as_u').value}:{key,user_id:+$('#as_u').value||null});
   closeModal();toast(all?`Assigned ${r.assigned.length} test${r.assigned.length==1?'':'s'}${r.skipped.length?'; skipped: '+r.skipped.join(', '):''}`:'Assignment saved');job(id)}catch(e){toast(e,1)}}}
 
 /* ---------------------------------------------------------------- customer: fill in the request online */

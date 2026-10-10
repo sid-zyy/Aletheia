@@ -1,4 +1,4 @@
-/* Workflow in the page: per-test verification card on the job page, strict intake, "My work" queues, test bays.
+/* Workflow in the page: per-test verification card on the job page, strict intake, "My work" queues.
    The server enforces every rule (ownership, separation of duties, locks); this file shows the state and the next step. */
 const WSTATE={not_started:'Not started',uploaded:'Awaiting verification',returned:'Returned to tester',verified:'Verified',na:'Not applicable'};
 const SECN={request:'Customer request form',proforma:'Proforma for transformers',work:'Work instruction',losses:'Losses datasheet',resistance:'Losses logsheet (resistance)',noload:'Losses logsheet (no-load)',
@@ -23,12 +23,11 @@ body.no-report-generate [onclick^="act('generate'"],body.no-report-approve [oncl
 `;document.head.append(s)})();
 /* hide what the role cannot use: one class per missing permission (the server refuses these calls anyway) */
 function roleClasses(){for(const p of['data.write','job.delete','job.edit','data.check','report.generate','report.approve','job.create','request.receive'])document.body.classList.toggle('no-'+p.replace('.','-'),!!ME&&!can(p))}
-const bay=()=>{try{return +localStorage.getItem('aletheia.bay')||null}catch(e){return null}};
-const setBay=v=>{try{v?localStorage.setItem('aletheia.bay',v):localStorage.removeItem('aletheia.bay')}catch(e){}};
+const bay=()=>null;  /* test bays were removed */
 
 /* ---------------------------------------------------------------- job page: tests and verification */
 async function wfCard(j){if(isCust())return;const id=j.id,nx=$('.card.next');if(!nx)return;
- const [bays,testers]=await Promise.all([can('data.write')?api('/api/bays'):[],can('job.assign')?api('/api/testers'):[]]);
+ const testers=can('job.assign')?await api('/api/testers'):[];
  const keys=[...new Set([...(j.plan.length?j.plan:j.progress.map(p=>p.key)),...Object.keys(j.meta).filter(k=>k!='request')])];
  const st=k=>(j.meta[k]||{}).state||'not_started',n=s=>keys.filter(k=>st(k)==s).length,ver=can('section.verify');
  const row=k=>{const m=j.meta[k]||{},s=st(k),a=j.assign[k],mine=m.uploaded_by_id==ME.id,acts=[];
@@ -43,7 +42,7 @@ async function wfCard(j){if(isCust())return;const id=j.id,nx=$('.card.next');if(
   return `<tr><td><b>${esc(secName(k,j))}</b>${!j.plan.length||j.plan.includes(k)||k=='ids'||k=='other'?'':' <small style="display:inline">(not in the test plan)</small>'}
    ${m.uploaded_by?`<small>Uploaded by ${esc(m.uploaded_by)}${m.bay?' in '+esc(m.bay):''}${m.uploaded_at?' &middot; '+esc(m.uploaded_at.slice(0,16).replace('T',' ')):''}${m.file?` &middot; <a class="lk" style="padding:0;font-size:12px" href="/api/files/${m.file_id}">${esc(m.file)}</a>`:''} &middot; rev ${m.revision}</small>`:''}
    ${m.verified_by?`<small>Verified by ${esc(m.verified_by)} &middot; ${esc((m.verified_at||'').slice(0,16).replace('T',' '))}</small>`:''}
-   ${a?`<small>Assigned to ${esc(a.name)}${a.bay?' &middot; '+esc(a.bay):''}</small>`:''}${m.note&&(s=='returned'||s=='na'||s=='uploaded')?`<small class="${s=='returned'?'rsn':''}">${s=='returned'?'Returned: ':s=='na'?'Reason: ':'Reopened: '}${esc(m.note)}</small>`:''}</td>
+   ${a?`<small>Assigned to ${esc(a.name)}</small>`:''}${m.note&&(s=='returned'||s=='na'||s=='uploaded')?`<small class="${s=='returned'?'rsn':''}">${s=='returned'?'Returned: ':s=='na'?'Reason: ':'Reopened: '}${esc(m.note)}</small>`:''}</td>
    <td style="white-space:nowrap"><span class="pst ${s=='returned'?'returned':s}">${WSTATE[s]}</span></td><td><div class="acts">${acts.join('')}</div></td></tr>`};
  const it=j.intake||{},iok=it.valid&&it.checked_by;
  const intake=`<div class="ib ${iok?'ok':'no'}"><span>${iok?`Intake complete: received ${esc((it.arrived_at||'').replace('T',' '))} by ${esc(it.received_by)}${it.opened_by?`, box opened by ${esc(it.opened_by)}`:''}; checked against the original form by ${esc(it.checked_by)}.`
@@ -54,7 +53,7 @@ async function wfCard(j){if(isCust())return;const id=j.id,nx=$('.card.next');if(
   b.innerHTML=`<h2 style="margin:0 0 6px">Amendment open</h2><p style="margin:0">Opened ${esc(j.amend.opened_at.replace('T',' '))} by ${esc(j.amend.opened_by)} with ${esc(j.amend.second_signer)}: <b>${esc(j.amend.reason)}</b></p><p class="note">Reopened: ${j.amend.sections.map(k=>esc(k=='request'?'Customer request / intake':secName(k))).join(', ')}. Version ${j.amend.from_version} remains the valid report until the corrected version is released.</p>`}
  const c=document.createElement('div');c.className='card';c.id='wf';
  c.innerHTML=`<div class="wh"><div><h2 style="margin:0">Tests and verification</h2><span class="note">${n('verified')} of ${keys.length-n('na')} verified &middot; ${n('uploaded')} awaiting verification &middot; ${n('returned')} returned &middot; ${n('not_started')} not started${n('na')?` &middot; ${n('na')} not applicable`:''}</span></div>
-  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${can('data.write')&&!j.released&&bays.some(b=>b.active)?`<label class="note" style="margin:0" for="wfbay">Recording bay</label><select id="wfbay" style="width:auto;padding:7px 10px" onchange="setBay(this.value)"><option value="">Not recorded</option>${bays.filter(b=>b.active).map(b=>`<option value="${b.id}" ${bay()==b.id?'selected':''}>${esc(b.name)}</option>`).join('')}</select>`:''}${so}<button class="lk" onclick="wfHistory(${id})">Section history</button>${j.ever_released&&can('data.export')?`<a class="lk" href="/api/jobs/${id}/package.zip" title="Every released version, its manifest, source files, history and audit, with checksums">Record package (zip)</a>`:''}${!j.released&&ME.roles.includes('admin')?`<button class="btn g s" onclick="assignModal(${id},null,'',1)">Assign whole job</button>`:''}${j.released&&can('report.amend')?`<button class="btn g s" onclick='amendModal(${id},${JSON.stringify(Object.keys(j.meta).filter(k=>k!="request"))})'>Amend this report</button>`:''}</div></div>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${so}<button class="lk" onclick="wfHistory(${id})">Section history</button>${j.ever_released&&can('data.export')?`<a class="lk" href="/api/jobs/${id}/package.zip" title="Every released version, its manifest, source files, history and audit, with checksums">Record package (zip)</a>`:''}${!j.released&&ME.roles.includes('admin')?`<button class="btn g s" onclick="assignModal(${id},null,'',1)">Assign whole job</button>`:''}${j.released&&can('report.amend')?`<button class="btn g s" onclick='amendModal(${id},${JSON.stringify(Object.keys(j.meta).filter(k=>k!="request"))})'>Amend this report</button>`:''}</div></div>
   ${intake}<div class="scroll"><table class="wt">${keys.map(row).join('')}</table></div>`;
  nx.after(c);if(ab)nx.after(ab)}
 /* released reports are superseded, never edited: an approver and a second approver sign the reason */
@@ -94,13 +93,10 @@ async function myWork(){const w=await api('/api/my-work'),age=t=>t?dur((Date.now
   L('Sections waiting for verification',w.to_verify,x=>`${esc(x.name)} (uploaded by ${esc(x.by||'-')})`,'Nothing to verify.')+
   L('Jobs ready for your sign-off',w.to_signoff,()=>'every test verified','None ready.')+
   L('Reports waiting for approval',w.to_approve,()=>'report generated, approval due','Nothing to approve.')+
-  L('Tests assigned to you, not yet uploaded',w.assigned,x=>esc(x.name)+(x.bay?' &middot; '+esc(x.bay):''),'Nothing assigned.')+
+  L('Tests assigned to you, not yet uploaded',w.assigned,x=>esc(x.name),'Nothing assigned.')+
   L('Tests nobody has taken (open the job to take one)',w.available,x=>esc(x.name),'Every planned test has someone.')+
   L('Tests not assigned (open the job to assign)',w.unassigned,x=>esc(x.name),'Every planned test is assigned.')+
   L('Intake to complete or check',w.intake,()=>'intake details incomplete or not checked against the original','All intakes complete.')+
   L('Your recent uploads',w.uploaded,x=>`${esc(x.name)} &middot; ${WSTATE[x.state]||x.state}`,'No uploads yet.')}
 
-/* ---------------------------------------------------------------- Admin: test bays (on the Users page) */
-async function bayCard(){const el=$('#baysCard');if(!el)return;const b=await api('/api/bays');
- el.innerHTML=`<div class="card"><div class="wh"><h2 style="margin:0">Test bays (${b.length})</h2><button class="btn g s" onclick="addBay()">Add bay</button></div>${b.length?b.map(x=>`<div class="src"><span>${esc(x.name)}${x.active?'':' <span class="rl" style="background:var(--cd2);color:var(--mu)">retired</span>'}</span><button class="lk" onclick="api('/api/bays/${x.id}',{active:${x.active?'false':'true'}}).then(bayCard).catch(e=>toast(e,1))">${x.active?'Retire':'Reactivate'}</button></div>`).join(''):'<p class="note">No bays yet. Testers record the bay with each upload; bays are retired, never deleted.</p>'}</div>`}
-async function addBay(){const n=prompt('Name of the test bay (e.g. Bay 3, SC test cell 1)');if(!n)return;try{await api('/api/bays',{name:n});bayCard()}catch(e){toast(e,1)}}
+

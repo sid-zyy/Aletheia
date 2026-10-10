@@ -39,8 +39,7 @@ PERMS = {
     "templates.manage": ("admin",),
     "notifications":    STAFF + ("customer",),
     "job.assign":       ("admin", "tester"),     # admin assigns anyone; a test engineer only takes an unassigned test themselves
-    "bays.manage":      ("admin",),
-    "staff.view":       STAFF,                   # lists of testers and bays, the "My work" queues
+    "staff.view":       STAFF,                   # the list of testers, the "My work" queues
     "tickets.raise":    ("customer",),           # a customer raises a ticket and follows it up
     "tickets.manage":   ("admin",),              # tickets go to the administrators, who answer and close them
 }

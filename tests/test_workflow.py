@@ -1,4 +1,4 @@
-"""Workflow: strict intake, per-section verification, ownership, sign-off, bays, "My work" (NEXT_STEPS.md sections 3, 4, 11)."""
+"""Workflow: strict intake, per-section verification, ownership, sign-off, assignment notifications, "My work" (NEXT_STEPS.md sections 3, 4, 11)."""
 import os, sys, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -195,28 +195,38 @@ class Assignment(Flow):
     def planned(self):
         return self.receive()  # plan: proforma, temp, sc
 
-    def test_engineer_takes_an_unassigned_test_with_a_bay(self):
-        i = self.planned(); bay = self.admin.post("/api/bays", json=dict(name="SC cell 2")).json["id"]
+    def test_engineer_takes_an_unassigned_test(self):
+        i = self.planned()
         k = signed_in("w.das")
         self.assertEqual([x["key"] for x in k.get("/api/my-work").json["available"] if x["id"] == i], ["proforma", "sc", "temp"])
         self.assertEqual(k.post(f"/api/jobs/{i}/assign", json=dict(key="sc", user_id=uid("t.rao"))).status_code, 403)  # not for someone else
-        self.assertEqual(k.post(f"/api/jobs/{i}/assign", json=dict(key="sc", bay_id=bay)).status_code, 200)
-        a = self.get(i)["assign"]["sc"]; self.assertEqual((a["name"], a["bay"]), ("W. Das", "SC cell 2"))
+        self.assertEqual(k.post(f"/api/jobs/{i}/assign", json=dict(key="sc")).status_code, 200)
+        self.assertEqual(self.get(i)["assign"]["sc"]["name"], "W. Das")
         self.assertEqual(self.c.post(f"/api/jobs/{i}/assign", json=dict(key="sc")).status_code, 403)  # already taken
         self.assertNotIn("sc", [x["key"] for x in self.c.get("/api/my-work").json["available"] if x["id"] == i])
-        self.assertEqual(k.get("/api/my-work").json["assigned"][0]["bay"], "SC cell 2")
-        k.post(f"/api/jobs/{i}/import", json=dict(filename="sc.json", content={"sc": DEMO["sc"]}))  # no bay chosen: the assigned bay
-        self.assertEqual(self.get(i)["meta"]["sc"]["bay"], "SC cell 2")
+        self.assertEqual(k.get("/api/my-work").json["assigned"][0]["key"], "sc")
         s = signed_in("sc.only"); self.assertEqual([x["key"] for x in s.get("/api/my-work").json["available"] if x["id"] == i], [])  # certified for sc only
 
     def test_admin_assigns_a_whole_job_and_reassigns(self):
         i = self.planned(); self.c.post(f"/api/jobs/{i}/assign", json=dict(key="temp"))  # T. Rao took temp himself
+        r_at = aletheia.now()
         r = self.admin.post(f"/api/jobs/{i}/assign", json=dict(all=True, user_id=uid("w.das"))).json
         self.assertEqual(sorted(r["assigned"]), ["proforma", "sc"]); self.assertIn("Temperature-rise logsheet (already assigned)", r["skipped"])
         self.assertEqual(self.c.post(f"/api/jobs/{i}/assign", json=dict(all=True, user_id=uid("t.rao"))).status_code, 403)
         self.assertEqual(self.admin.post(f"/api/jobs/{i}/assign", json=dict(key="temp", user_id=uid("w.das"))).status_code, 200)
         self.assertEqual(self.get(i)["assign"]["temp"]["name"], "W. Das")
-        self.assertTrue([n for n in signed_in("w.das").get("/api/notifications").json["items"] if n["kind"] == "assigned"])
+        with aletheia.db() as c: c.execute("UPDATE notifications SET read_at='x' WHERE created_at < ?", (r_at,))
+        notes = [n["message"] for n in signed_in("w.das").get("/api/notifications?unread=1").json["items"] if n["kind"] == "assigned"]
+        self.assertEqual(len(notes), 2, notes)  # one for the whole job (two tests), one for the reassigned test
+        self.assertIn("Proforma for transformers, Short-circuit logsheet assigned to you", notes[-1])
+
+    def test_same_test_on_several_jobs_at_once_gives_one_notification(self):
+        with aletheia.db() as c: c.execute("DELETE FROM notifications")
+        a, b = self.planned(), self.planned()
+        for i in (a, b): self.assertEqual(self.admin.post(f"/api/jobs/{i}/assign", json=dict(key="sc", user_id=uid("w.das"))).status_code, 200)
+        notes = [n["message"] for n in signed_in("w.das").get("/api/notifications").json["items"] if n["kind"] == "assigned"]
+        self.assertEqual(len(notes), 1, notes)
+        self.assertEqual(notes[0], f"{self.get(a)['series']}, {self.get(b)['series']}: Short-circuit logsheet assigned to you")
 
     def test_admin_dashboard_lists_what_waits(self):
         i = self.planned()
@@ -227,18 +237,7 @@ class Assignment(Flow):
         self.assertEqual([x["id"] for x in self.admin.get("/api/my-work").json["to_approve"]], [d])
 
 
-class BaysAndQueues(Flow):
-    def test_bays(self):
-        self.assertEqual(self.c.post("/api/bays", json=dict(name="Bay 3")).status_code, 403)
-        b3 = self.admin.post("/api/bays", json=dict(name="Bay 3")).json["id"]
-        self.assertEqual(self.admin.post("/api/bays", json=dict(name="Bay 3")).status_code, 409)
-        i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=dict(filename="sc.json", content={"sc": DEMO["sc"]}, bay_id=b3))
-        self.assertEqual(self.get(i)["meta"]["sc"]["bay"], "Bay 3")
-        self.assertTrue(any("in bay Bay 3" in a["event"] for a in self.get(i)["audit"]))
-        self.admin.post(f"/api/bays/{b3}", json=dict(active=False))
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/import", json=dict(filename="t.json", content={"temp": DEMO["temp"]}, bay_id=b3)).status_code, 400)
-        self.assertEqual([x["active"] for x in self.c.get("/api/bays").json], [0])
-
+class Queues(Flow):
     def test_my_work_queues(self):
         a = self.job(); self.c.post(f"/api/jobs/{a}/import", json=dict(filename="a.json", content={"sc": DEMO["sc"]}))
         b = self.job("CPRIBLRSCL25T1700"); self.c.post(f"/api/jobs/{b}/import", json=dict(filename="b.json", content={"temp": DEMO["temp"]}))

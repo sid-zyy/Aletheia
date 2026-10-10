@@ -556,12 +556,8 @@ def write_check(c, i, keys):
     return None
 
 def bay_of(b):
-    """(id, name) of the test bay named in the request, or None. An unknown or retired bay is an error."""
-    bid = b.get("bay_id")
-    if bid in (None, ""): return None
-    with db() as c: r = c.execute("SELECT id, name FROM bays WHERE id=? AND active=1", (bid,)).fetchone()
-    if not r: raise importers.ImportError_("Unknown or retired test bay")
-    return (r["id"], r["name"])
+    """Test bays were removed: uploads record none (older sections keep the bay they were recorded in)."""
+    return None
 
 def conflict(e):
     r = e.row
@@ -806,13 +802,8 @@ def apply_import(j, i, name, content, kind, notes, raw, bay=None, templates=None
                                (i, name, kind, sha, now(), json.dumps(brought), me(), fid)).lastrowid
             for k, v in content.items():
                 if k in integrity.MERGED: v = {**(integrity.read_section(c, i, k) or {}), **v}  # read and write in one transaction
-                sb = bay
-                if not sb:  # no bay chosen at upload: the bay the test was assigned to
-                    r = c.execute("SELECT b.id, b.name FROM assignments a JOIN bays b ON b.id=a.bay_id WHERE a.job_id=? AND a.key=?", (i, k)).fetchone()
-                    sb = (r[0], r[1]) if r else None
-                integrity.write_section(c, i, k, v, me(), f"Imported from {name}" + (f" (bay {sb[1]})" if sb else ""), file_id=fid, import_id=imp_id, bay=sb,
-                                        template_id=(templates or {}).get(k))
-            after_change(c, i, event + (f" in bay {bay[1]}" if bay else "") + f" (file SHA-256 {integrity.sha(raw)[:12]}...)")
+                integrity.write_section(c, i, k, v, me(), f"Imported from {name}", file_id=fid, import_id=imp_id, template_id=(templates or {}).get(k))
+            after_change(c, i, event + f" (file SHA-256 {integrity.sha(raw)[:12]}...)")
             notify.on_uploaded(c, i, list(content))
     except sqlite3.IntegrityError: return jsonify(error=["Duplicate file - identical content already imported for this job"]), 409
     return jsonify(ok=True, kind=kind, sections=list(content), notes=notes)
@@ -1344,14 +1335,13 @@ def na_section(i, k):
 @app.post("/api/jobs/<int:i>/assign")
 @auth.require("job.assign")
 def assign(i):
-    """Who does which test, and in which bay.
-    Admin: assign or reassign any test (key) or every unstarted, unassigned test of the job (all=true) to a tester, with a bay.
-    Tester: take a test nobody is assigned to and nobody has started (user_id is themselves), choosing the bay; or give back
-    a test they took and have not started."""
+    """Who does which test.
+    Admin: assign or reassign any test (key) or every unstarted, unassigned test of the job (all=true) to a tester.
+    Tester: take a test nobody is assigned to and nobody has started (user_id is themselves); or give back a test they took
+    and have not started. The tester gets one notification per assignment, however many tests or jobs it covers."""
     j = getjob(i, False); b = body(); u = auth.current(); admin = "admin" in u["roles"]
     if locked(j): return locked(j)
     uid = b.get("user_id") if admin else (b.get("user_id") or u["id"])
-    bay = bay_of(b) if b.get("bay_id") not in (None, "") else None
     if b.get("all"):
         if not admin: return jsonify(error=["Only an administrator assigns a whole job"]), 403
         keys = [k for k in (j["plan"] or [p["key"] for p in j["progress"]]) if k in NAMES and k != "request"]
@@ -1380,13 +1370,26 @@ def assign(i):
             if tt and k not in tt:
                 if b.get("all"): skipped.append(f"{NAMES[k]} (not certified)"); continue
                 return jsonify(error=[f"{t['full_name']} is not certified for {NAMES[k]}"]), 400
-            c.execute("INSERT INTO assignments(job_id,key,user_id,assigned_by,at,bay_id) VALUES(?,?,?,?,?,?) ON CONFLICT(job_id,key) DO UPDATE SET "
-                      "user_id=excluded.user_id, assigned_by=excluded.assigned_by, at=excluded.at, bay_id=excluded.bay_id", (i, k, t["id"], u["id"], now(), bay[0] if bay else None))
+            c.execute("INSERT INTO assignments(job_id,key,user_id,assigned_by,at) VALUES(?,?,?,?,?) ON CONFLICT(job_id,key) DO UPDATE SET "
+                      "user_id=excluded.user_id, assigned_by=excluded.assigned_by, at=excluded.at", (i, k, t["id"], u["id"], now()))
             how = "taken by" if t["id"] == u["id"] and not admin else "reassigned to" if cur else "assigned to"
-            log(c, i, f"{NAMES[k]} {how} {t['full_name']}" + (f", bay {bay[1]}" if bay else ""), kind="job")
-            if t["id"] != u["id"]: notify.notify(c, [t["id"]], i, "assigned", f"{j['series']}: {NAMES[k]} assigned to you" + (f" ({bay[1]})" if bay else ""), section=k)
+            log(c, i, f"{NAMES[k]} {how} {t['full_name']}", kind="job")
             done.append(k)
+        if t is not None and t["id"] != u["id"] and done: notify_assigned(c, t["id"], i, j["series"], done)
     return jsonify(ok=True, assigned=done, skipped=skipped)
+
+def notify_assigned(c, uid, jid, series, keys):
+    """One notification for an assignment, however many tests it covers. When the same tests are assigned to the same tester
+    on several jobs at the same time (within two minutes, still unread), that one notification is extended with the job."""
+    tests, sec = ", ".join(NAMES[k] for k in keys), ",".join(keys)
+    since = (dt.datetime.now() - dt.timedelta(minutes=2)).isoformat(timespec="seconds")
+    old = c.execute("SELECT id, message FROM notifications WHERE user_id=? AND kind='assigned' AND section_key=? AND read_at IS NULL AND created_at>=? "
+                    "ORDER BY id DESC LIMIT 1", (uid, sec, since)).fetchone()
+    if old:
+        jobs = old["message"].split(": ", 1)[0]
+        if series not in jobs.split(", "): c.execute("UPDATE notifications SET message=?, created_at=? WHERE id=?", (f"{jobs}, {series}: {tests} assigned to you", now(), old["id"]))
+        return
+    notify.notify(c, [uid], jid, "assigned", f"{series}: {tests} assigned to you", section=sec)
 
 @app.post("/api/jobs/<int:i>/signoff")
 @auth.require("section.verify")
@@ -1533,35 +1536,7 @@ def intake_fields():
     return jsonify(form=workflow.FORM, fields=list(workflow.REQUEST_FIELDS), lab=list(workflow.LAB_FIELDS), states=workflow.STATES_UT,
                    tests={k: v for k, v in NAMES.items() if k != "request"})
 
-# ---- test bays, testers, "My work"
-@app.get("/api/bays")
-@auth.require("staff.view")
-def bays():
-    with db() as c: return jsonify([dict(r) for r in c.execute("SELECT id, name, active FROM bays ORDER BY active DESC, name")])
-
-@app.post("/api/bays")
-@auth.require("bays.manage")
-def add_bay():
-    name = re.sub(r"\s+", " ", str(body().get("name") or "")).strip()
-    if not name: return jsonify(error=["Name the bay"]), 400
-    try:
-        with db() as c:
-            bid = c.execute("INSERT INTO bays(name, created_at) VALUES(?,?)", (name, now())).lastrowid
-            log(c, None, f"Test bay added: {name}", kind="admin")
-    except sqlite3.IntegrityError: return jsonify(error=["A bay with that name exists"]), 409
-    return jsonify(id=bid), 201
-
-@app.post("/api/bays/<int:bid>")
-@auth.require("bays.manage")
-def set_bay(bid):
-    """Retire or reactivate a bay. Bays are never deleted: uploads keep naming the bay they came from."""
-    active = int(bool(body().get("active")))
-    with db() as c:
-        r = c.execute("SELECT name FROM bays WHERE id=?", (bid,)).fetchone()
-        if not r: abort(404)
-        c.execute("UPDATE bays SET active=? WHERE id=?", (active, bid)); log(c, None, f"Test bay {r[0]} {'reactivated' if active else 'retired'}", kind="admin")
-    return jsonify(ok=True)
-
+# ---- testers, "My work"
 @app.get("/api/testers")
 @auth.require("staff.view")
 def testers():
@@ -1596,8 +1571,6 @@ def my_work():
             out["uploaded"] = q(f"SELECT j.id, j.series, s.key, s.state, s.uploaded_at AS at FROM sections s JOIN jobs j ON j.id=s.job_id "
                                f"WHERE {open_jobs} AND s.uploaded_by=? AND s.key!='request' AND s.data IS NOT NULL ORDER BY s.uploaded_at DESC LIMIT 50", u["id"])
             out["intake"] = q(f"SELECT j.id, j.series, j.created AS at FROM jobs j WHERE {open_jobs} AND (j.intake IS NULL OR json_extract(j.intake,'$.checked_by') IS NULL) ORDER BY j.created")
-            out["assigned"] = [dict(x, bay=(c.execute("SELECT b.name FROM assignments a JOIN bays b ON b.id=a.bay_id WHERE a.job_id=? AND a.key=?", (x["id"], x["key"])).fetchone() or [None])[0])
-                               for x in out["assigned"]]
             tt = [x for x in str(u.get("test_types") or "").split(",") if x]
             out["available"] = [x for x in unassigned(c, open_jobs) if not tt or x["key"] in tt]
             out["requests"] = q("SELECT f.id, o.name AS org, f.filename, f.at FROM customer_forms f LEFT JOIN orgs o ON o.id=f.org_id WHERE f.status='received' ORDER BY f.id")

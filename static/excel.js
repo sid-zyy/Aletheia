@@ -22,7 +22,7 @@ function sheetBlock(r,open){return `<details class="xs" ${open?'open':''}><summa
  ${r.errors.length?`<div class="errs" style="margin:10px"><ul>${r.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`:''}${r.warnings.length?`<div class="warns" style="margin:10px">${r.warnings.map(esc).join('<br>')}</div>`:''}${fieldsTable(r.fields)}</details>`}
 
 /* ---------------------------------------------------------------- one job: preview, then import exactly that */
-function xlPreview(id,f){return new Promise(async done=>{let b;try{b={filename:f.name,b64:await b64(f),bay_id:bay()};const r=await api(`/api/jobs/${id}/excel/preview`,b);
+function xlPreview(id,f){return new Promise(async done=>{let b;try{b={filename:f.name,b64:await b64(f)};const r=await api(`/api/jobs/${id}/excel/preview`,b);
   if(!r.sheets.length)return done(false);  /* not a logsheet workbook: the generic importer reads it */
   modal(`<h2>Read from ${esc(f.name)}</h2><p class="note">Every value with the cell it was read from. Nothing is stored until you import. ${r.unmatched.length?`Sheets not recognised (not read): ${r.unmatched.map(esc).join(', ')}.`:''}</p>
    ${r.problems.length?`<div class="errs"><ul>${r.problems.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`:''}<div style="max-height:58vh;overflow:auto">${r.sheets.map((x,i)=>sheetBlock(x,i==0||x.errors.length)).join('')}</div>
@@ -31,8 +31,8 @@ function xlPreview(id,f){return new Promise(async done=>{let b;try{b={filename:f
   $('#xi').onclick=async()=>{try{const x=await api(`/api/jobs/${id}/excel/import`,b);closeModal();toast(`Imported ${x.sections.length} section${x.sections.length==1?'':'s'} from ${f.name}`)}catch(e){toast(e,1)}done(true)};
  }catch(e){toast(e,1);done(true)}})}
 
-/* ---------------------------------------------------------------- one workbook, several jobs (a bay's day of logs) */
-function bayWorkbook(){pick('.xlsx',async f=>{if(!f)return;try{const b={filename:f.name,b64:await b64(f),bay_id:bay()},r=await api('/api/excel/preview',b),l=(await api('/api/jobs')).filter(j=>!j.archived&&j.stage<4);
+/* ---------------------------------------------------------------- one workbook, several jobs */
+function bayWorkbook(){pick('.xlsx',async f=>{if(!f)return;try{const b={filename:f.name,b64:await b64(f)},r=await api('/api/excel/preview',b),l=(await api('/api/jobs')).filter(j=>!j.archived&&j.stage<4);
  if(!r.sheets.length)return toast('No sheet of this workbook matches a logsheet template',1);
  modal(`<h2>Sheets in ${esc(f.name)}</h2><p class="note">Each sheet goes to the job whose series number is written on it. Check the routing, change it where needed, then import. Every job keeps its own copy of the file and audit entry.</p>
   <div style="max-height:56vh;overflow:auto"><table class="ut"><thead><tr><th>Sheet</th><th>Test</th><th>Series on sheet</th><th>Job</th></tr></thead><tbody>${r.sheets.map((s,i)=>`<tr><td>${esc(s.sheet)}${s.errors.length?`<div class="note" style="color:var(--er);margin:0">${esc(s.errors[0])}</div>`:''}</td><td>${esc(SECN[s.section]||s.section)}</td><td>${esc(s.series_on_sheet||'-')}<div class="note" style="margin:0">${esc(s.route)}</div></td>
