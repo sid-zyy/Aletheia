@@ -1,216 +1,182 @@
 # Aletheia - Automated Test Report Generation System
 
-Web prototype for the CPRI Short Circuit Laboratory (Hackathon Track 3). It collects the customer request, work
-instruction, proforma and seven lab log sheets from **spreadsheets, CSV files, existing databases, JSON or scans**,
-validates them, stores them in a database and produces a printable, verifiable PDF test report: a pass, or a
-"does not comply" report that lists every requirement not met.
+Web application for the CPRI Short Circuit Laboratory. Test engineers receive the customer's request, upload each test's
+**Excel logsheet** (several testers on one job, in any order, from any bay), verifiers check every value against its source
+cell, and an approver releases a signed, hash-verifiable PDF test report. Customers follow their jobs in a portal: what is
+approved, what is pending, and a partial report built from approved tests only.
 
-This is the merged build: the dashboard, validation engine and report layout of the "updated UI" prototype, plus
-scan evidence, optional AI reading, frozen report versions with QR verification and automated tests from
-"Prototype 3", plus CSV / Excel / database import.
+It runs on one ordinary lab PC (Flask + SQLite, no other services) and is used over the lab's local network.
+The plan this build follows, with the status of every phase, is in [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
 
 ## Install and run
 
     pip install -r requirements.txt
-    python app.py                 # open http://localhost:5000
+    python app.py                 # open http://localhost:5000 on the server PC
 
-Python 3.10 or newer. Records are kept in `aletheia.db` next to `app.py`. All settings are listed under [Settings](#settings).
+Python 3.10 or newer. Records are kept in `aletheia.db` next to `app.py`; backups go to `backups/` beside it.
 
-### Demo scripts
+**First start:** the page asks for the first administrator account. This works only on the server PC itself and closes for
+good once the account exists. The administrator then creates the other accounts (each with a temporary password the person
+changes at first sign-in), the customer organisations and the test bays.
+
+**Upgrading an existing database:** on the first start of this version the database is copied to
+`aletheia.db.pre-v2-<date>.bak`, then converted (one row per test section, audit trail sealed into a hash chain).
+
+## Who does what
+
+| Role | Does | Cannot |
+|---|---|---|
+| **Admin** | assigns tests (or a whole job) to test engineers with the bay; users, customer organisations, test bays, Excel templates, settings, backups, audit log; sees what waits for approval | enter or verify data, sign reports |
+| **Tester** (test engineer) | intake (receives the customer's request, allocates series/sample number), takes unassigned tests and chooses the bay, uploads the logsheets of their tests, corrects returned tests | take a test assigned to someone else, verify their own upload, sign off or approve a job they worked on |
+| **Verifier** | checks each uploaded test against its source cells: verify, return (with reason), reopen, not applicable; signs the job off ("all data correct") | verify their own upload |
+| **Approver** | approves and releases the report (re-enters password); with a second approver, amends a released report | approve a job they uploaded, entered or verified data on |
+| **Customer** | fills in the test request online (or sends the Excel form); sees their organisation's jobs: progress, approved values, partial report, released reports | see other customers' jobs, values of tests not yet approved, staff names |
+
+Tester, Verifier and Approver may be combined on one account; the rules above still apply per job. Admin and Customer
+accounts stand alone. Every rule is enforced by the server (a route without a permission rule is refused) and every refusal
+is recorded in the audit log.
+
+## Workflow
+
+1. **Intake** (Tester): the customer's request, filled in online by the customer (checked as they type), their Excel form, the
+   form on screen, or a data file. Every required field is checked (PIN code, phone, email, state, rating...;
+   "NA" only with a reason); the series and sample numbers are allocated only when nothing is missing or wrong. The engineer
+   records arrival time and who opened the box, chooses the test plan and may assign each test to a tester. The same-day
+   cut-off starts here.
+2. **Assignment and testing**: the administrator assigns tests (or the whole job) with the bay, or an engineer takes an
+   unassigned test and chooses the bay. Testers, in any order and bay, upload each test's Excel logsheet. The upload preview shows every value with
+   the cell it was read from; a required empty cell blocks the test (never stored as NA). Each test keeps its full history.
+3. **Verification** (Verifier): compare each test's values with its source file, then verify, or return it with a reason.
+   A verified test is locked. Checks (`validate`) run on the data; recomputations of logged figures are advisory only.
+4. **Sign-off and report** (Verifier, then Tester): when every planned test is verified or not applicable, the verifier signs
+   the job off; the report is generated as a numbered, hashed version with a printed manifest of everything it was built from.
+5. **Approval** (Approver): re-enter the password to sign; the report is released, locked (also in the database) and the
+   customer is notified. Corrections after release are **amendments**: a new version that supersedes the old one, which stays
+   verifiable.
+
+Pages: **Dashboard** (with each person's tasks: what to test, take, verify, approve; for Admin what waits for approval and what is not assigned), **My work** (what waits on you, oldest first), **Today** (same-day board), **Report Workflow**,
+**Records & Search** (with Excel export of many jobs), **Report Preview**; for Admin: **Users & customers**, **Templates**,
+**Audit log**, **Backups**, **Settings**; for customers: **My jobs** and **Notifications**.
+
+### Demo
 
 | Show | Steps |
 |---|---|
-| Passing job (2 min) | **Try the demo data** -> **Run checks** -> **Mark as reviewed** on each flagged item -> **Generate report** -> enter a name and employee ID (not the test engineer, P. Naveenkumar) -> **Approve and release** -> **Copy customer link** |
-| Failing sample | **New request**, drop `test-files/3 - failing job (top-oil rise over limit).csv` -> **Run checks** -> **Confirm: requirement not met** on the top-oil item, review the rest -> **Generate report**: section 4 says the sample does NOT comply |
-| Missing data | Same with `test-files/2 - partial job (8 documents, 3 values empty).csv`: missing tests read NOT EVALUATED / NOT FULLY EVALUATED, never PASS |
-| Importing | **New request**, drop `sample_data/AP_Transformers_25T1654.csv` (or `.xlsx`, or `_lab.db`) |
-| Historical records | **Records & Search** -> **Import existing register** -> `sample_data/legacy_register.csv` (or `.db`), then the **Historical** tab, result and date filters |
-| Customer view | Open the customer link (or scan the QR code on the PDF): integrity check and download of the approved PDF |
+| Whole chain | Sign in as a customer: *New request*. Sign in as a tester: open the request, complete the intake, take each test, upload its logsheet (`sample_data/`), run checks, review flagged items. Sign in as a verifier: verify each test, sign off. Tester: generate. Sign in as an approver (not anyone who uploaded or verified): approve. |
+| Excel logsheets | Job page -> *This job as filled logsheets*, or a test's blank logsheet from Templates (Admin): drop the workbook on a job to see the preview with source cells |
+| Several jobs in one workbook | Report Workflow -> *Upload a workbook for several jobs* |
+| Failing sample | `test-files/3 - failing job (top-oil rise over limit).csv`: the logged top-oil rise is over its limit, so the report says the sample does NOT comply |
+| Customer | Create a customer account for the job's organisation, sign in: progress, approved values, partial report |
 
-The three files in `test-files/` have different series numbers (`...25T1654`, `...25T1704`, `...25T1714`), so all three can
-be loaded side by side.
+## Excel logsheets and templates
 
-## Workflow (matches the problem statement)
+Each test has an Excel **template**: a mapping, stored in the database, from cells to fields. One mapping both draws the blank
+logsheet (yellow input cells, named cells) and reads a filled one: by defined name, then label (also slightly reworded), then
+fixed cell; tables by their header labels, so inserted rows or columns do not break them. Formulas are taken as the value the
+sheet shows (a formula never recalculated is refused), decimal commas only by explicit rule, units never guessed.
+Administrators make a new template version when a sheet changes, test it on a sample and on past uploads, compare it with the
+active one and activate it; versions that read stored data are kept. See `xltemplates.py` for the mapping format.
 
-1. **Capture request** - "New request" form with ID format checks, a request created from a data file, or a scan of the
-   request form read by the AI reader.
-2. **Import data** - drop a file on the job page. Data files are read; PDFs and images are kept as source documents with a
-   SHA-256 fingerprint. Every document also has a labelled form page for typing or correcting values.
-3. **Validate** - 30 checks: arithmetic re-computation, cross-document ID consistency, limits from the proforma and
-   `rules.py` (IS 1180 / IS 2026 references, see [Validity](#validity)), thin margins. Results:
-   - **pass**;
-   - **review** - doubtful but not a failure (handwriting 4/6/H, a thin margin, a value left NA); each is marked as reviewed;
-   - **data error** - the data itself is wrong (a logged average that does not match its readings, a broken layout); blocks
-     the report until it is corrected;
-   - **requirement not met** - a test result (e.g. top-oil rise over its limit). The engineer confirms the reading and the
-     report states that the sample **does not comply**, with a table of what was not met.
-4. **Generate** - the report template is filled from the database and stored as a numbered, hashed version. A test that could
-   not be fully evaluated never reads PASS; the statement of conformity lists every document and check left out.
-5. **Review and export** - preview, print, download, approve with the reviewer's name and employee ID (both required, printed
-   on the report). The test engineer named on the report cannot approve it. Then copy or email the customer link: the
-   customer opens the verification page and downloads the approved PDF. Every step is in the job history.
+The original flat layout (`section, field, value` in CSV, Excel, SQLite or JSON) is still read; any job can be downloaded in it.
 
-Changing any test data sends the job back to "Data imported", so the checks and the report are always redone on the current data.
+## Integrity
 
-**Dashboard:** pipeline counts, average turnaround from request to release (from the audit trail), oldest open job, quality
-gate, charts against limits, recent reports with their result.
-**Report Workflow:** live pipeline and the jobs waiting, oldest first, with how long each has waited.
-**Records & Search:** text search over series, sample, customer, rating, tests, standard, engineer, approver and dates;
-filters for status, result (complies / does not comply / not yet checked), date range, and historical records.
-
-## Importing data
-
-| Source | How |
-|---|---|
-| CSV (`.csv`, `.tsv`; comma, semicolon or tab; any line endings) | columns `section, field, value` |
-| Excel (`.xlsx`) | one sheet with `section, field, value`, or one sheet per section with `field, value` |
-| Existing database (SQLite `.db`) | any table with `section, field, value`, or one table per section with `field, value`. Opened read-only. |
-| JSON | one object per section (the original format) |
-| Scan or photo (`.pdf`, `.png`, `.jpg`, `.webp`) | stored with a SHA-256 fingerprint; type the values on the form page, or use "Scan" |
-
-`section` is one of `request, proforma, work, losses, resistance, noload, routine, sc, temp, pressure, ids, other`
-(`ids`: series and sample as written on each sheet; `other`: additional log sheets of any type).
-`field` is a path: `kva`, `limits.oil`, `hours[0][1]` (dots for names, `[n]` for list positions, counting from 0).
-`value` is read as a number when it looks like one; put it in double quotes to keep it as text (serial number `"1098"`).
-An optional `series` column lets one file or database hold several jobs; rows for other series are skipped.
-
-The easiest way to get the layout right: open any job and use **Download this job's data** (CSV, Excel, Database, JSON)
-or the blank **CSV / Excel template** links. Whatever the app exports, it can import again unchanged.
-Importing the same content twice into one job is refused. Files added to a job are listed on the job page where they were
-dropped; **Remove** next to an imported file takes the documents it brought in back out (the customer request stays), and
-the job returns to step 1 if nothing else is left. Several files can be dropped at once.
-
-**Existing registers** (Records & Search -> Import existing register; template under **Register template**): a CSV, Excel
-sheet or SQLite table with at least `series` and `customer` columns (also read: `sample`, `rating`, `address`, `serial`,
-`tests`, `standard`, `witness`, `conformity`, `test date`, `result`; common header variants such as "Test Series No",
-"Customer Name" or "Date of Test" are recognised). Each valid row becomes a **historical record**: searchable and filterable
-by result and test date, but not counted as a job in progress. Results such as "Passed" / "Failed - ..." are read as
-complies / does not comply; dates such as 18-03-2024 are stored as 2024-03-18. Importing test data into a historical record
-turns it into a live job. Invalid or duplicate rows are listed with the reason.
-
-## Reading scans with AI (optional)
-
-On a job, attach a scan, click **Scan**, say which document it is. The form page fills in part by part as the reader
-answers, with uncertain fields highlighted. Nothing is saved until you review and save it, and the saved values are then
-checked like any other data. Without a reader configured, the button explains that it is not set up; everything else works offline.
-
-Choose one reader (PowerShell shown; set the variables in the same window before `python app.py`):
-
-| Reader | Settings |
-|---|---|
-| Qwen on this computer (offline) via [Ollama](https://ollama.com) | `ollama pull qwen2.5vl:7b`, then `$env:AI_BASE_URL = "http://localhost:11434/v1"`, `$env:AI_MODEL = "qwen2.5vl:7b"` |
-| Hosted Qwen or any OpenAI-compatible service (e.g. OpenRouter) | `$env:AI_BASE_URL = "https://openrouter.ai/api/v1"`, `$env:AI_MODEL = "qwen/qwen2.5-vl-72b-instruct"`, `$env:AI_API_KEY = "..."` |
-| Google Gemini | `$env:GEMINI_API_KEY = "..."`, optionally `$env:GEMINI_MODEL` (default `gemini-3.8-flash`) |
-
-`AI_BASE_URL` takes priority over Gemini. PDFs are sent to Gemini as they are; for other readers each page (up to 4) is
-turned upright if needed and converted to a high-contrast image, and large sheets are read in parts (header fields, then each
-table). Busy or rate-limited answers are retried after 2, 5 and 10 seconds.
-
-**Saved readings.** Every successful reading is stored in `ai_cache.db` (next to the database, kept when the job
-database is deleted), keyed by the scan's SHA-256, the part of the sheet and the model. Reading the same scan again returns
-the saved reading instantly, without contacting the AI, and says so. Tick "Read again" to force a new reading. For a demo,
-read each scan once beforehand; on stage the readings then work offline.
-
-**Accuracy.** Measured with `qwen2.5vl:3b` on a laptop CPU it gets roughly half the fields right and takes 20-45 s for a short
-sheet (details in [docs/NOTES.md](docs/NOTES.md)); every reading must be checked by hand. Check that sending lab records to an
-outside service is acceptable before using a hosted reader on real data.
-
-## Report template
-
-The wording of the report (organisation, title, section headings, signature labels, footer) is in `report_template.json`.
-Edit it, or point `ALETHEIA_TEMPLATE` at another file; it is read each time a report is built, so no restart is needed.
-Keys left out keep the built-in wording. The tables and their layout are defined in `build_pdf` in `app.py`.
-
-## Report versions and verification
-
-Each generated or approved report is stored once, with a version number and SHA-256 fingerprint, and never rebuilt.
-The PDF carries a QR code to `/verify/<code>`, which shows whether that exact PDF is intact, current and approved, and lets
-the customer download it while it is the current approved version. A record with a released report cannot be deleted, so the
-QR code keeps working; withdraw the report instead (the version stays verifiable as withdrawn).
-The QR link uses the address the app is opened with, so phones can only follow it when the app runs on a reachable host.
+- One database row per test section, with revisions: concurrent uploads to different tests never overwrite each other, and an
+  edit from an out-of-date page is refused with who changed it.
+- Every revision of every test and every uploaded file is kept, with SHA-256 fingerprints.
+- The audit log records who did what, from which workstation, and is a hash chain (Admin -> Audit log -> *Check the chain*);
+  write down the daily chain tip shown on the Backups page.
+- Released reports, their data and files are locked by the application and by database triggers.
+- Each report version prints a manifest hash; the verification page (QR code on the report) checks the PDF and the manifest.
+- Daily backups with checksums; *Check* on a backup verifies it without stopping the lab. A **record package** (zip) per
+  released job holds every version, its manifest, source files, history and audit, with checksums.
+- Checks take values **as logged** (faculty note F5): see [docs/VALIDITY.md](docs/VALIDITY.md).
 
 ## Settings
 
-Environment variables, read when the app starts (the report template is read on every report).
+Environment variables, read when the app starts. Same-day cut-off and email are set in the app (Admin -> Settings).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ALETHEIA_DB` | `aletheia.db` next to `app.py` | Records database. `ai_cache.db` is kept in the same folder. |
+| `ALETHEIA_DB` | `aletheia.db` next to `app.py` | Records database (`ai_cache.db`, `.aletheia_secret` and `backups/` go in the same folder) |
 | `PORT` | `5000` | Port of the web app |
 | `ALETHEIA_TEMPLATE` | `report_template.json` | Report wording file |
-| `ALETHEIA_APPROVERS` | (unset: anyone) | Comma-separated employee IDs allowed to approve reports |
-| `ALETHEIA_DAILY_CALL_LIMIT` | `15` | AI requests per day to hosted readers (local models are not limited) |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | unset, `gemini-3.8-flash` | Google Gemini reader |
-| `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY` | unset | Ollama or any OpenAI-compatible reader (port 11434 or `AI_PROVIDER=ollama` uses Ollama's own API) |
-| `AI_TIMEOUT` | `300` | Seconds per AI request (a CPU-only local model can take minutes per page) |
-| `AI_NUM_CTX`, `AI_MAX_TOKENS` | `8192`, `3000` | Ollama context window and answer length cap |
-| `AI_IMAGE_PX`, `AI_AUTOROTATE` | `1024`, `1` | Page image size; set `AI_AUTOROTATE=0` to stop turning sideways pages upright |
+| `ALETHEIA_BACKUP_DIR`, `ALETHEIA_BACKUP_KEEP` | `backups/`, `30` | Backup folder; how many daily backups to keep (the first of each month is always kept) |
+| `ALETHEIA_AUTO_BACKUP`, `ALETHEIA_WORKER` | `1`, `1` | Daily backup; email outbox and cut-off warnings (`0` turns off) |
+| `ALETHEIA_SMTP_PASSWORD` | unset | SMTP password (server, port, sender, user are set in the app) |
+| `ALETHEIA_FEATURE_SCAN` | `0` | `1` turns on the optional AI reading of scanned sheets (below) |
+| `GEMINI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY`, `AI_*` | unset | AI reader for scans (only with `ALETHEIA_FEATURE_SCAN=1`) |
+
+`.aletheia_secret` holds the key that signs session cookies; keep it with the database, out of git.
+
+## Scans and AI reading (optional, off by default)
+
+Scans and photos (PDF, PNG, JPEG, WebP) can always be attached to a job as evidence, with their SHA-256. Reading them with an
+AI model (Gemini, Ollama or any OpenAI-compatible reader) was the original input path and is now an optional fallback: set
+`ALETHEIA_FEATURE_SCAN=1` and a reader (see `vision.py` and [docs/NOTES.md](docs/NOTES.md) for measured accuracy). Every
+reading is a proposal that must be checked by hand.
 
 ## API
 
-The UI uses a JSON API; uploads are sent as `{filename, b64}`.
+JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth.require`); state-changing calls need the
+`X-CSRF-Token` header from `GET /api/me`. Main groups:
 
-| Endpoint | Purpose |
+| Area | Endpoints |
 |---|---|
-| `GET /api/jobs?q=&stage=&verdict=&from=&to=` | List / search records. `stage` 0-4 or `h` (historical); `verdict` `comply`, `not`, `none`; dates `YYYY-MM-DD` |
-| `POST /api/jobs`, `POST /api/jobs/from-file` | New request from the form, or from a data file |
-| `GET /api/jobs/<id>`, `POST /api/jobs/<id>/edit`, `DELETE /api/jobs/<id>` | One record with history, imports, sources and report versions; edit details; delete (refused once a report is released) |
-| `POST /api/jobs/<id>/import`, `DELETE /api/jobs/<id>/imports/<import id>` | Import a data file; undo an import (the documents it brought in are removed; refused once a report is generated) |
-| `POST /api/jobs/<id>/section`, `DELETE /api/jobs/<id>/section/<k>` | Save one document typed or read by AI; remove one document |
-| `GET /api/jobs/<id>/export/<csv,xlsx,sqlite,json>`, `GET /api/template/<fmt>` | Download a job's data, or the blank layout |
-| `POST /api/jobs/<id>/sources`, `GET` / `DELETE /api/sources/<sid>`, `POST /api/sources/<sid>/extract`, `POST /api/read-scan` | Scans: attach, view, remove, read with AI |
-| `POST /api/jobs/<id>/validate`, `POST /api/jobs/<id>/review` | Run the checks; mark an item reviewed / confirm a requirement not met (`{index, reviewed}`) |
-| `POST /api/jobs/<id>/generate`, `POST /api/jobs/<id>/approve`, `POST /api/jobs/<id>/discard` | Build a report version; approve (`{name, employee_id}`); withdraw the report |
-| `GET /api/jobs/<id>/report.pdf` | Latest report version (`?dl=1` to download) |
-| `GET /api/verify/<code>`, `GET /api/verify/<code>/report.pdf` | Verification result; customer download of the current approved version |
-| `POST /api/import-register`, `GET /api/register-template.csv` | Historical records from a register |
-| `GET /api/stats`, `POST /api/demo` | Dashboard figures (pipeline, turnaround, results, AI usage); load the demo job |
+| Accounts | `/api/setup`, `/api/login`, `/api/logout`, `/api/me`, `/api/password`, `/api/users[...]`, `/api/orgs` |
+| Intake | `/api/intake/check`, `/api/intake`, `/api/jobs/<id>/intake`, `/api/jobs/<id>/intake/checked`, `/api/intake/from-excel`, `/api/request-forms[...]` |
+| Data | `/api/jobs/<id>/import`, `/api/jobs/<id>/excel/preview|import`, `/api/excel/preview|import` (several jobs), `/api/jobs/<id>/section`, `/api/jobs/<id>/history`, `/api/files/<id>` |
+| Verification | `/api/jobs/<id>/sections/<test>/verify|return|reopen|na`, `/api/jobs/<id>/assign`, `/api/jobs/<id>/signoff` |
+| Reports | `/api/jobs/<id>/validate|review|generate|approve|amend`, `/api/jobs/<id>/report.pdf`, `/api/verify/<code>` |
+| Customer | `/api/jobs/<id>/approved-values`, `/api/jobs/<id>/partials`, `/api/jobs/<id>/partial.pdf`, `/api/customer/request-forms` |
+| Excel | `/api/templates[...]`, `/api/logsheets/<test|all>.xlsx`, `/api/request-form.xlsx`, `/api/jobs/<id>/logsheets.xlsx`, `/api/records.xlsx` |
+| Operations | `/api/my-work`, `/api/today`, `/api/notifications`, `/api/settings`, `/api/outbox`, `/api/audit[/verify|/tip]`, `/api/admin/backups[...]`, `/api/jobs/<id>/package.zip` |
 
 ## Tests
 
-    python -m unittest discover -s tests -v
+    python -m unittest discover -s tests
 
-60 tests (`tests/test_app.py` 33, `tests/test_validity.py` 27): exact round trip of the tabular layout, CSV / Excel / database
-import against the JSON reference (including CSV files saved with Windows line endings), full CSV-to-approved-report run,
-"does not comply" reports for failing samples, data errors blocking the report, summary verdicts with NA values, bad-file
-rejection, per-job duplicates, incomplete data, historical register import with results and dates, search filters, release
-rules (approver not the engineer, approved-staff list, no deletion after release, customer download), undoing an import, report template,
-frozen versions and tamper detection, source documents, the AI reader (mocked), and one mutation test per engineering check.
+| File | Covers |
+|---|---|
+| `test_app.py` | import formats, checks, reports, sources, registers (run through the full workflow) |
+| `test_validity.py` | one mutation test per engineering check |
+| `test_auth.py` | every route x every role, CSRF, lock-out, timeouts, first run, customers, separation of duties |
+| `test_integrity.py` | concurrent uploads, revisions, atomic numbering, audit chain, release locks, schema migration |
+| `test_workflow.py` | intake rules, verify / return / reopen, ownership, sign-off, bays, My work |
+| `test_excel.py` | template round trips, preview, layout drift, formulas, refused files, several jobs per workbook, template versions |
+| `test_amend.py` | manifest, amendments, record packages, backups and tamper detection |
+| `test_portal.py` | approved values only, partial reports, notifications and email, same-day board, customers' forms |
+| `test_load.py` | eight people at once on one database |
 
 ## Files
 
 | Path | Contents |
 |---|---|
-| `app.py` | API, database, the 30 checks (`validate`), report (`build_pdf`), versions, release rules, statistics |
-| `rules.py` | Every engineering threshold with its source and status |
-| `importers.py` | CSV / Excel / SQLite / JSON readers and exporters, register import |
-| `vision.py` | Optional scan reader (Gemini, Ollama or any OpenAI-compatible model) and its cache |
-| `report_template.json` | Report wording |
-| `static/index.html`, `static/assistant.js` | Web UI; rule-based help assistant (keyword matching, no AI) |
-| `sample_data/` | Demo job in every format, its scanned sheets (`scans/`, attached when the demo is loaded), two legacy registers |
-| `tests/` | Unit and mutation tests |
-| `docs/` | [ARCHITECTURE.md](docs/ARCHITECTURE.md) (diagram, data model), [VALIDITY.md](docs/VALIDITY.md) (what the checks do and do not establish), [NOTES.md](docs/NOTES.md) (team notes, scanner measurements) |
-| `test-files/` | Three CSV jobs for demos: full, partial, failing |
+| `app.py` | API, database, the checks (`validate`), report (`build_pdf`), workflow routes, release and amendment |
+| `auth.py` | accounts, sessions, CSRF, roles and the permission gate |
+| `integrity.py` | sections and history, files, numbering, audit hash chain, database triggers, migrations |
+| `workflow.py` | intake rules (PIN-code table), ownership, progress, sign-off readiness |
+| `xltemplates.py`, `seed_templates.py`, `excel_routes.py` | Excel template engine, version-1 templates, template registry and Excel routes |
+| `retention.py` | backups, backup check, audit tip, record packages |
+| `notify.py`, `portal.py` | notifications, email outbox, same-day board, settings; partial reports, approved values, customer forms |
+| `rules.py` | every engineering threshold with its source and status |
+| `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
+| `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `assistant.js` |
+| `docs/` | [NEXT_STEPS.md](docs/NEXT_STEPS.md) (plan and progress), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VALIDITY.md](docs/VALIDITY.md), [NOTES.md](docs/NOTES.md) |
+| `sample_data/`, `test-files/` | demo job in every format with its scans, legacy registers; three CSV demo jobs |
 
 ## Limits to know about
 
-- Demo values were typed by hand from handwritten scans; the validator flags the doubtful ones (IDs read as 4/6/H, a
-  watts sum, correction factor 0.275 vs 0.475, 0.3 K winding-rise margin). Confirm against the sheets before relying on them.
 - No engineering threshold has been confirmed by the lab or checked against the text of IS 1180 / IS 2026 (see Validity).
-- Series and sample codes must match the CPRI patterns (`CPRIBLRSCL25T1654`, `HVD25S0847`), also for register rows.
-- Database import reads SQLite files. Other databases (Access, SQL Server, PostgreSQL) need a CSV or Excel export first.
-  Legacy `.xls` must be saved as `.xlsx`.
-- No user accounts: the reviewer is a typed name and employee ID. The test engineer named on the report cannot approve it, and
-  `ALETHEIA_APPROVERS` restricts approval to a list of IDs, but nobody logs in. Run it on a trusted machine or network only.
-- Getting values off handwritten sheets is still the slow step: they are typed into the form pages, or read by the optional
-  AI reader and checked by hand.
-- Turnaround is measured from when the request is captured in Aletheia, not from when the sample arrived at the lab.
-- Only the report wording is in the template; a different report layout or test type needs code changes in `validate`,
-  `build_pdf`, `vision.HINTS` and the UI. Sheets of other types can be added as "Other log sheet" (reported as recorded, no limits).
-- Not an official CPRI system; reports are prototypes.
+- The version-1 logsheet templates are Aletheia's own layouts; the lab's real sheets (Q8 in NEXT_STEPS) become new template
+  versions when they arrive. The intake field list (Q14) is an assumption to confirm.
+- Demo values were typed from handwritten scans; the validator flags the doubtful ones.
+- The development web server is used; on a lab network, run it on the server PC behind the lab's firewall (customers on the
+  same network only, as agreed).
+- Reports are not yet PDF/A; the record package keeps the PDF with its manifest and source data instead.
+- Not an official CPRI system.
 
 ## Validity
 
-Thresholds live in `rules.py`, each with its source and a status (`secondary` / `unconfirmed`); no lab engineer has confirmed
-any of them. See [docs/VALIDITY.md](docs/VALIDITY.md) for what is and is not established, and `tests/test_validity.py` for the
-mutation tests.
+Thresholds live in `rules.py`, each with its source and a status (`secondary` / `unconfirmed`). See
+[docs/VALIDITY.md](docs/VALIDITY.md) for what is and is not established, including which checks are advisory under F5.

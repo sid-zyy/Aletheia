@@ -5,8 +5,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 _tmp = tempfile.TemporaryDirectory()
 os.environ["ALETHEIA_DB"] = os.path.join(_tmp.name, "test.db")
+os.environ["ALETHEIA_FEATURE_SCAN"] = "1"  # the scanning tests below need the (optional) feature on
+os.environ["ALETHEIA_AUTO_BACKUP"] = "0"
 for _v in ("GEMINI_API_KEY", "GEMINI_MODEL", "AI_BASE_URL", "AI_MODEL", "AI_API_KEY", "AI_PROVIDER", "AI_NUM_CTX", "AI_IMAGE_PX"): os.environ.pop(_v, None)
-import app as aletheia, importers, vision  # noqa: E402
+import app as aletheia, importers, integrity, vision  # noqa: E402
 
 SD = os.path.join(ROOT, "sample_data")
 DEMO = json.load(open(os.path.join(SD, "AP_Transformers_25T1654.json")))
@@ -22,16 +24,81 @@ def pdf_text(data):
     finally: doc.close()
 
 
+PW = "lab-test-password-1"
+STAFF = {"t.rao": ("T. Rao", "tester", "E1001"), "s.iyer": ("S. Iyer", "verifier", "E1002"), "r.viewer": ("R. Viewer", "approver", "E2001"),
+         "p.naveen": ("P. Naveenkumar", "approver", "E2002"), "admin": ("Lab Admin", "admin", "E0001")}
+_HASH = None
+
+
+def ensure_users():
+    """Accounts shared by every test (hashing a password is slow, so they are made once)."""
+    global _HASH
+    from werkzeug.security import generate_password_hash
+    _HASH = _HASH or generate_password_hash(PW)
+    with aletheia.db() as c:
+        for un, (name, role, emp) in STAFF.items():
+            if not c.execute("SELECT 1 FROM users WHERE username=?", (un,)).fetchone():
+                c.execute("INSERT INTO users(username,full_name,employee_id,roles,password_hash,must_change_password,created_at) VALUES(?,?,?,?,?,0,'2026-01-01')",
+                          (un, name, emp, role, _HASH))
+
+
+def signed_in(username, password=PW):
+    """A test client signed in as this user, sending the CSRF token on every request."""
+    c = aletheia.app.test_client()
+    r = c.post("/api/login", json=dict(username=username, password=password))
+    assert r.status_code == 200, r.json
+    c.environ_base["HTTP_X_CSRF_TOKEN"] = c.get("/api/me").json["csrf"]
+    return c
+
+
+# A complete, valid intake for the demo customer (Chennai PIN 600058, Tamil Nadu); see workflow.INTAKE_FIELDS.
+INTAKE = dict(DEMO["request"], city="Chennai", state="Tamil Nadu", pin="600058", contact="V. Krishna", phone="+91 9876543210",
+              email="qa@aptransformers.example", manufacturer="A.P. Transformers", witness="Yes", witness_name=DEMO["request"]["witness"],
+              rating="250 kVA / 11 kV / 433 V", arrived_at="2026-10-10T09:00", opened_by="Security desk (R. Kumar)")
+
+
 class Base(unittest.TestCase):
     def setUp(self):
-        with aletheia.db() as c:
-            for t in ("jobs", "imports", "audit", "sources", "reports", "vision_calls"): c.execute(f"DELETE FROM {t}")
-        self.c = aletheia.app.test_client(); aletheia.app.config.pop("VISION_TRANSPORT", None)
+        ensure_users()
+        with aletheia.db() as c:  # the integrity triggers forbid exactly this, so the wipe between tests lifts them briefly
+            integrity.drop_triggers(c)
+            for t in ("jobs", "imports", "audit", "sources", "reports", "vision_calls", "sections", "section_history", "files", "counters", "assignments", "bays"):
+                c.execute(f"DELETE FROM {t}")
+            c.execute("UPDATE users SET failed_attempts=0, locked_until=NULL")
+            integrity.install_triggers(c)
+        self.c = signed_in("t.rao"); aletheia.app.config.pop("VISION_TRANSPORT", None)
+        self.admin = signed_in("admin")
+
+    def approve(self, i, who="r.viewer"):
+        return signed_in(who).post(f"/api/jobs/{i}/approve", json=dict(password=PW))
+
+    def drop(self, i):
+        """Delete a never-released record (an admin action)."""
+        return self.admin.delete(f"/api/jobs/{i}")
+
+    def intake(self, i):
+        """Complete and check the intake (required before release), with the tests that have data as the test plan."""
+        j = self.get(i)
+        plan = [k for k in j["data"] if k in aletheia.NAMES and k != "request"] or ["proforma"]
+        org = self.admin.post("/api/orgs", json=dict(name=j["customer"] if j["customer"] != "NA" else "Test customer")).json["id"]
+        r = self.c.post(f"/api/jobs/{i}/intake", json=dict(INTAKE, customer=j["customer"] if j["customer"] != "NA" else "Test customer", org_id=org, plan=plan))
+        self.assertEqual(r.status_code, 200, r.json)
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/intake/checked").status_code, 200)
 
     def gen(self, i):
-        """Review every flagged item one by one, as the engineer does, then build the report."""
+        """The whole route to a report, in order: intake completed (if it was not), checks run, every flagged item reviewed
+        by the engineer, every section verified and the job signed off by a verifier, then the report built."""
+        j = self.get(i)
+        if not j["intake"].get("checked_by"):
+            ran = j["stage"] >= 2; self.intake(i)
+            if ran: self.c.post(f"/api/jobs/{i}/validate")  # the intake changed the request, so the checks run again
         for n, f in enumerate(self.get(i)["findings"]):
             if f["level"] == "warn" and not f.get("reviewed"): self.c.post(f"/api/jobs/{i}/review", json=dict(index=n))
+        v = signed_in("s.iyer"); j = self.get(i)
+        for k, m in j["meta"].items():
+            if k != "request" and m["state"] in ("uploaded", "returned") and k in j["data"]:
+                r = v.post(f"/api/jobs/{i}/sections/{k}/verify", json=dict(revision=m["revision"])); self.assertEqual(r.status_code, 200, (k, r.json))
+        if j["stage"] >= 2: v.post(f"/api/jobs/{i}/signoff")
         return self.c.post(f"/api/jobs/{i}/generate")
 
     def job(self, series="CPRIBLRSCL25T1654"):
@@ -53,31 +120,31 @@ class ImportFormats(Base):
             i = self.job(); r = self.c.post(f"/api/jobs/{i}/import", json=up(name, raw(name)))
             self.assertEqual(r.status_code, 200, r.json)
             self.assertEqual(self.get(i)["data"], want, name)
-            self.c.delete(f"/api/jobs/{i}")
+            self.drop(i)
 
     def test_csv_import_runs_through_to_approved_report(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("lab.csv", raw("AP_Transformers_25T1654.csv")))
         f = self.c.post(f"/api/jobs/{i}/validate").json["findings"]
         self.assertFalse([x for x in f if x["level"] == "fail"]); self.assertEqual(len(f), 30)
         g = self.gen(i).json; self.assertEqual(g["version"], 1)
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/approve", json=dict(name="Reviewer", employee_id="E1042")).json["version"], 2)
+        self.assertEqual(self.approve(i).json["version"], 2)
         pdf = self.c.get(f"/api/jobs/{i}/report.pdf"); self.assertTrue(pdf.data.startswith(b"%PDF"))
         j = self.get(i); self.assertEqual(j["stage"], 4); self.assertEqual(j["imports"][0]["kind"], "csv")
 
-    def test_approval_needs_name_and_employee_id(self):
+    def test_approver_identity_comes_from_the_signed_in_account(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("lab.csv", raw("AP_Transformers_25T1654.csv")))
         self.c.post(f"/api/jobs/{i}/validate"); self.gen(i)
-        for b in (dict(name="Reviewer"), dict(name="Reviewer", employee_id="  "), dict(employee_id="E1042"),
-                  dict(name="Reviewer", employee_id="E 1042; drop"), dict(name="Reviewer", employee_id="X")):
-            r = self.c.post(f"/api/jobs/{i}/approve", json=b)
-            self.assertEqual(r.status_code, 400, b); self.assertEqual(self.get(i)["stage"], 3, b)
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/approve", json=dict(name="Reviewer", employee_id="cpri/sc-1042")).status_code, 200)
-        j = self.get(i); self.assertEqual((j["approver"], j["approver_id"]), ("Reviewer", "CPRI/SC-1042"))
-        self.assertEqual(j["reports"][0]["approver_id"], "CPRI/SC-1042")
-        self.assertIn("Approved by Reviewer (Employee ID CPRI/SC-1042)", j["audit"][-1]["event"])
-        self.assertEqual(self.c.get("/api/verify/" + j["reports"][0]["token"]).json["approver_id"], "CPRI/SC-1042")
-        self.c.post(f"/api/jobs/{i}/discard")  # withdrawing the report clears the approval, ID included
-        self.assertEqual((self.get(i)["approver"], self.get(i)["approver_id"]), (None, None))
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/approve", json=dict(password=PW)).status_code, 403)  # a tester cannot approve
+        ap = signed_in("r.viewer")
+        self.assertEqual(ap.post(f"/api/jobs/{i}/approve", json=dict(password="wrong password!")).status_code, 403)  # signature not confirmed
+        self.assertEqual(ap.post(f"/api/jobs/{i}/approve", json=dict(name="Somebody Else", employee_id="X9", password=PW)).status_code, 200)
+        j = self.get(i); self.assertEqual((j["approver"], j["approver_id"]), ("R. Viewer", "E2001"))  # typed fields are ignored
+        self.assertEqual(j["reports"][0]["approver_id"], "E2001")
+        self.assertIn("Approved by R. Viewer (Employee ID E2001)", j["audit"][-1]["event"])
+        self.assertEqual(j["audit"][-1]["actor"], "R. Viewer (r.viewer)")
+        self.assertEqual(self.c.get("/api/verify/" + j["reports"][0]["token"]).json["approver_id"], "E2001")
+        self.assertEqual(ap.post(f"/api/jobs/{i}/discard").status_code, 409)  # a released report cannot be withdrawn
+        self.assertEqual((self.get(i)["approver"], self.get(i)["approver_id"]), ("R. Viewer", "E2001"))
 
     def test_older_database_gains_the_employee_id_column(self):
         path = os.path.join(_tmp.name, "old.db")
@@ -185,7 +252,7 @@ class ImportFormats(Base):
 
     def test_review_one_by_one_before_the_report(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
-        F = self.c.post(f"/api/jobs/{i}/validate").json["findings"]; warns = [n for n, f in enumerate(F) if f["level"] == "warn"]
+        F = self.c.post(f"/api/jobs/{i}/validate").json["findings"]; warns = [n for n, f in enumerate(F) if f["level"] == "warn" and not f.get("advisory")]
         self.assertEqual(self.c.post(f"/api/jobs/{i}/generate").status_code, 409)  # nothing reviewed yet
         self.c.post(f"/api/jobs/{i}/review", json=dict(index=warns[0]))
         self.assertIn(f"{len(warns) - 1} left", self.c.post(f"/api/jobs/{i}/generate").json["error"][0])
@@ -194,7 +261,7 @@ class ImportFormats(Base):
         passed = [n for n, f in enumerate(F) if f["level"] == "pass"][0]
         self.assertEqual(self.c.post(f"/api/jobs/{i}/review", json=dict(index=passed)).status_code, 400)
         self.assertEqual(self.gen(i).status_code, 200)
-        d = json.loads(json.dumps(DEMO)); d["temp"]["hours"][-1][1] = 65.2  # top-oil rise over the limit: a failed check
+        d = json.loads(json.dumps(DEMO)); d["temp"]["oil_rise_reported"] = 42.35  # logged top-oil rise over the limit: a failed check
         j = self.job("CPRIBLRSCL25T1998"); self.c.post(f"/api/jobs/{j}/import", json=up("f.json", json.dumps(d).encode()))
         F = self.c.post(f"/api/jobs/{j}/validate").json["findings"]; fail = [n for n, f in enumerate(F) if f["level"] == "fail"][0]
         self.assertFalse(F[fail].get("blocks"))  # a sample failing a limit is a result, not a data error
@@ -203,7 +270,7 @@ class ImportFormats(Base):
         self.assertEqual(self.c.post(f"/api/jobs/{j}/review", json=dict(index=fail)).status_code, 200)
 
     def test_failing_sample_gets_a_does_not_comply_report(self):
-        d = json.loads(json.dumps(DEMO)); d["temp"]["hours"][-1][1] = 65.2
+        d = json.loads(json.dumps(DEMO)); d["temp"]["oil_rise_reported"] = 42.35  # the logged rise decides (F5), not a recomputation
         j = self.job(); self.c.post(f"/api/jobs/{j}/import", json=up("f.json", json.dumps(d).encode()))
         self.c.post(f"/api/jobs/{j}/validate"); self.assertEqual(self.get(j)["verdict"], "Does not comply")
         for n, f in enumerate(self.get(j)["findings"]):
@@ -211,14 +278,28 @@ class ImportFormats(Base):
         self.assertEqual(self.gen(j).status_code, 200)
         text = pdf_text(self.c.get(f"/api/jobs/{j}/report.pdf").data)
         self.assertIn("does NOT comply", text); self.assertIn("Top-oil temperature rise", text)
-        self.assertEqual(self.c.post(f"/api/jobs/{j}/approve", json=dict(name="R. Viewer", employee_id="E2001")).status_code, 200)
+        self.assertEqual(self.approve(j).status_code, 200)
         self.assertEqual([x["series"] for x in self.c.get("/api/jobs?verdict=not").json], ["CPRIBLRSCL25T1654"])
 
-    def test_data_error_still_blocks_the_report(self):
-        d = json.loads(json.dumps(DEMO)); d["noload"]["rows"][0][4] = 9.99  # logged average does not match its readings
+    def test_recomputed_average_that_disagrees_is_advisory_only(self):
+        # F5: the logged average is the value; Aletheia's own arithmetic only points at a possible slip
+        d = json.loads(json.dumps(DEMO)); d["noload"]["rows"][0][4] = 1.70  # logged average; the mean of its readings is 1.689
         j = self.job(); self.c.post(f"/api/jobs/{j}/import", json=up("f.json", json.dumps(d).encode()))
+        F = self.c.post(f"/api/jobs/{j}/validate").json["findings"]
+        f = next(x for x in F if x["check"] == "No-load current average")
+        self.assertEqual((f["level"], f.get("advisory"), f.get("blocks")), ("warn", True, None))
+        self.assertEqual(self.get(j)["stage"], 2); self.assertIsNotNone(self.get(j)["verdict"])
+        self.assertEqual(self.gen(j).status_code, 200)
+        text = pdf_text(self.c.get(f"/api/jobs/{j}/report.pdf").data)
+        self.assertNotIn("No-load current average", text); self.assertNotIn("Reported vs computed", text)  # advisory: never printed
+        self.assertIn("as logged", text)
+
+    def test_broken_layout_still_blocks_the_report(self):
+        j = self.job(); d = {k: v for k, v in DEMO.items() if k != "request"}
+        self.c.post(f"/api/jobs/{j}/import", json=dict(filename="d.json", content=d))
+        self.c.post(f"/api/jobs/{j}/section", json=dict(section="ids", data={"work": 5}, revision=self.get(j)["meta"]["ids"]["revision"]))
         F = self.c.post(f"/api/jobs/{j}/validate").json["findings"]; bad = [n for n, f in enumerate(F) if f.get("blocks")]
-        self.assertTrue(bad); self.assertEqual(self.get(j)["stage"], 1); self.assertIsNone(self.get(j)["verdict"])
+        self.assertTrue(bad, F[:3]); self.assertEqual(self.get(j)["stage"], 1); self.assertIsNone(self.get(j)["verdict"])
         self.assertEqual(self.c.post(f"/api/jobs/{j}/review", json=dict(index=bad[0])).status_code, 409)
         self.assertEqual(self.c.post(f"/api/jobs/{j}/generate").status_code, 409)
 
@@ -255,6 +336,8 @@ class ImportFormats(Base):
     def test_remove_a_document(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
         self.c.post(f"/api/jobs/{i}/validate"); self.gen(i)
+        self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/temp").status_code, 409)  # verified: locked
+        self.assertEqual(signed_in("s.iyer").post(f"/api/jobs/{i}/sections/temp/reopen", json=dict(reason="wrong sheet attached")).status_code, 200)
         self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/temp").status_code, 200)
         j = self.get(i); self.assertNotIn("temp", j["data"]); self.assertEqual(j["stage"], 1)  # report withdrawn, checks to redo
         self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/temp").status_code, 404)
@@ -289,7 +372,7 @@ class ImportFormats(Base):
                 self.assertEqual(r.status_code, 400); self.assertIn("other series", r.json["error"][0])
             else:
                 self.assertEqual(r.status_code, 200, (fmt, r.json)); self.assertEqual(self.get(n)["data"], self.get(i)["data"])
-            self.c.delete(f"/api/jobs/{n}")
+            self.drop(n)
 
 
 class Register(Base):
@@ -330,27 +413,25 @@ class ReportsAndSources(Base):
         a = self.c.get(f"/api/jobs/{i}/report.pdf").data; self.assertEqual(a, self.c.get(f"/api/jobs/{i}/report.pdf").data)
         import hashlib; self.assertEqual(hashlib.sha256(a).hexdigest(), v1["sha256"])
         s = self.c.get("/api/verify/" + v1["token"]).json; self.assertTrue(s["intact"] and s["current"]); self.assertFalse(s["approved"])
-        self.c.post(f"/api/jobs/{i}/approve", json=dict(name="R. Viewer", employee_id="E2001"))
+        self.approve(i)
         self.assertFalse(self.c.get("/api/verify/" + v1["token"]).json["current"])  # superseded by the approved version
         s2 = self.c.get("/api/verify/" + self.get(i)["reports"][0]["token"]).json; self.assertTrue(s2["approved"]); self.assertEqual(s2["version"], 2)
-        with aletheia.db() as c: c.execute("UPDATE reports SET pdf=? WHERE version=2", (b"%PDF tampered",))
+        with self.assertRaises(sqlite3.IntegrityError):  # the database itself refuses to change a stored report
+            with aletheia.db() as c: c.execute("UPDATE reports SET pdf=? WHERE version=2", (b"%PDF tampered",))
+        with aletheia.db() as c:  # someone who removes the trigger with a database tool is still caught by the fingerprint
+            c.execute("DROP TRIGGER reports_no_update"); c.execute("UPDATE reports SET pdf=? WHERE version=2", (b"%PDF tampered",))
+            integrity.install_triggers(c)
         self.assertFalse(self.c.get("/api/verify/" + self.get(i)["reports"][0]["token"]).json["intact"])
         self.assertEqual(self.c.get("/api/verify/nope").status_code, 404)
 
     def test_release_rules_and_customer_copy(self):
         i = self.ready(); tok = self.get(i)["reports"][0]["token"]
         self.assertEqual(self.c.get(f"/api/verify/{tok}/report.pdf").status_code, 409)  # not approved yet: nothing to hand out
-        r = self.c.post(f"/api/jobs/{i}/approve", json=dict(name="p. naveenkumar", employee_id="E1"))  # the test engineer himself
-        self.assertEqual(r.status_code, 403)
-        os.environ["ALETHEIA_APPROVERS"] = "E2001, E2002"
-        try:
-            self.assertEqual(self.c.post(f"/api/jobs/{i}/approve", json=dict(name="R. Viewer", employee_id="E9999")).status_code, 403)
-            self.assertEqual(self.c.post(f"/api/jobs/{i}/approve", json=dict(name="R. Viewer", employee_id="e2001")).status_code, 200)
-        finally:
-            os.environ.pop("ALETHEIA_APPROVERS")
+        self.assertEqual(self.approve(i, "p.naveen").status_code, 403)  # the test engineer named on the report
+        self.assertEqual(self.approve(i).status_code, 200)
         tok = self.get(i)["reports"][0]["token"]
         self.assertTrue(self.c.get(f"/api/verify/{tok}/report.pdf").data.startswith(b"%PDF"))
-        self.assertEqual(self.c.delete(f"/api/jobs/{i}").status_code, 409)  # released: kept so the QR code keeps working
+        self.assertEqual(self.drop(i).status_code, 409)  # released: kept so the QR code keeps working
         self.assertEqual(self.c.get(f"/api/verify/{tok}").status_code, 200)
         s = self.c.get("/api/stats").json; self.assertEqual(s["turnaround_h"]["n"], 1); self.assertEqual(s["verdicts"], {"Complies": 1})
         self.assertEqual(len(self.c.get("/api/jobs?q=Naveenkumar").json), 1)  # search covers the engineer, tests and standard
@@ -369,7 +450,11 @@ class ReportsAndSources(Base):
 
     def test_editing_data_withdraws_report(self):
         i = self.ready(); t = dict(DEMO["temp"]); t["rhv_hot"] = t["rhv_hot"] * 1.01
-        self.assertEqual(self.c.post(f"/api/jobs/{i}/section", json=dict(section="temp", data=t)).status_code, 200)
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/section", json=dict(section="temp", data=t)).status_code, 409)  # verified: locked
+        self.assertEqual(signed_in("s.iyer").post(f"/api/jobs/{i}/sections/temp/reopen", json=dict(reason="hot resistance misread")).status_code, 200)
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/section", json=dict(section="temp", data=t)).status_code, 409)  # blind overwrite
+        rev = self.get(i)["meta"]["temp"]["revision"]
+        self.assertEqual(self.c.post(f"/api/jobs/{i}/section", json=dict(section="temp", data=t, revision=rev)).status_code, 200)
         self.assertEqual(self.get(i)["stage"], 1); self.assertEqual(self.c.get(f"/api/jobs/{i}/report.pdf").status_code, 409)
         f = self.c.post(f"/api/jobs/{i}/validate").json["findings"]
         self.assertTrue([x for x in f if x["level"] == "fail" and "HV winding" in x["check"]])  # 0.3 K margin is gone

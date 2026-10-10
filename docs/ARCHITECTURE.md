@@ -1,81 +1,114 @@
 # Aletheia architecture
 
-The same diagram, drawn in more detail, is on the app's **Architecture** page.
+One Flask process and one SQLite database on a lab PC; browsers on the lab network (staff and customers) use it.
 
 ```mermaid
 flowchart LR
-    subgraph Sources
-        A1[Customer request form]
-        A2[Spreadsheets and CSV files]
-        A3[Existing databases - SQLite]
-        A4[Scanned log sheets - PDF or photo]
-        A5[Legacy register of past tests]
+    subgraph People
+        T[Test engineer: intake, takes tests, uploads]
+        V[Verifier: verify, sign off]
+        AP[Approver: release, amend]
+        AD[Admin: assigns tests, users, templates, backups]
+        CU[Customer: fills in requests, portal]
     end
-    subgraph Collection["Data collection - importers.py, vision.py"]
-        B1[Tabular reader: section, field, value]
-        B2[Source store with SHA-256]
-        B3[Optional AI reader: Gemini, Ollama or OpenAI-compatible -> proposal]
-        B4[Engineer review and edit on the form pages]
+    subgraph Gate["auth.py"]
+        G[Sessions, CSRF, roles, permission per route]
     end
-    subgraph Core["app.py"]
-        C1[(SQLite: jobs, imports, sources, reports, audit)]
-        C2[Validation engine: 30 checks, thresholds in rules.py]
-        C3[Report engine: report_template.json + layout]
-        C4[Frozen versions + QR verification]
+    subgraph Input["Excel and other input"]
+        X1[Logsheet workbooks -> xltemplates.py with versioned templates]
+        X2[Flat files CSV / Excel / SQLite / JSON -> importers.py]
+        X3[Scans as evidence; optional AI reading -> vision.py]
+        X4[Customer request: online form or Excel -> intake rules, workflow.py]
     end
-    D[Dashboard, search, preview, export]
-    E[Customer: verify page + PDF download]
-    A1 --> C1
-    A2 --> B1
-    A3 --> B1
-    A5 -->|historical records| C1
-    A4 --> B2 --> B3 --> B4
-    B1 --> C1
-    B4 --> C1
-    C1 --> C2 -->|no data errors; failed limits confirmed| C3 --> C4 --> D
-    C2 -->|data errors| B4
-    C4 --> E
-    C1 --> D
+    subgraph Store["integrity.py + SQLite"]
+        S1[(sections + section_history, files, jobs)]
+        S2[(audit hash chain)]
+        S3[(reports + manifests, amendments, partials)]
+        TR[Triggers: released and verified data locked]
+    end
+    subgraph Engine["app.py"]
+        E1[Checks: validate, values as logged]
+        E2[Report: build_pdf, manifest, QR]
+    end
+    subgraph Ops["notify.py, portal.py, retention.py"]
+        O1[Notifications + email outbox, same-day board]
+        O2[Partial reports, approved values]
+        O3[Backups, audit tip, record packages]
+    end
+    T & V & AP & AD & CU --> G
+    G --> X1 & X2 & X3 & X4 --> S1
+    S1 --> E1 --> E2 --> S3
+    S1 -.-> S2
+    S1 --> O2 --> CU
+    S1 & S3 --> O1
+    S1 & S2 & S3 --> O3
 ```
 
-Data flow: every source ends up as the same per-section structure in the `jobs` table. Any change to that data resets
-the job to "Data imported", so validation and the report are always derived from what is stored. Reports are built once
-per version and stored with their hash; the verification page recomputes the hash on request.
+Data flow: every input becomes one row per test section (`sections`), written in a single transaction per upload, with every
+revision copied to `section_history` and the uploaded file kept in `files`. The job's data dict is assembled from its
+sections when read, so `validate` and `build_pdf` see one structure. Every action writes an audit entry, chained to the
+previous one by hash.
 
 ## Modules
 
 | Module | Responsibility |
 |---|---|
-| `importers.py` | Detect file type, read CSV / Excel / SQLite / JSON, convert between table rows and nested data, read legacy registers (including result and test date), export templates |
-| `vision.py` | Read one source document with the configured vision model on request (page clean-up, part-by-part reading, enforced answer shape), enforce the daily limit for hosted models, cache readings, return a proposal only |
-| `rules.py` | Engineering thresholds, each with its source and status; wording rules for observations ("No disruptive discharge" vs "Disruptive discharge at 28 kV") |
-| `app.py` | REST API, SQLite storage and audit trail, validation (`validate`), report (`build_pdf`), report versions, release rules, search, statistics |
-| `report_template.json` | Report wording: organisation, title, headings, signature labels, footer |
-| `static/index.html` | Single-page UI: dashboard, workflow, form pages, records, preview, architecture, verification |
-| `static/assistant.js` | Rule-based chat assistant: guided new request, record search, open jobs, status, how-to answers. Keyword matching only; uses the same API as the UI |
+| `app.py` | REST API, job lifecycle, checks (`validate`), report (`build_pdf`, normal and partial), workflow routes (verify, sign-off, intake), approval and amendment, search, statistics |
+| `auth.py` | Users and customer organisations, password hashing, sessions (idle/absolute timeout, lock-out), CSRF, `PERMS` and the `before_request` gate that refuses any route without a rule |
+| `integrity.py` | Section rows with revisions (optimistic locking), section history, files, series/sample allocation, audit hash chain, database triggers, numbered migrations with backup |
+| `workflow.py` | Intake validation (required fields, formats, PIN-code table; also the customer's own online request), test plan, ownership and certification, progress, sign-off readiness |
+| `xltemplates.py` | Template engine: read a sheet (names, labels, cells, tables; statuses per value), draw blank and filled sheets, diff and validate mappings |
+| `seed_templates.py` | Version 1 of the logsheet templates and the customer request form (seeds the registry once) |
+| `excel_routes.py` | Template registry (draft / active / retired), upload preview and import, several jobs per workbook, Excel downloads |
+| `notify.py` | In-app notifications, email outbox and worker, same-day cut-off and board, settings |
+| `portal.py` | Partial reports, approved values with logsheet labels, requests filled in online by customers, Excel request forms |
+| `retention.py` | Backups with checksums, backup check, audit tip, record packages, server clock |
+| `importers.py` | Flat-layout readers and exporters (CSV, Excel, SQLite, JSON), legacy registers |
+| `vision.py` | Optional AI reading of scanned sheets (off unless `ALETHEIA_FEATURE_SCAN=1`) |
+| `rules.py` | Engineering thresholds with source and status |
+| `static/` | Single-page UI: `index.html` (pages, job page, report), `auth.js` (sign-in, roles, Admin and customer pages), `workflow.js` (verification card, intake, My work, amendments), `excel.js` (upload preview, templates), `portal.js` (notifications, Today, Settings, customer additions), `ui.js` (user menu, dashboard tasks, take / assign tests, customer request form, dashboard emblem) |
 
-## Data model (`aletheia.db`)
+## Data model (`aletheia.db`, schema version 2)
 
 | Table | Contents |
 |---|---|
-| `jobs` | One test job or historical record: `series` (unique), `sample`, `customer`, `rating`, `stage` (0-4), `data` (JSON, one object per document), `findings` (JSON, last check results with review marks), `verdict` (Complies / Complies (partly evaluated) / Does not comply / empty), `archived` (1 = historical record from a register), `tested` (test date from a register), `approver`, `approver_id`, `created`, `updated` |
-| `imports` | Each imported data file: name, kind, SHA-256 of its content (the same content twice in one job is refused), and which documents it brought in, so the import can be undone |
-| `sources` | Scans and photos kept as evidence, with SHA-256 |
-| `reports` | Every generated or approved PDF: version, verification token, SHA-256, approver |
-| `audit` | Time-stamped history of every step; turnaround is computed from it |
-| `vision_calls` | AI requests per day, for the daily limit |
+| `users`, `orgs` | Accounts (roles, employee ID, certified tests, lock-out, session epoch) and customer organisations. Never deleted |
+| `jobs` | One job: series (unique), sample, customer, stage 0-4, findings, verdict, org, test `plan`, `intake` record, sign-off, open `amend`, `cutoff`, `same_day` |
+| `sections` | One row per test of a job: state (uploaded / returned / verified / na), data, data SHA-256, revision, file, template, uploader + bay, verifier, note |
+| `section_history` | Every revision and state change of every section (append-only) |
+| `files` | Uploaded data files byte-for-byte with SHA-256 (append-only) |
+| `imports` | Each import: file, kind, sections brought, user (lets an import be undone before release) |
+| `sources` | Scans and photos kept as evidence |
+| `reports` | Every generated / released PDF: version, token, SHA-256, approver, manifest and its SHA-256 (unchangeable) |
+| `amendments` | Reason, tests reopened, both signers, from / to version (kept for good) |
+| `partials` | Every partial report version shown to the customer, with its hash |
+| `templates` | Template versions with mapping, status, sample sheet |
+| `assignments`, `bays`, `counters` | Test-to-engineer assignments with the bay, test bays, series/sample counters |
+| `notifications`, `outbox`, `settings`, `customer_forms` | Notices, queued emails, lab settings, customers' requests (filled online, or Excel) |
+| `audit` | Every action: who, role, workstation, kind, text, previous hash, own hash |
+| `schema_version` | Migrations applied |
 
-`ai_cache.db` (separate file, kept when the job database is deleted) holds saved AI readings keyed by scan SHA-256, part and model.
+## Who assigns tests
+
+| Who | Can |
+|---|---|
+| Administrator | Assign or reassign any test of an open job, or the whole job at once, to a test engineer (certified for the test), with the bay; the engineer is notified |
+| Test engineer | Take a planned test nobody is assigned to and nobody has started, choosing the bay; give it back before starting. At intake, tick the tests they will do themselves |
+
+Uploads without a bay use the bay of the assignment. Each person's dashboard lists their tasks: engineers what to test and what is
+free to take, verifiers what to verify and sign off, approvers what to approve, the administrator what waits for approval,
+tests not assigned, customer requests waiting, and locked accounts.
 
 ## Job lifecycle
 
-| Stage | Reached when | Goes back when |
-|---|---|---|
-| 0 Request captured | Request created (form, data file, or scan of the request form) | - |
-| 1 Data imported | Any test data imported or edited | Data changes at any later stage; checks find a data error. Back to 0 when imports are removed and only the request is left |
-| 2 Validated | Checks run with no data errors (requirements not met are allowed) | - |
-| 3 Report ready | Every flagged item reviewed and every requirement not met confirmed; report generated | Report withdrawn (back to 2) |
-| 4 Approved | Approved by someone other than the test engineer (and on `ALETHEIA_APPROVERS`, if set) | Record details edited (back to 3, re-approval needed); report withdrawn |
+| Stage | Reached when |
+|---|---|
+| (before) Request | The customer fills in the request online (or sends the Excel form); it waits in the intake inbox |
+| 0 Request captured | Intake recorded (or request created from a file) |
+| 1 Data imported | Any test data uploaded or changed (also voids the sign-off) |
+| 2 Validated | Checks run without data-layout errors |
+| 3 Report ready | Flagged items reviewed, every planned test verified or not applicable, job signed off, report generated |
+| 4 Released | Approved by an approver who did not work on the data, with a complete, checked intake |
 
-Historical records (`archived = 1`) stay out of the pipeline, the work queue and the turnaround figures. Importing test data
-into one turns it into a live job at stage 1. A job with a released report cannot be deleted.
+A released job changes only through an **amendment** (back to stage 1 for the named tests only; the released version stays
+valid until version n+1 is released). Historical records from registers (`archived = 1`) stay out of the pipeline.

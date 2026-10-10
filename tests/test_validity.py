@@ -62,7 +62,8 @@ class Mutations(unittest.TestCase):
     def test_noload_average_wrong(self):
         def m(d): d["noload"]["rows"][0][3][0] += 0.5
         diff, _ = changed(m)
-        self.assertEqual(diff.get("No-load current average"), (None, "fail"))
+        self.assertEqual(diff.get("No-load current average"), (None, "warn"))  # advisory (F5): the logged average stands
+        self.assertTrue(next(f for f in _ if f["check"] == "No-load current average")["advisory"])
 
     def test_noload_current_over_limit_uses_rating(self):
         def m(d): d["noload"]["rows"][2][4] = 20.0; d["noload"]["rows"][2][3] = [20.0] * 3
@@ -148,7 +149,7 @@ class Mutations(unittest.TestCase):
     def test_oil_rise_over_limit_and_thin_margin(self):
         d = copy.deepcopy(DEMO); d["proforma"]["limits"]["oil"] = 20
         self.assertEqual(levels(d)[0]["Top-oil temperature rise"], "fail")
-        d["proforma"]["limits"]["oil"] = 26.5      # 26.15 K computed: 0.35 K margin
+        d["proforma"]["limits"]["oil"] = 26.5      # 26.01 K as logged: 0.49 K margin
         F = app.validate(d)[0]
         f = next(x for x in F if x["check"] == "Top-oil temperature rise")
         self.assertEqual((f["level"], f.get("inconclusive")), ("warn", True))
