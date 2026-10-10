@@ -7,7 +7,7 @@ Status 2026-10-10 (evening). Ticked items are implemented and covered by tests (
 - [x] Roles: Admin, Tester, Customer (Verifier and Approver removed 2026-10-11; old accounts converted on start-up)
 - [x] Permission check on every route (server-side), plus a test that runs every route against every role
 - [x] The signing administrator's identity comes from the login, not typed name/ID
-- [x] A tester never verifies their own upload
+- [x] Only testers verify (their own uploads included); the administrator never enters, checks or verifies data
 - [x] Admin manages users but cannot edit, verify or approve test data
 
 **Customer request and intake**

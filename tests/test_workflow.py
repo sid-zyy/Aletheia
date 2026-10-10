@@ -112,15 +112,13 @@ class Sections(Flow):
     def loaded(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=dict(filename="d.json", content=PARTS)); return i
 
-    def test_nobody_verifies_their_own_upload(self):
+    def test_tester_may_verify_their_own_upload_but_not_the_admin(self):
         b = signed_in("both"); i = self.job()
         b.post(f"/api/jobs/{i}/import", json=dict(filename="sc.json", content={"sc": DEMO["sc"]}))
-        r = b.post(f"/api/jobs/{i}/sections/sc/verify", json=dict(revision=1)); self.assertEqual(r.status_code, 403)
-        self.assertIn("another tester must verify it", r.json["error"][0])  # a tester verifies a colleague's upload, never their own
         r = self.admin.post(f"/api/jobs/{i}/sections/sc/verify", json=dict(revision=1)); self.assertEqual(r.status_code, 403)
         self.assertIn("does not allow", r.json["error"][0])  # the administrator never verifies
-        self.assertEqual(self.v.post(f"/api/jobs/{i}/sections/sc/verify", json=dict(revision=1)).status_code, 200)
-        m = self.get(i)["meta"]["sc"]; self.assertEqual((m["state"], m["verified_by"], m["revision"]), ("verified", "S. Iyer", 2))
+        self.assertEqual(b.post(f"/api/jobs/{i}/sections/sc/verify", json=dict(revision=1)).status_code, 200)
+        m = self.get(i)["meta"]["sc"]; self.assertEqual((m["state"], m["verified_by"], m["revision"]), ("verified", "B. Oth", 2))
 
     def test_verify_names_the_revision_that_was_checked(self):
         i = self.loaded()
@@ -260,7 +258,7 @@ class Queues(Flow):
         self.assertEqual([(x["series"], x["name"]) for x in w["to_verify"]], [("CPRIBLRSCL25T1654", "Short-Circuit Withstand Test Logsheet"), ("CPRIBLRSCL25T1700", "Temperature-Rise Test Logsheet")])
         self.assertNotIn("to_approve", w)  # a tester verifies; approving is the administrator's
         t = self.c.get("/api/my-work").json; self.assertEqual(len(t["uploaded"]), 2); self.assertEqual(len(t["intake"]), 2)
-        self.assertEqual(t["to_verify"], [])  # never your own uploads
+        self.assertEqual(len(t["to_verify"]), 2)  # own uploads can be verified too
         a_w = self.admin.get("/api/my-work").json
         for k in ("to_signoff", "to_approve", "awaiting_verification", "unassigned", "requests"): self.assertIn(k, a_w)
         self.assertNotIn("to_verify", a_w)

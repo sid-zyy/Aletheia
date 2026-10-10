@@ -34,13 +34,13 @@ Set `ALETHEIA_PASSWORDS=1` to switch every password rule back on (temporary pass
 | Role | Does | Cannot |
 |---|---|---|
 | **Admin** | **approves** a job once every test is verified or not applicable, **generates** the report and **signs it off** (releases it, re-entering the password); with a second administrator, amends a released report; receives customer requests like a test engineer; assigns tests (or a whole job); answers customer tickets; users, customer organisations, Excel templates, settings, backups, audit log | enter, check or verify data |
-| **Tester** (test engineer) | intake: receives a customer's request (records sheet 3 of the form, the test plan; series and sample numbers are assigned) or returns it with the reason; takes unassigned tests, uploads the logsheets of their tests, corrects returned tests; **runs the checks**, marks flagged items reviewed; **verifies** colleagues' tests: verify, return (with reason), reopen, not applicable | raise or change a customer's request, take a test assigned to someone else, **verify their own upload**, approve, generate or sign off |
+| **Tester** (test engineer) | intake: receives a customer's request (records sheet 3 of the form, the test plan; series and sample numbers are assigned) or returns it with the reason; takes unassigned tests, uploads the logsheets of their tests, corrects returned tests; **runs the checks**, marks flagged items reviewed; **verifies** tests (their own or colleagues'): verify, return (with reason), reopen, not applicable | raise or change a customer's request, take a test assigned to someone else, approve, generate or sign off |
 | **Customer** | the only one who raises a test request: fills in the Customer Request Form (CPRI/QAF/01A, sheets 1-2) online and corrects it when returned; raises **tickets** to the laboratory (questions or problems, optionally about a job); sees their organisation's jobs: progress, approved values, partial report, released reports | see other customers' jobs, values of tests not yet approved, staff names |
 
 Each account has one role: Admin, Tester or Customer (the Verifier and Approver roles were removed; on the first start an
 old Verifier becomes a Tester and an old Approver an Admin, and an account that would combine Admin with Tester stops the
-start-up with a list, to be split into two accounts). Because nobody verifies their own upload, a laboratory needs **at
-least two testers**; because an amendment needs a second signature, it needs **at least two administrators**. Every rule is enforced by the server (a route without a permission rule is refused) and every refusal
+start-up with a list, to be split into two accounts). A tester may verify their own upload. Because an amendment needs a second signature, a laboratory needs **at least two
+administrators**. Every rule is enforced by the server (a route without a permission rule is refused) and every refusal
 is recorded in the audit log.
 
 ## Workflow

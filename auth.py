@@ -1,7 +1,7 @@
 """Accounts, login and permissions (docs/NEXT_STEPS.md section 2).
 
 Roles: admin, tester, customer (the verifier and approver roles were removed). Testers enter data, run the checks and verify
-each other's tests (never their own upload); the administrator approves a job once every test is verified, generates the
+tests, their own uploads included; the administrator approves a job once every test is verified, generates the
 report and signs it off. Admin is never combined with tester, and customer is never combined with anything.
 
 Every route must name its permission with @require(...) (or @public). A request to a route that names none is refused,

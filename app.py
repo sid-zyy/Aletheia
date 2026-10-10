@@ -1329,8 +1329,6 @@ def section_action(i, k, state, verb, need_reason=False, need_data=True, allowed
             row = c.execute("SELECT * FROM sections WHERE job_id=? AND key=?", (i, k)).fetchone()
             if need_data and (not row or row["data"] is None): return jsonify(error=[f"{name(k)} has no data to {verb}"]), 409
             if row and row["state"] not in allowed_from: return jsonify(error=[f"{name(k)} is {row['state']}; it cannot be {verb} now"]), 409
-            if row and row["uploaded_by"] == u["id"] and state in ("verified", "returned"):
-                return refuse(c, i, f"you uploaded {name(k)}, so another tester must {dict(verified='verify', returned='return').get(state, verb)} it")
             rev = b.get("revision") if isinstance(b.get("revision"), int) and not isinstance(b.get("revision"), bool) else None
             if state in ("verified", "returned") and rev is None: return jsonify(error=["Reload the page: the revision you checked is missing"]), 400
             integrity.set_state(c, i, k, state, u["id"], f"{name(k)} {verb}" + (f": {reason}" if reason else ""), note=reason or None, expect=rev)
@@ -1345,8 +1343,8 @@ def section_action(i, k, state, verb, need_reason=False, need_data=True, allowed
 @app.post("/api/jobs/<int:i>/sections/<k>/verify")
 @auth.require("section.verify")
 def verify_section(i, k):
-    """A tester (not the one who uploaded it) confirms the data in the app is what is in the source file. revision: the one
-    they looked at."""
+    """A tester (the one who uploaded it, or a colleague) confirms the data in the app is what is in the source file.
+    revision: the one they looked at."""
     return section_action(i, k, "verified", "verified")
 
 @app.post("/api/jobs/<int:i>/sections/<k>/return")
@@ -1429,7 +1427,7 @@ def notify_assigned(c, uid, jid, series, keys):
 @app.post("/api/jobs/<int:i>/signoff")
 @auth.require("job.signoff")
 def signoff(i):
-    """The administrator approves the job: every test verified (by a tester other than its uploader) or not applicable, and
+    """The administrator approves the job: every test verified by a tester or not applicable, and
     the checks run without data errors. Only then can the report be generated, signed off and released."""
     j = getjob(i); u = auth.current()
     if locked(j): return locked(j)
@@ -1612,7 +1610,7 @@ def my_work():
             out["available"] = [x for x in unassigned(c, open_jobs) if not tt or x["key"] in tt]
             out["requests"] = q("SELECT f.id, o.name AS org, f.filename, f.at FROM customer_forms f LEFT JOIN orgs o ON o.id=f.org_id WHERE f.status='received' ORDER BY f.id")
             out["to_verify"] = q(f"SELECT j.id, j.series, s.key, s.uploaded_at AS at, uu.full_name AS by FROM sections s JOIN jobs j ON j.id=s.job_id LEFT JOIN users uu ON uu.id=s.uploaded_by "
-                                f"WHERE {open_jobs} AND s.state='uploaded' AND s.key!='request' AND s.data IS NOT NULL AND COALESCE(s.uploaded_by,-1)!=? ORDER BY s.uploaded_at", u["id"])
+                                f"WHERE {open_jobs} AND s.state='uploaded' AND s.key!='request' AND s.data IS NOT NULL ORDER BY s.uploaded_at")
         if "admin" in u["roles"]:  # the administrator approves, generates and signs off, and sees everything that is waiting
             out["to_signoff"] = [dict(id=j["id"], series=j["series"], at=j["updated"]) for j in
                                  (getjob(r["id"], False) for r in c.execute(f"SELECT j.id FROM jobs j WHERE {open_jobs} AND j.signed_off_by IS NULL AND j.stage>=2"))

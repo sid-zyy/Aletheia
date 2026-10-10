@@ -31,8 +31,8 @@ async function wfCard(j){if(isCust())return;const id=j.id,nx=$('.card.next');if(
  const testers=can('job.assign')?await api('/api/testers'):[];
  const keys=[...new Set([...(j.plan.length?j.plan:j.progress.map(p=>p.key)),...Object.keys(j.meta).filter(k=>k!='request')])];
  const st=k=>(j.meta[k]||{}).state||'not_started',n=s=>keys.filter(k=>st(k)==s).length,ver=can('section.verify');
- const row=k=>{const m=j.meta[k]||{},s=st(k),a=j.assign[k],mine=m.uploaded_by_id==ME.id,acts=[];
-  if(ver&&!j.released){if(s=='uploaded'&&!mine&&k in j.data)acts.push(`<button class="btn s" onclick="wfReview(${id},'${k}')">Check and verify</button>`);
+ const row=k=>{const m=j.meta[k]||{},s=st(k),a=j.assign[k],acts=[];
+  if(ver&&!j.released){if(s=='uploaded'&&k in j.data)acts.push(`<button class="btn s" onclick="wfReview(${id},'${k}')">Check and verify</button>`);
    if(s=='verified'||s=='na')acts.push(`<button class="btn g s" onclick="wfReason(${id},'${k}','reopen')">Reopen</button>`);
    if(s=='not_started'||s=='uploaded'||s=='returned')acts.push(`<button class="lk" onclick="wfReason(${id},'${k}','na')">Not applicable</button>`)}
   const cert=!(ME.test_types||'')||(ME.test_types||'').split(',').includes(k);
@@ -73,7 +73,7 @@ function wfReason(id,k,act){const t={reopen:['Reopen for correction','Why must i
  modal(`<h2>${t[0]}: ${esc(secName(k))}</h2><div class="frm"><label for="wr">${t[1]}</label><textarea class="in" id="wr" rows="3" style="resize:vertical"></textarea></div><div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn g" onclick="closeModal()">Cancel</button><button class="btn" id="wrok">${t[2]}</button></div>`);
  $('#wrok').onclick=()=>wfDo(id,k,act=='ret'?'return':act,{reason:$('#wr').value,revision:WREV},t[2]=='Return'?'Returned to the tester':t[2]=='Reopen'?'Reopened':'Marked not applicable')}
 let WREV=null;
-/* tester (not the uploader): the values as stored, next to the original file, then verify or return */
+/* tester (the uploader or a colleague): the values as stored, next to the original file, then verify or return */
 async function wfReview(id,k){const j=await api('/api/jobs/'+id),m=j.meta[k],rows=flat(j.data[k]||{});WREV=m.revision;
  modal(`<h2>Verify: ${esc(secName(k,j))}</h2><p class="note">Compare every value with the source${m.file?`: <a class="lk" style="padding:0" href="/api/files/${m.file_id}">${esc(m.file)}</a> (SHA-256 ${esc((m.file_sha256||'').slice(0,12))}&hellip;)`:''}. Uploaded by ${esc(m.uploaded_by||'-')}${m.bay?' in '+esc(m.bay):''}, revision ${m.revision}.</p>
   <div style="max-height:46vh;overflow:auto;border:1px solid var(--ln);border-radius:10px"><table class="vt">${rows.map(([p,v])=>`<tr><td>${esc(p)}</td><td>${v==null||v===''?'<i style="color:var(--wn)">NA</i>':esc(v)}</td></tr>`).join('')}</table></div>
@@ -91,7 +91,7 @@ async function myWork(){const w=await api('/api/my-work'),age=t=>t?dur((Date.now
  const L=(title,items,line,empty)=>items?`<div class="card"><h2>${title} <span class="note" style="font-weight:400">(${items.length}${items.length?', oldest first':''})</span></h2>${items.length?items.map(x=>`<div class="qi" onclick="go('job/${x.id}')"><span><b>${esc(x.series)}</b> &middot; ${line(x)}</span><span class="note" style="margin:0">${age(x.at)}</span></div>`).join(''):`<p class="note">${empty}</p>`}</div>`:'';
  $('#app').innerHTML=head('My work',`What is waiting on you, ${esc(ME.full_name)}, oldest first.`)+
   L('Returned to you for correction',w.returned,x=>`${esc(x.name)}: <span style="color:var(--er)">${esc(x.note||'')}</span>`,'Nothing returned.')+
-  L('To verify (uploaded by a colleague)',w.to_verify,x=>`${esc(x.name)} (uploaded by ${esc(x.by||'-')})`,'Nothing to verify.')+
+  L('To verify',w.to_verify,x=>`${esc(x.name)} (uploaded by ${esc(x.by||'-')})`,'Nothing to verify.')+
   L('Ready to approve (every test verified)',w.to_signoff,()=>'approve, then generate the report','None ready.')+
   L('Ready for sign-off and release',w.to_approve,()=>'report generated, sign-off due','Nothing to sign off.')+
   L('Tests assigned to you, not yet uploaded',w.assigned,x=>esc(x.name),'Nothing assigned.')+
