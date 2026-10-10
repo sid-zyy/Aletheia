@@ -17,10 +17,10 @@ async function ticketsPage(){const st=(location.hash.split('?')[1]||'').replace(
 
 async function ticketNew(jobId){const [r,jobs]=await Promise.all([api('/api/tickets'),api('/api/jobs')]);
  $('#app').innerHTML=`<button class="back" onclick="go('tickets')">&larr; Tickets</button>`+head('Raise a ticket','It goes to the laboratory\'s administrators. Describe the question or problem; mention the request or report it concerns.')+
-  `<div class="card"><div class="frm"><div class="row2"><div><label for="tk_cat">What is it about?</label><select id="tk_cat"><option value="">Choose...</option>${r.categories.map(c=>`<option>${esc(c)}</option>`).join('')}</select></div>
+  `<div class="card"><div class="frm"><div class="row2"><div><label for="tk_cat">What is it about?<span style="color:var(--er)"> *</span></label><select id="tk_cat"><option value="">Choose...</option>${r.categories.map(c=>`<option>${esc(c)}</option>`).join('')}</select></div>
    <div><label for="tk_job">Job (optional)</label><select id="tk_job"><option value="">Not about one job</option>${jobs.map(j=>`<option value="${j.id}" ${j.id==jobId?'selected':''}>${esc(j.series)} &middot; ${esc(j.rating||'')}</option>`).join('')}</select></div></div>
-   <div><label for="tk_sub">Subject</label><input class="in" id="tk_sub" maxlength="150" placeholder="In a few words"></div>
-   <div><label for="tk_msg">Message</label><textarea id="tk_msg" rows="7" style="width:100%;font:inherit;padding:10px;border:1px solid var(--ln);border-radius:8px;background:var(--bg);color:var(--tx)"></textarea></div></div>
+   <div><label for="tk_sub">Subject<span style="color:var(--er)"> *</span></label><input class="in" id="tk_sub" maxlength="150" placeholder="In a few words"></div>
+   <div><label for="tk_msg">Message<span style="color:var(--er)"> *</span></label><textarea id="tk_msg" rows="7" style="width:100%;font:inherit;padding:10px;border:1px solid var(--ln);border-radius:8px;background:var(--bg);color:var(--tx)"></textarea></div></div>
    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px"><button class="btn g" onclick="go('tickets')">Cancel</button><button class="btn" id="tk_send">Send to the laboratory</button></div></div>`;
  $('#tk_send').onclick=async()=>{try{const x=await api('/api/tickets',{category:$('#tk_cat').value,job_id:+$('#tk_job').value||null,subject:$('#tk_sub').value,message:$('#tk_msg').value});toast('Ticket sent to the laboratory');go('tickets/'+x.id)}catch(e){toast(e,1)}}}
 

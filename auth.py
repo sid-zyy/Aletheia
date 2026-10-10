@@ -19,6 +19,7 @@ STAFF = ("admin", "tester", "verifier", "approver")
 PERMS = {
     "jobs.view":        STAFF + ("customer",),  # customers are further limited to their organisation's jobs
     "job.create":       ("tester",),
+    "request.receive":  ("tester", "admin"),     # open the inbox of customer requests, accept (capture) or return one
     "job.edit":         ("tester",),
     "job.delete":       ("admin",),             # only records that never had a released report
     "data.write":       ("tester",),            # import, enter / correct / remove sections, attach scans, AI reading
@@ -43,6 +44,9 @@ PERMS = {
     "tickets.raise":    ("customer",),           # a customer raises a ticket and follows it up
     "tickets.manage":   ("admin",),              # tickets go to the administrators, who answer and close them
 }
+# Testing phase: no passwords anywhere (sign in with the username only, no re-entry at release or amendment). Set
+# ALETHEIA_PASSWORDS=1 to switch every password rule back on.
+PASSWORDS = os.environ.get("ALETHEIA_PASSWORDS", "0") == "1"
 LOCK_AFTER, LOCK_MINUTES = 5, 15
 IDLE_MINUTES, ABSOLUTE_HOURS = 30, 12
 MIN_PASSWORD = 10
@@ -157,7 +161,7 @@ def gate():
         tok = request.headers.get("X-CSRF-Token", "")
         if not tok or not secrets.compare_digest(tok, session.get("csrf", "")):
             return deny(403, "Missing or wrong security token; reload the page", audit=True)
-    if u["must_change_password"] and request.endpoint not in ("auth.me", "auth.change_password", "auth.logout"):
+    if PASSWORDS and u["must_change_password"] and request.endpoint not in ("auth.me", "auth.change_password", "auth.logout"):
         return jsonify(error=["Change your temporary password first"], change_password=True), 403
     if kind == "perm" and not any(holds(u, p) for p in perms):
         jid = (request.view_args or {}).get("i")
@@ -192,6 +196,7 @@ def is_customer(u=None):
 
 # ------------------------------------------------------------------ validation of account fields
 def password_problem(pw, username=""):
+    if not PASSWORDS: return None
     pw = str(pw or "")
     if len(pw) < MIN_PASSWORD: return f"Password must be at least {MIN_PASSWORD} characters"
     if len(pw) > 200: return "Password is too long"
@@ -248,7 +253,7 @@ def body(): return request.get_json(force=True, silent=True) or {}
 def me():
     u = current()
     with _db() as c: setup_needed = c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
-    if not u: return jsonify(user=None, setup_needed=setup_needed, local=request.remote_addr in LOCAL)
+    if not u: return jsonify(user=None, setup_needed=setup_needed, local=request.remote_addr in LOCAL, passwords=PASSWORDS)
     session.setdefault("csrf", secrets.token_urlsafe(24))
     perms = sorted(p for p in PERMS if holds(u, p))
     org = None
@@ -256,7 +261,7 @@ def me():
         with _db() as c: r = c.execute("SELECT name FROM orgs WHERE id=?", (u["org_id"],)).fetchone()
         org = r[0] if r else None
     return jsonify(user=dict(public_user(u), org=org), csrf=session["csrf"], perms=perms, setup_needed=False,
-                   idle_minutes=IDLE_MINUTES, features=dict(scan=bool(current_app.config.get("FEATURE_SCAN", os.environ.get("ALETHEIA_FEATURE_SCAN", "0") == "1"))))
+                   idle_minutes=IDLE_MINUTES, passwords=PASSWORDS, features=dict(scan=bool(current_app.config.get("FEATURE_SCAN", os.environ.get("ALETHEIA_FEATURE_SCAN", "0") == "1"))))
 
 
 @bp.post("/api/setup")
@@ -276,7 +281,7 @@ def first_admin():
             return jsonify(error=["Set-up is already done; sign in instead"]), 409
         cur = c.execute("INSERT INTO users(username,full_name,employee_id,roles,email,password_hash,must_change_password,created_at) "
                         "VALUES(?,?,?,?,?,?,0,?)", (un, b["full_name"].strip(), str(b.get("employee_id") or "").strip().upper() or None,
-                                                     "admin", str(b.get("email") or "").strip() or None, generate_password_hash(b["password"]), now()))
+                                                     "admin", str(b.get("email") or "").strip() or None, pw_hash(b.get("password")), now()))
         uid = cur.lastrowid
         g.user = {"id": uid, "full_name": b["full_name"].strip(), "username": un, "roles": ["admin"]}
         _log(c, None, f"First administrator account created: {un}", kind="admin")
@@ -292,6 +297,11 @@ def start_session(u):
 
 
 _DUMMY = generate_password_hash("not-a-real-password-x")
+
+
+def pw_hash(pw):
+    """Hash of the given password; without passwords (testing) an unusable random one."""
+    return generate_password_hash(str(pw) if PASSWORDS or pw else secrets.token_urlsafe(24))
 
 
 @bp.post("/api/login")
@@ -311,7 +321,7 @@ def login():
     if u["locked_until"] and u["locked_until"] > now():
         with _db() as c: _log(c, None, f"Sign-in refused for locked account {un} from {ip()}", kind="auth")
         return jsonify(error=[f"Too many failed attempts. Try again after {u['locked_until'][11:16]}, or ask an administrator."]), 423
-    if not check_password_hash(u["password_hash"], pw):
+    if PASSWORDS and not check_password_hash(u["password_hash"], pw):
         n = u["failed_attempts"] + 1
         lock = (dt.datetime.now() + dt.timedelta(minutes=LOCK_MINUTES)).isoformat(timespec="seconds") if n >= LOCK_AFTER else None
         with _db() as c:
@@ -322,7 +332,7 @@ def login():
         c.execute("UPDATE users SET failed_attempts=0, locked_until=NULL, last_login=? WHERE id=?", (now(), u["id"]))
     lu = load_user(u["id"]); start_session(lu); g.user = lu
     with _db() as c: _log(c, None, f"Signed in from {ip()}", kind="auth")
-    return jsonify(ok=True, must_change_password=bool(u["must_change_password"]))
+    return jsonify(ok=True, must_change_password=PASSWORDS and bool(u["must_change_password"]))
 
 
 @bp.post("/api/logout")
@@ -358,7 +368,7 @@ def second_signer(username, password, role):
     if not r or r["id"] == me_["id"] or not r["active"] or role not in user_roles(r):
         check_password_hash(_DUMMY, str(password or "")); return None, "The second signer must be another active " + role
     if r["locked_until"] and r["locked_until"] > now(): return None, "The second signer's account is locked"
-    if not check_password_hash(r["password_hash"], str(password or "")):
+    if PASSWORDS and not check_password_hash(r["password_hash"], str(password or "")):
         n = r["failed_attempts"] + 1
         lock = (dt.datetime.now() + dt.timedelta(minutes=LOCK_MINUTES)).isoformat(timespec="seconds") if n >= LOCK_AFTER else None
         with _db() as c:
@@ -371,9 +381,28 @@ def second_signer(username, password, role):
 
 def reauth(password):
     """True when the signed-in user's password matches (re-authentication at release)."""
+    if not PASSWORDS: return True
     u = current()
     with _db() as c: h = c.execute("SELECT password_hash FROM users WHERE id=?", (u["id"],)).fetchone()[0]
     return check_password_hash(h, str(password or ""))
+
+
+@bp.post("/api/customers")
+@require("users.manage")
+def create_customer():
+    """A customer account from just a username (the display name defaults to it). Its organisation, which the customer's
+    requests and jobs belong to, is created with the same name; no separate organisation step."""
+    b = body(); un = str(b.get("username") or "").strip().lower()
+    name = re.sub(r"\s+", " ", str(b.get("name") or "")).strip() or un
+    if not re.fullmatch(USER_RE, un): return jsonify(error=["Username: 2-40 lower-case letters, digits, '.', '_' or '-'"]), 400
+    with _db() as c:
+        if c.execute("SELECT 1 FROM users WHERE username=?", (un,)).fetchone(): return jsonify(error=["That username is taken"]), 409
+        org = c.execute("SELECT id FROM orgs WHERE lower(name)=lower(?)", (name,)).fetchone()
+        oid = org[0] if org else c.execute("INSERT INTO orgs(name,created_by,created_at) VALUES(?,?,?)", (name, current()["id"], now())).lastrowid
+        cur = c.execute("INSERT INTO users(username,full_name,roles,org_id,password_hash,must_change_password,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                        (un, name, "customer", oid, pw_hash(b.get("password")), int(PASSWORDS), current()["id"], now()))
+        _log(c, None, f"Customer {un} created ({name})", kind="admin")
+    return jsonify(id=cur.lastrowid, org_id=oid), 201
 
 
 # ---- admin: users and customer organisations. Accounts are disabled, never deleted (history must resolve names for 10+ years).
@@ -405,7 +434,7 @@ def create_user():
                             "VALUES(?,?,?,?,?,?,?,?,1,?,?)",
                             (un, b["full_name"].strip(), str(b.get("employee_id") or "").strip().upper() or None, ",".join(roles), org,
                              str(b.get("email") or "").strip() or None, clean_tests(b.get("test_types")),
-                             generate_password_hash(b["password"]), current()["id"], now()))
+                             pw_hash(b.get("password")), current()["id"], now()))
         except Exception as e:  # noqa: BLE001 - sqlite3.IntegrityError without importing sqlite3 here
             if "UNIQUE" in str(e): return jsonify(error=["That username is taken"]), 409
             raise

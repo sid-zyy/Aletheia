@@ -19,10 +19,10 @@ const secName=k=>SECN[k]||k;
 .qi{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-top:1px solid var(--ln);font-size:14px;cursor:pointer}.qi:first-of-type{border:0}.qi:hover{color:var(--ac)}
 body.no-data-write [onclick^="pick(ACC"],body.no-data-write #dz,body.no-data-write [onclick^="editSec"],body.no-data-write [onclick^="rmSec"],body.no-data-write [onclick^="rmImp"],body.no-data-write [onclick^="delSrc"],body.no-data-write [onclick^="readAI"],
 body.no-job-delete [onclick^="delJob"],body.no-job-edit [onclick^="editJob"],body.no-data-check [onclick^="runChecks"],body.no-data-check [onclick^="act('validate'"],
-body.no-report-generate [onclick^="act('generate'"],body.no-report-approve [onclick^="discard"],body.no-job-create [href="#/new"],body.no-job-create [href="#/intake"],body.no-job-create [onclick^="demo()"]{display:none!important}
+body.no-report-generate [onclick^="act('generate'"],body.no-report-approve [onclick^="discard"],body.no-job-create [href="#/new"],body.no-request-receive [href="#/intake"],body.no-job-create [onclick^="demo()"]{display:none!important}
 `;document.head.append(s)})();
 /* hide what the role cannot use: one class per missing permission (the server refuses these calls anyway) */
-function roleClasses(){for(const p of['data.write','job.delete','job.edit','data.check','report.generate','report.approve','job.create'])document.body.classList.toggle('no-'+p.replace('.','-'),!!ME&&!can(p))}
+function roleClasses(){for(const p of['data.write','job.delete','job.edit','data.check','report.generate','report.approve','job.create','request.receive'])document.body.classList.toggle('no-'+p.replace('.','-'),!!ME&&!can(p))}
 const bay=()=>{try{return +localStorage.getItem('aletheia.bay')||null}catch(e){return null}};
 const setBay=v=>{try{v?localStorage.setItem('aletheia.bay',v):localStorage.removeItem('aletheia.bay')}catch(e){}};
 

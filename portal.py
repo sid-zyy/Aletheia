@@ -195,7 +195,7 @@ def install(app_module):
                                                        "WHERE f.org_id=? ORDER BY f.id DESC", (u["org_id"],))])
 
     @app.get("/api/request-forms")
-    @auth.require("job.create")
+    @auth.require("request.receive")
     def forms_inbox():
         with A.db() as c:
             return jsonify([dict(r) for r in c.execute("SELECT f.id, f.filename, f.at, f.status, f.org_id, f.kind, f.note, o.name AS org, u.full_name AS sent_by, j.series, "
@@ -204,7 +204,7 @@ def install(app_module):
                                                        "LEFT JOIN jobs j ON j.id=f.job_id ORDER BY (f.status='received') DESC, f.id DESC LIMIT 100")])
 
     @app.get("/api/request-forms/<int:fid>/file")
-    @auth.require("job.create")
+    @auth.require("request.receive")
     def form_file(fid):
         with A.db() as c: r = c.execute("SELECT * FROM customer_forms WHERE id=?", (fid,)).fetchone()
         if not r: abort(404)
@@ -213,7 +213,7 @@ def install(app_module):
                          mimetype="application/json" if web else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     @app.post("/api/request-forms/<int:fid>/read")
-    @auth.require("job.create")
+    @auth.require("request.receive")
     def form_read(fid):
         """A customer's request as they sent it, for the intake page (the laboratory does not change the customer's answers)."""
         with A.db() as c: r = c.execute("SELECT * FROM customer_forms WHERE id=?", (fid,)).fetchone()

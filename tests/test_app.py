@@ -7,6 +7,7 @@ _tmp = tempfile.TemporaryDirectory()
 os.environ["ALETHEIA_DB"] = os.path.join(_tmp.name, "test.db")
 os.environ["ALETHEIA_FEATURE_SCAN"] = "1"  # the scanning tests below need the (optional) feature on
 os.environ["ALETHEIA_AUTO_BACKUP"] = "0"
+os.environ["ALETHEIA_PASSWORDS"] = "1"  # the password rules are tested; the app runs without them while testing
 os.environ["ALETHEIA_DEMO"] = "1"  # the demo loader is a test fixture; a real job starts from a customer's request
 for _v in ("GEMINI_API_KEY", "GEMINI_MODEL", "AI_BASE_URL", "AI_MODEL", "AI_API_KEY", "AI_PROVIDER", "AI_NUM_CTX", "AI_IMAGE_PX"): os.environ.pop(_v, None)
 import app as aletheia, importers, integrity, vision  # noqa: E402

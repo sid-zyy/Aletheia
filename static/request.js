@@ -12,7 +12,7 @@
 .qg{font-weight:700;margin:16px 0 0;font-size:14.5px}.qnote{font-size:12.5px;color:var(--mu);margin-top:5px;line-height:1.45}
 .qopt{display:flex;flex-direction:column;gap:6px;padding-top:6px}.qopt label{display:flex;gap:8px;align-items:flex-start;margin:0;font-weight:500;font-size:14px}
 .qopt.row{flex-direction:row;gap:22px}.qagree{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px dashed var(--ln);font-size:14px}
-.qv{padding-top:7px;white-space:pre-wrap}.qv.na{color:var(--mu)}.qbad{outline:2px solid var(--er);outline-offset:2px;border-radius:6px}
+.qreq{color:var(--er);font-weight:700}.qv{padding-top:7px;white-space:pre-wrap}.qv.na{color:var(--mu)}.qbad{outline:2px solid var(--er);outline-offset:2px;border-radius:6px}
 .qtests{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px 14px;margin-top:8px}.qtests label{display:flex;gap:8px;margin:0;font-weight:500;font-size:13.5px}
 .qsig{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px;font-size:14px}
 @media(max-width:680px){.qr{grid-template-columns:1fr}.qr .qc{display:none}.qf{padding:16px}}`;document.head.append(s)})();
@@ -20,11 +20,12 @@
 const QS={received:['uploaded','Waiting for the laboratory'],returned:['returned','Returned to you for correction'],used:['verified','Received by the laboratory'],replaced:['na','Replaced by a corrected request']};
 const qHead=(F,sheet,lab)=>`<div class="qh"><div class="qt">${esc(F.form.org)}</div><div class="qu">${esc(F.form.unit)}</div><div>Format No: ${esc(F.form.format_no)}</div>
  <div style="text-align:right">${esc(F.form.issue)}<br>${esc(F.form.issue_date)}</div><div class="qn2">${lab?'(To be filled by the laboratory)':esc(F.form.title)}</div><div></div><div style="text-align:right">Sheet ${sheet} of 3</div></div>`;
+const req=f=>f.optional||f.ro?'':'<span class="qreq" title="Required" aria-label="required"> *</span>';
 const qShow=v=>v===''||v==null?'<span class="qv na">-</span>':`<div class="qv">${esc(v)}</div>`;
 
 /* one field of the form; p = id prefix; ro = show the value only */
-function qField(f,v,p,ro,F){const id=p+f.key,note=f.note?`<div class="qnote">${esc(f.note)}</div>`:'';v=v==null?'':v;
- if(f.kind=='agree')return `<div class="qagree" data-k="${f.key}">${ro?(v?'&#9745;':'&#9744;'):`<input type="checkbox" id="${id}" ${v?'checked':''}>`}<label for="${id}" style="margin:0;font-weight:500">${esc(f.label)}${note}</label></div>`;
+function qField(f,v,p,ro,F){if(ro)f={...f,ro:1};const id=p+f.key,note=f.note?`<div class="qnote">${esc(f.note)}</div>`:'';v=v==null?'':v;
+ if(f.kind=='agree')return `<div class="qagree" data-k="${f.key}">${ro?(v?'&#9745;':'&#9744;'):`<input type="checkbox" id="${id}" ${v?'checked':''}>`}<label for="${id}" style="margin:0;font-weight:500">${esc(f.label)}${req(f)}${note}</label></div>`;
  let inp;
  if(ro)inp=qShow(v);
  else if(f.kind=='state')inp=`<select id="${id}"><option value="">Choose...</option>${F.states.map(s=>`<option ${s==v?'selected':''}>${esc(s)}</option>`).join('')}</select>`;
@@ -33,7 +34,7 @@ function qField(f,v,p,ro,F){const id=p+f.key,note=f.note?`<div class="qnote">${e
  else if(f.wide)inp=`<textarea id="${id}">${esc(v)}</textarea>`;
  else inp=`<input class="in" id="${id}" value="${esc(v)}" ${f.kind=='pin'?'inputmode="numeric" maxlength="6"':f.kind=='email'?'type="email"':f.kind=='phone'?'type="tel"':f.kind=='count'?'type="number" min="1"':''}>`;
  const na=f.na_ok&&!ro?`<label style="display:flex;gap:6px;align-items:center;margin:6px 0 0;font-weight:500;font-size:13px"><input type="checkbox" id="${id}_na" ${String(v).startsWith('Not applicable:')?'checked':''} onchange="$('#${id}_nr').style.display=this.checked?'':'none'"> Not applicable</label><input class="in" id="${id}_nr" placeholder="Reason it does not apply" style="margin-top:6px;${String(v).startsWith('Not applicable:')?'':'display:none'}" value="${esc(String(v).replace(/^Not applicable: ?/,''))}">`:'';
- return `<div class="qr" data-k="${f.key}"><div class="ql">${esc(f.label)}</div><div class="qc">:</div><div>${inp}${na}${note}</div></div>`}
+ return `<div class="qr" data-k="${f.key}"><div class="ql">${esc(f.label)}${req(f)}</div><div class="qc">:</div><div>${inp}${na}${note}</div></div>`}
 
 function qFields(fields,vals,p,ro,F,after={}){let g=null,h='';
  for(const f of fields){if(f.group!==g){g=f.group;if(g)h+=`<div class="qg">${esc(g)}</div>`}h+=qField(f,vals[f.key],p,ro,F)+(after[f.key]||'')}return h}
@@ -52,7 +53,7 @@ async function custRequestPage(fid){const [F,old]=await Promise.all([api('/api/i
  const v=old?{...old.values}:{customer:ME.org||'',email:ME.email||'',contact:ME.full_name||'',signed_name:ME.full_name||''},plan=old?old.plan:[];
  const s1=F.fields.filter(f=>f.sheet==1),s2=F.fields.filter(f=>f.sheet==2);
  const ticks=`<div class="qr"><div class="ql">Tests to be carried out<div class="qnote" style="font-weight:400">Tick each test you need; the laboratory plans the job from these.</div></div><div class="qc">:</div><div class="qtests">${Object.entries(F.tests).map(([k,l])=>`<label><input type="checkbox" name="cp" value="${k}" ${plan.includes(k)?'checked':''}> ${esc(l)}</label>`).join('')}</div></div>`;
- $('#app').innerHTML=`<button class="back" onclick="go('my')">&larr; My jobs</button>`+head(old?'Correct and send again':'New test request',
+ $('#app').innerHTML=`<button class="back" onclick="go('my')">&larr; Open requests</button>`+head(old?'Correct and send again':'New test request',
   old&&old.note?`Returned by the laboratory: <b>${esc(old.note)}</b>`:`Customer Request Form ${esc(F.form.format_no)}, filled in online for ${esc(ME.org||'your organisation')}. Every value is checked as you type; the laboratory receives it and records the rest when the sample arrives.`)+
  `<div class="qf" id="qs1">${qHead(F,1)}${qFields(s1,v,'c_',false,F,{tests:ticks})}</div>
   <div class="qf" id="qs2">${qHead(F,2)}${qFields(s2,v,'c_',false,F)}<div class="qsig"><div></div><div style="text-align:right">Customers Name &amp; Signature with Date<br><b id="qsn">${esc(v.signed_name||'')}</b> &middot; ${new Date().toLocaleDateString('en-GB')}</div></div></div>
@@ -67,7 +68,7 @@ async function custRequestPage(fid){const [F,old]=await Promise.all([api('/api/i
  $('#csd').onclick=async()=>{const b=collect();try{await api('/api/customer/requests',b);toast('Request sent to the laboratory');go('my')}
   catch(e){try{show(await api('/api/customer/requests/check',b))}catch(x){toast(e,1)}scrollTo(0,$('#cv').offsetTop-80)}}}
 
-/* the customer's requests, on their "My jobs" page */
+/* the customer's requests, on their "Open requests" page */
 async function custForms(){const l=await api('/api/customer/request-forms'),el=document.createElement('div');
  el.innerHTML=`<div class="card"><div class="wh"><h2 style="margin:0">Test requests</h2><a class="btn" href="#/my/request">New test request</a></div>
   <p class="note">Fill in the Customer Request Form online; the laboratory receives it and opens the job when your sample arrives.</p>${l.length?l.map(f=>{const [c,t]=QS[f.status]||['uploaded',f.status];

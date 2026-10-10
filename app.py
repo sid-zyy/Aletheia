@@ -1433,7 +1433,7 @@ def intake_problems(c, b, job=None):
     return errs, warns, req, lab, plan, f, org
 
 @app.post("/api/intake/check")
-@auth.require("job.create")
+@auth.require("request.receive")
 def intake_check():
     """Dry run: every problem with the customer's request and the laboratory's part, so the engineer sees the whole list."""
     with db() as c: errs, warns, *_ = intake_problems(c, body())
@@ -1454,7 +1454,7 @@ def use_request(c, i, f, req):
     notify.notify(c, notify.users_with(c, "customer", f["org_id"]), i, "progress", "Your test request was received by the laboratory")
 
 @app.post("/api/intake")
-@auth.require("job.create")
+@auth.require("request.receive")
 def intake_create():
     """Receive a customer's request: the series and sample numbers are allocated only when nothing is missing or wrong."""
     b = body()
@@ -1513,7 +1513,7 @@ def intake_checked(i):
     return jsonify(ok=True)
 
 @app.post("/api/request-forms/<int:fid>/return")
-@auth.require("job.create")
+@auth.require("request.receive")
 def request_return(fid):
     """Send a customer's request back with the reason (something missing or wrong); the customer corrects it and sends it again."""
     reason = str(body().get("reason") or "").strip()
@@ -1528,7 +1528,7 @@ def request_return(fid):
     return jsonify(ok=True)
 
 @app.get("/api/intake/fields")
-@auth.require("job.create", "jobs.view")  # customers fill in the request form themselves
+@auth.require("request.receive", "jobs.view")  # customers fill in the request form themselves
 def intake_fields():
     return jsonify(form=workflow.FORM, fields=list(workflow.REQUEST_FIELDS), lab=list(workflow.LAB_FIELDS), states=workflow.STATES_UT,
                    tests={k: v for k, v in NAMES.items() if k != "request"})

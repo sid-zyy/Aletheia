@@ -20,8 +20,11 @@ Browsers re-check the page and its scripts on every load and never cache API ans
 (no need to clear the browser cache).
 
 **First start:** the page asks for the first administrator account. This works only on the server PC itself and closes for
-good once the account exists. The administrator then creates the other accounts (each with a temporary password the person
-changes at first sign-in), the customer organisations and the test bays.
+good once the account exists. The administrator then creates the staff accounts (*New staff user*), the customers (*New
+customer*: just a username; its organisation is made for it) and the test bays.
+
+**Testing phase: no passwords.** Everyone signs in with the username only, and approval and amendments ask for no password.
+Set `ALETHEIA_PASSWORDS=1` to switch every password rule back on (temporary passwords, lock-out, re-entry at release).
 
 **Upgrading an existing database:** on the first start of this version the database is copied to
 `aletheia.db.pre-v2-<date>.bak`, then converted (one row per test section, audit trail sealed into a hash chain).
@@ -30,7 +33,7 @@ changes at first sign-in), the customer organisations and the test bays.
 
 | Role | Does | Cannot |
 |---|---|---|
-| **Admin** | assigns tests (or a whole job) to test engineers with the bay; answers and closes **customer tickets**; users, customer organisations, test bays, Excel templates, settings, backups, audit log; sees what waits for approval | enter or verify data, sign reports |
+| **Admin** | receives (captures) customer requests like a test engineer; assigns tests (or a whole job) to test engineers with the bay; answers and closes **customer tickets**; users, customer organisations, test bays, Excel templates, settings, backups, audit log; sees what waits for approval | enter or verify data, sign reports |
 | **Tester** (test engineer) | intake: receives a customer's request (records sheet 3 of the form, the test plan; series/sample numbers are allocated) or returns it to the customer with the reason; takes unassigned tests and chooses the bay, uploads the logsheets of their tests, corrects returned tests | raise or change a customer's request, take a test assigned to someone else, verify their own upload, sign off or approve a job they worked on |
 | **Verifier** | checks each uploaded test against its source cells: verify, return (with reason), reopen, not applicable; signs the job off ("all data correct") | verify their own upload |
 | **Approver** | approves and releases the report (re-enters password); with a second approver, amends a released report | approve a job they uploaded, entered or verified data on |
@@ -66,9 +69,10 @@ is recorded in the audit log.
 
 Pages for staff: **Dashboard** (each person's tasks: what to test, take, verify, approve; for Admin what waits for approval,
 what is not assigned and the customer tickets to answer), **My work** (what waits on you, oldest first), **Customer requests**
-(test engineers: the intake inbox), **Report Workflow**, **Records & Search** (with Excel export of many jobs), **Report
+(test engineers and the admin: the intake inbox), **Report Workflow**, **Records & Search** (with Excel export of many jobs), **Report
 Preview**; for Admin also **Users & customers**, **Templates**, **Audit log**, **Customer tickets**, **Backups**, **Settings**.
-Pages for customers: **My jobs** (their jobs and their test requests, *New test request*), **Tickets**, **Notifications**.
+Pages for customers: **Open requests** (their jobs and their test requests, *New test request*), **Tickets**, **Notifications**.
+Required fields on every form are marked with a red asterisk.
 
 ### Demo
 
@@ -141,6 +145,7 @@ Environment variables, read when the app starts. Email is set in the app (Admin 
 | `ALETHEIA_BACKUP_DIR`, `ALETHEIA_BACKUP_KEEP` | `backups/`, `30` | Backup folder; how many daily backups to keep (the first of each month is always kept) |
 | `ALETHEIA_AUTO_BACKUP`, `ALETHEIA_WORKER` | `1`, `1` | Daily backup; email outbox (`0` turns off) |
 | `ALETHEIA_SMTP_PASSWORD` | unset | SMTP password (server, port, sender, user are set in the app) |
+| `ALETHEIA_PASSWORDS` | `0` | `1` turns passwords on (off while testing: sign in with the username) |
 | `ALETHEIA_DEMO` | `0` | `1` enables `/api/demo` (loads the demo job; used by the tests). A real job always starts from a customer's request |
 | `ALETHEIA_FEATURE_SCAN` | `0` | `1` turns on the optional AI reading of scanned sheets (below) |
 | `GEMINI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY`, `AI_*` | unset | AI reader for scans (only with `ALETHEIA_FEATURE_SCAN=1`) |
@@ -161,7 +166,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 
 | Area | Endpoints |
 |---|---|
-| Accounts | `/api/setup`, `/api/login`, `/api/logout`, `/api/me`, `/api/password`, `/api/users[...]`, `/api/orgs` |
+| Accounts | `/api/setup`, `/api/login`, `/api/logout`, `/api/me`, `/api/password`, `/api/users[...]`, `/api/customers`, `/api/orgs` |
 | Intake | `/api/intake/check`, `/api/intake`, `/api/jobs/<id>/intake`, `/api/jobs/<id>/intake/checked`, `/api/request-forms[...]`, `/api/request-forms/<id>/return`, `/api/customer/requests[/check|/<id>]` |
 | Data | `/api/jobs/<id>/import`, `/api/jobs/<id>/excel/preview|import`, `/api/excel/preview|import` (several jobs), `/api/jobs/<id>/section`, `/api/jobs/<id>/history`, `/api/files/<id>` |
 | Verification | `/api/jobs/<id>/sections/<test>/verify|return|reopen|na`, `/api/jobs/<id>/assign`, `/api/jobs/<id>/signoff` |

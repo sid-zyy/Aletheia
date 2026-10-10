@@ -195,6 +195,14 @@ class SeparationOfDuties(Base):
 class Customers(Base):
     customer_client = RoutePolicy.customer_client
 
+    def test_customer_is_created_from_a_username_and_the_admin_can_receive_requests(self):
+        r = self.admin.post("/api/customers", json=dict(username="kv.electricals")); self.assertEqual(r.status_code, 201, r.json)
+        self.assertEqual(self.admin.post("/api/customers", json=dict(username="kv.electricals")).status_code, 409)
+        self.assertEqual(self.c.post("/api/customers", json=dict(username="x.y")).status_code, 403)
+        with aletheia.db() as c: self.assertEqual(c.execute("SELECT name FROM orgs WHERE id=?", (r.json["org_id"],)).fetchone()[0], "kv.electricals")
+        fid = self.request(plan=["sc"])
+        self.assertEqual(self.admin.post("/api/intake", json=dict(__import__("test_app").LAB, customer_form_id=fid, plan=["sc"])).status_code, 201)
+
     def test_customer_sees_only_their_own_jobs_and_no_values(self):
         cust = self.customer_client()
         oid = self.admin.get("/api/orgs").json[0]["id"]

@@ -1,5 +1,12 @@
 /* Accounts in the page: sign-in, first-run set-up, password change, the user menu, the Admin pages (users, organisations,
    audit log) and the customer's "My jobs" view. The server enforces every permission; this file only decides what to show. */
+/* Testing phase: the server may run without passwords (/api/me says passwords:false). Every password field is then hidden
+   and not required, and the password menu items disappear; the server ignores what is sent. */
+let PW=true;
+function pwMode(m){PW=!(m&&m.passwords===false);document.body.classList.toggle('nopw',!PW)}
+new MutationObserver(()=>{if(PW)return;document.querySelectorAll('input[type=password],#upw,#rp').forEach(x=>{if(x.hidden)return;x.required=false;x.minLength=0;x.hidden=true;const l=x.id&&document.querySelector(`label[for="${x.id}"]`);if(l)l.hidden=true})}).observe(document.documentElement,{childList:true,subtree:true});
+(()=>{const s=document.createElement('style');s.textContent='body.nopw [onclick^="pwView"],body.nopw [onclick^="resetPw"]{display:none!important}';document.head.append(s)})();
+
 let ME=null,PERMS=[],CSRF='';
 const can=p=>PERMS.includes(p),isCust=()=>!!ME&&ME.roles.includes('customer');
 const ROLE_LBL={admin:'Admin',tester:'Tester',verifier:'Verifier',approver:'Approver',customer:'Customer'};
@@ -26,11 +33,11 @@ body.no-scan [onclick^="readAI"],body.no-scan .svb,body.no-scan label:has(#ff){d
 @media(max-width:760px){.tbar{flex-wrap:wrap}.uchip{margin-left:auto;flex-wrap:wrap;justify-content:flex-end}.hs{flex:1 1 100%;order:3}}
 `;document.head.append(s)})();
 
-async function boot(){let m;try{m=await(await fetch('/api/me',{cache:'no-store'})).json()}catch(e){return gateView('Cannot reach the server','<p>The Aletheia server is not responding. Start it (<code>python app.py</code>) and refresh.</p>')}
+async function boot(){let m;try{m=await(await fetch('/api/me',{cache:'no-store'})).json();pwMode(m)}catch(e){return gateView('Cannot reach the server','<p>The Aletheia server is not responding. Start it (<code>python app.py</code>) and refresh.</p>')}
  if(location.pathname.startsWith('/verify/')){if(m.user)setMe(m);return route()}  /* the public verification page needs no account */
  if(m.setup_needed)return setupView(m.local);
  if(!m.user)return loginView();
- setMe(m);if(ME.must_change_password)return pwView(true);
+ setMe(m);if(PW&&ME.must_change_password)return pwView(true);
  shell();route();clockCheck();bellCount()}
 /* timestamps are legal records: warn when this workstation's clock and the server's disagree */
 async function clockCheck(){try{const t0=Date.now(),r=await(await fetch('/api/time')).json(),off=(new Date(r.utc)-(t0+Date.now())/2)/1000;
@@ -61,18 +68,18 @@ function pwView(forced){const h=`${forced?'<p class="note">This is a temporary p
 async function logout(){try{await api('/api/logout',{})}catch(e){}ME=null;PERMS=[];CSRF='';document.body.innerHTML=SHELL_HTML;location.hash='';boot()}
 /* userChip() (the user menu) is in ui.js */
 /* navigation per role: staff see the laboratory pages, Admin also the administration pages, customers only their jobs */
-function navFor(){if(isCust())return[['my','My jobs'],['tickets','Tickets'],['notifications','Notifications']];const n=[['dashboard','Dashboard'],...(ME.roles.includes('admin')?[]:[['mywork','My work']]),...(can('job.create')?[['intake','Customer requests']]:[]),['workflow','Report Workflow'],['records','Records & Search'],['preview','Report Preview']];
+function navFor(){if(isCust())return[['my','Open requests'],['tickets','Tickets'],['notifications','Notifications']];const n=[['dashboard','Dashboard'],...(ME.roles.includes('admin')?[]:[['mywork','My work']]),...(can('request.receive')?[['intake','Customer requests']]:[]),['workflow','Report Workflow'],['records','Records & Search'],['preview','Report Preview']];
  if(can('users.manage'))n.push(['users','Users & customers'],['templates','Templates'],['audit','Audit log'],['tickets','Customer tickets'],['backups','Backups'],['settings','Settings']);n.push(['arch','Architecture']);return n}
 
 /* ---------------------------------------------------------------- Admin: users and customer organisations */
 async function usersPage(){const [us,os]=await Promise.all([api('/api/users'),api('/api/orgs')]),on=Object.fromEntries(os.map(o=>[o.id,o.name]));
- $('#app').innerHTML=head('Users & customers','Accounts are disabled, never deleted: reports and the audit log keep resolving names for as long as records are kept.',`<button class="btn g" onclick="orgForm()">New customer organisation</button><button class="btn" onclick="userForm()">New user</button>`)+
+ $('#app').innerHTML=head('Users & customers','Accounts are disabled, never deleted: reports and the audit log keep resolving names for as long as records are kept.',`<button class="btn g" onclick="custForm()">New customer</button><button class="btn" onclick="userForm()">New staff user</button>`)+
  `<div class="card"><h2>Users (${us.length})</h2><div class="scroll"><table class="ut"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Employee ID / organisation</th><th>Last sign-in</th><th></th></tr></thead><tbody>${us.map(u=>`<tr class="${u.active?'':'off'}"><td><b>${esc(u.full_name)}</b>${u.active?'':' <span class="rl" style="background:var(--er2);color:var(--er)">disabled</span>'}${u.must_change_password?' <span class="rl" style="background:var(--wn2);color:var(--wn)">temporary password</span>':''}${u.locked_until&&u.locked_until>new Date().toISOString().slice(0,19)?' <span class="rl" style="background:var(--er2);color:var(--er)">locked</span>':''}</td><td>${esc(u.username)}</td><td>${u.roles.map(r=>`<span class="rl">${ROLE_LBL[r]}</span>`).join('')}${u.test_types?`<div class="note" style="margin:2px 0 0">Tests: ${esc(u.test_types)}</div>`:''}</td><td>${u.roles.includes('customer')?esc(on[u.org_id]||'-'):esc(u.employee_id||'-')}</td><td>${u.last_login?esc(u.last_login.replace('T',' ')):'never'}</td><td style="white-space:nowrap"><button class="lk" onclick='userForm(${JSON.stringify(u).replace(/'/g,"&#39;")})'>Edit</button><button class="lk" onclick="resetPw(${u.id},'${esc(u.username)}')">Reset password</button><button class="lk" onclick="endSess(${u.id})">Sign out everywhere</button></td></tr>`).join('')}</tbody></table></div></div>
  <div id="baysCard"></div><div class="card"><h2>Customer organisations (${os.length})</h2>${os.length?os.map(o=>`<div class="src"><span>${esc(o.name)}</span><span class="note" style="margin:0">${esc(o.email||'')}</span></div>`).join(''):'<p class="note">None yet. A customer account belongs to an organisation and sees only that organisation\'s jobs.</p>'}</div>`;bayCard()}
 async function userForm(u){const os=await api('/api/orgs'),R=u?u.roles:['tester'];
  modal(`<h2>${u?'Edit '+esc(u.username):'New user'}</h2><form id="uf" class="frm">${u?'':`<label for="un">Username</label><input class="in" id="un" required placeholder="e.g. a.rao" autocomplete="off">`}
  <div class="row2"><div><label for="ufn">Full name</label><input class="in" id="ufn" required value="${esc(u?u.full_name:'')}"></div><div><label for="uem">Employee ID (staff)</label><input class="in" id="uem" value="${esc(u?u.employee_id||'':'')}"></div></div>
- <label>Role</label><div class="chk">${Object.entries(ROLE_LBL).map(([k,l])=>`<label><input type="checkbox" name="ro" value="${k}" ${R.includes(k)?'checked':''}> ${l}</label>`).join('')}</div>
+ <label>Role</label><div class="chk">${Object.entries(ROLE_LBL).filter(([k])=>k!='customer'||R.includes('customer')).map(([k,l])=>`<label><input type="checkbox" name="ro" value="${k}" ${R.includes(k)?'checked':''}> ${l}</label>`).join('')}</div>
  <p class="note">Tester, Verifier and Approver can be combined. Admin and Customer stand alone (separation of duties).</p>
  <div id="orgw"><label for="uorg">Customer organisation</label><select id="uorg"><option value="">Choose...</option>${os.map(o=>`<option value="${o.id}" ${u&&u.org_id==o.id?'selected':''}>${esc(o.name)}</option>`).join('')}</select></div>
  <div class="row2"><div><label for="uml">Email (notifications)</label><input class="in" id="uml" type="email" value="${esc(u?u.email||'':'')}"></div><div><label for="utt">Certified tests (testers; empty = all)</label><input class="in" id="utt" placeholder="e.g. sc, temp" value="${esc(u?u.test_types||'':'')}"></div></div>
@@ -82,6 +89,11 @@ async function userForm(u){const os=await api('/api/orgs'),R=u?u.roles:['tester'
  $('#uf').onsubmit=async e=>{e.preventDefault();const roles=[...document.querySelectorAll('[name=ro]:checked')].map(x=>x.value),b={full_name:$('#ufn').value,employee_id:$('#uem').value,roles,org_id:+$('#uorg').value||null,email:$('#uml').value,test_types:$('#utt').value};
   if(u)b.active=$('#uact').checked;else{b.username=$('#un').value;b.password=$('#upw').value}
   try{await api(u?`/api/users/${u.id}`:'/api/users',b);closeModal();toast(u?'User updated':'User created');usersPage()}catch(x){$('#ue').textContent=[].concat(x).join(' ')}}}
+/* a customer is created on its own, from a username (the organisation is made for it) */
+function custForm(){modal(`<h2>New customer</h2><form id="cf" class="frm"><label for="cun">Username</label><input class="in" id="cun" required placeholder="e.g. ap.transformers" autocomplete="off">
+ <label for="cnm">Name shown on requests (optional)</label><input class="in" id="cnm" placeholder="e.g. A.P. Transformers">
+ <div class="err" id="ce" role="alert" style="color:var(--er);font-size:14px;margin-top:10px"></div><div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button type="button" class="btn g" onclick="closeModal()">Cancel</button><button class="btn">Create customer</button></div></form>`);
+ $('#cf').onsubmit=async e=>{e.preventDefault();try{await api('/api/customers',{username:$('#cun').value,name:$('#cnm').value});closeModal();toast('Customer created: they sign in with the username');usersPage()}catch(x){$('#ce').textContent=[].concat(x).join(' ')}}}
 function orgForm(){modal(`<h2>New customer organisation</h2><form id="of" class="frm"><label for="onm">Name</label><input class="in" id="onm" required><label for="oem">Contact email</label><input class="in" id="oem" type="email">
  <div class="err" id="oe" role="alert" style="color:var(--er);font-size:14px;margin-top:10px"></div><div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button type="button" class="btn g" onclick="closeModal()">Cancel</button><button class="btn">Create</button></div></form>`);
  $('#of').onsubmit=async e=>{e.preventDefault();try{const r=await api('/api/orgs',{name:$('#onm').value,email:$('#oem').value});closeModal();toast(r.existing?'That organisation already exists':'Organisation created');usersPage()}catch(x){$('#oe').textContent=[].concat(x).join(' ')}}}
@@ -106,12 +118,12 @@ async function chainCheck(){try{const r=await api('/api/audit/verify');r.ok?toas
 /* ---------------------------------------------------------------- Customer: my jobs */
 const PSTATE={not_started:'Not started',received:'Received',uploaded:'Pending verification',returned:'Being corrected',verified:'Approved',na:'Not applicable'};
 async function myJobs(){const l=await api('/api/jobs');
- $('#app').innerHTML=head('My jobs',`Test jobs for ${esc(ME.org||'your organisation')} at the CPRI Short Circuit Laboratory`,'<a class="btn" href="#/my/request">New test request</a>')+
+ $('#app').innerHTML=head('Open requests',`Test jobs for ${esc(ME.org||'your organisation')} at the CPRI Short Circuit Laboratory`,'<a class="btn" href="#/my/request">New test request</a>')+
  (l.length?l.map(j=>`<div class="card" style="cursor:pointer" onclick="go('my/${j.id}')"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap"><div><h2 style="margin:0">${esc(j.series)}</h2><span class="note">Sample ${esc(j.sample)} &middot; ${esc(j.rating)} &middot; received ${esc((j.created||'').slice(0,10))}</span></div><div>${j.stage==4?'<span class="pst verified">Report released</span>':'<span class="pst uploaded">In progress</span>'}</div></div></div>`).join('')
  :`<div class="card empty"><h2>No jobs yet</h2>Jobs appear here once the laboratory registers your product.</div>`);custForms()}
 async function myJob(id){const j=await api('/api/jobs/'+id),vs=j.versions||[],P=j.progress||[],n=s=>P.filter(p=>p.state==s).length,tot=P.filter(p=>p.state!='na').length||1;
  const seg=[['verified','var(--ok)'],['uploaded','var(--wn)'],['received','var(--wn)'],['returned','var(--er)']];
- $('#app').innerHTML=`<button class="back" onclick="go('my')">&larr; My jobs</button>`+head(esc(j.series),`Sample ${esc(j.sample)} &middot; ${esc(j.rating)}`,`<a class="btn g" href="#/tickets/new/${id}">Raise a ticket</a>`+(j.report?`<a class="btn" href="/api/jobs/${id}/report.pdf?dl=1">Download final report</a>`:''))+
+ $('#app').innerHTML=`<button class="back" onclick="go('my')">&larr; Open requests</button>`+head(esc(j.series),`Sample ${esc(j.sample)} &middot; ${esc(j.rating)}`,`<a class="btn g" href="#/tickets/new/${id}">Raise a ticket</a>`+(j.report?`<a class="btn" href="/api/jobs/${id}/report.pdf?dl=1">Download final report</a>`:''))+
  `<div class="card"><h2>Progress</h2><b style="font-size:20px">${n('verified')} of ${tot} tests approved</b><span class="note"> &middot; ${n('uploaded')+n('received')} pending verification &middot; ${n('not_started')} not started</span>
  <div class="prog">${seg.map(([s,c])=>`<i style="flex:${n(s)};background:${c}"></i>`).join('')}<i style="flex:${n('not_started')}"></i></div>
  ${P.map(p=>`<div class="ps"><span>${esc(p.name)}</span><span class="pst ${p.state}">${PSTATE[p.state]||p.state}</span></div>`).join('')}
