@@ -112,7 +112,7 @@ tests not assigned, customer requests waiting, customer tickets to answer, and l
 | 1 Data imported | Any test data uploaded or changed (also voids the sign-off) |
 | 2 Validated | Checks run without data-layout errors |
 | 3 Report ready | Flagged items reviewed, every planned test verified (by a tester other than its uploader) or not applicable, job approved by an administrator, report generated |
-| 4 Released | Signed off by an administrator who did not work on the data, with a complete, checked intake |
+| 4 Released | Signed off by an administrator (the one who approved the job may sign), with a complete, checked intake |
 
 A released job changes only through an **amendment** (back to stage 1 for the named tests only; the released version stays
 valid until version n+1 is released). Historical records from registers (`archived = 1`) stay out of the pipeline.

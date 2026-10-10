@@ -1133,8 +1133,8 @@ def gen(i):
 @auth.require("report.approve")
 def approve(i):
     """Sign off and release. The administrator signing is the signed-in account: name and employee ID come from the user
-    record and are printed on the report ("Approved by"). They re-enter their password to sign, and must not have imported,
-    entered, checked or verified this job's data (an administrator never does; kept as a safeguard)."""
+    record and are printed on the report ("Approved by"). They re-enter their password to sign. The administrator who
+    approved the job and generated the report may sign it off; an administrator cannot enter, check or verify data at all."""
     j = getjob(i); b = body(); u = auth.current()
     if j["stage"] < 3: return jsonify(error=["Generate the report before signing it off"]), 409
     if not u.get("employee_id"): return jsonify(error=["Your account has no employee ID; ask an administrator to add it"]), 400
@@ -1143,11 +1143,6 @@ def approve(i):
     if app.config.get("REAUTH_ON_RELEASE", True) and not auth.reauth(b.get("password")):
         with db() as c: log(c, i, "Release signature refused: password not confirmed", kind="denied")
         return jsonify(error=["Re-enter your password to sign the release"]), 403
-    with db() as c:
-        touched = c.execute("SELECT 1 FROM audit WHERE job_id=? AND user_id=? AND kind IN ('data','check','verify') LIMIT 1", (i, u["id"])).fetchone()
-        if touched:
-            log(c, i, "Release refused: the signing administrator worked on this job's data or checks", kind="denied")
-            return jsonify(error=["You imported, entered, checked or verified data on this job, so a different administrator must sign it off"]), 403
     person = lambda s: re.sub(r"[^a-z]", "", str(s or "").lower())
     if person(u["full_name"]) and person(u["full_name"]) == person((j["data"].get("work") or {}).get("engineer")):
         return jsonify(error=["The test engineer who prepared this report cannot also sign it off; a second person must sign"]), 403

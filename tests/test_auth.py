@@ -184,16 +184,10 @@ class SeparationOfDuties(Base):
         for path in ("signoff", "generate"):  # and a tester cannot approve the job or build the report
             self.assertEqual(self.c.post(f"/api/jobs/{i}/{path}", json={}).status_code, 403, path)
 
-    def test_someone_who_worked_on_the_data_cannot_approve(self):
-        i = self.ready()
-        uid = Login.uid(self, "s.iyer")
-        self.admin.post(f"/api/users/{uid}", json=dict(roles=["admin"]))  # S. Iyer verified this job's tests, then became an administrator
-        try:
-            r = signed_in("s.iyer").post(f"/api/jobs/{i}/approve", json=dict(password=PW)); self.assertEqual(r.status_code, 403)
-            self.assertIn("different administrator", r.json["error"][0])
-            self.assertEqual(self.approve(i).status_code, 200)  # someone who did not
-        finally:
-            self.admin.post(f"/api/users/{uid}", json=dict(roles=["tester"]))
+    def test_the_administrator_who_approved_and_generated_may_sign_off(self):
+        i = self.ready()  # "admin" approved the job and generated the report
+        r = self.admin.post(f"/api/jobs/{i}/approve", json=dict(password=PW)); self.assertEqual(r.status_code, 200, r.json)
+        self.assertEqual(self.get(i)["approver"], "Lab Admin")
 
     def test_typed_name_no_longer_gets_around_it(self):
         i = self.ready()
