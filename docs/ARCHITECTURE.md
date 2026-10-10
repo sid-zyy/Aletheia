@@ -59,7 +59,7 @@ per version and stored with their hash; the verification page recomputes the has
 | Table | Contents |
 |---|---|
 | `jobs` | One test job or historical record: `series` (unique), `sample`, `customer`, `rating`, `stage` (0-4), `data` (JSON, one object per document), `findings` (JSON, last check results with review marks), `verdict` (Complies / Complies (partly evaluated) / Does not comply / empty), `archived` (1 = historical record from a register), `tested` (test date from a register), `approver`, `approver_id`, `created`, `updated` |
-| `imports` | Each imported data file: name, kind, SHA-256 of its content (the same content twice in one job is refused) |
+| `imports` | Each imported data file: name, kind, SHA-256 of its content (the same content twice in one job is refused), and which documents it brought in, so the import can be undone |
 | `sources` | Scans and photos kept as evidence, with SHA-256 |
 | `reports` | Every generated or approved PDF: version, verification token, SHA-256, approver |
 | `audit` | Time-stamped history of every step; turnaround is computed from it |
@@ -72,7 +72,7 @@ per version and stored with their hash; the verification page recomputes the has
 | Stage | Reached when | Goes back when |
 |---|---|---|
 | 0 Request captured | Request created (form, data file, or scan of the request form) | - |
-| 1 Data imported | Any test data imported or edited | Data changes at any later stage; checks find a data error |
+| 1 Data imported | Any test data imported or edited | Data changes at any later stage; checks find a data error. Back to 0 when imports are removed and only the request is left |
 | 2 Validated | Checks run with no data errors (requirements not met are allowed) | - |
 | 3 Report ready | Every flagged item reviewed and every requirement not met confirmed; report generated | Report withdrawn (back to 2) |
 | 4 Approved | Approved by someone other than the test engineer (and on `ALETHEIA_APPROVERS`, if set) | Record details edited (back to 3, re-approval needed); report withdrawn |

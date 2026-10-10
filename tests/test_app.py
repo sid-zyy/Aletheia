@@ -232,6 +232,26 @@ class ImportFormats(Base):
         self.assertIn("checks with NA values", text); self.assertIn("SC current", text.split("Statement of conformity")[1])
         self.assertEqual(self.get(j)["verdict"], "Complies (partly evaluated)")
 
+    def test_remove_an_imported_file(self):
+        i = self.job()
+        self.c.post(f"/api/jobs/{i}/import", json=up("lab.csv", raw("AP_Transformers_25T1654.csv")))
+        extra = {"other": {"x1": {"title": "Extra sheet", "fields": [{"label": "a", "value": 1}]}}}
+        self.c.post(f"/api/jobs/{i}/import", json=dict(filename="extra.json", content=extra))
+        self.c.post(f"/api/jobs/{i}/validate")
+        imp = {x["source"]: x["id"] for x in self.get(i)["imports"]}
+        self.assertEqual(self.c.delete(f"/api/jobs/{i}/imports/{imp['lab.csv']}").status_code, 200)
+        j = self.get(i)
+        self.assertEqual(sorted(j["data"]), ["other", "request"])  # the other file's sheet and the request stay
+        self.assertEqual((j["stage"], j["findings"]), (1, []))
+        self.assertEqual(self.c.delete(f"/api/jobs/{i}/imports/{imp['extra.json']}").status_code, 200)
+        self.assertEqual(sorted(self.get(i)["data"]), ["request"]); self.assertEqual(self.get(i)["stage"], 0)  # back to step 1
+        r = self.c.post(f"/api/jobs/{i}/import", json=up("lab.csv", raw("AP_Transformers_25T1654.csv")))
+        self.assertEqual(r.status_code, 200)  # the same file can be imported again
+        self.assertEqual(self.c.delete(f"/api/jobs/{i}/imports/99999").status_code, 404)
+        self.c.post(f"/api/jobs/{i}/validate"); self.gen(i)
+        last = self.get(i)["imports"][-1]["id"]
+        self.assertEqual(self.c.delete(f"/api/jobs/{i}/imports/{last}").status_code, 409)  # report built from it: withdraw first
+
     def test_remove_a_document(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
         self.c.post(f"/api/jobs/{i}/validate"); self.gen(i)

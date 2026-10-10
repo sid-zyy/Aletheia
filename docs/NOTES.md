@@ -13,7 +13,7 @@ the data model and the job lifecycle; `docs/VALIDITY.md` says what the checks do
 | `vision.py` | Scan reader: Gemini, Ollama, or any OpenAI-compatible service; page clean-up, part-by-part reading, saved scans |
 | `static/index.html` | The whole web UI (single page) |
 | `static/assistant.js` | Rule-based chat assistant: new request, record search, status, how-to answers (keyword matching, no AI model) |
-| `tests/test_app.py`, `tests/test_validity.py` | 59 tests: `python -m unittest discover -s tests` |
+| `tests/test_app.py`, `tests/test_validity.py` | 60 tests: `python -m unittest discover -s tests` |
 | `report_template.json` | Wording of the report (title, headings, labels, footer) |
 | `sample_data/` | The A.P. Transformers sample job in every format, its 9 scans, plus two legacy registers (the CSV one has test dates and results) |
 | `test-files/` | Three CSV jobs for demos: full (`...25T1654`), partial (`...25T1704`), failing (`...25T1714`); different series, so they load side by side |

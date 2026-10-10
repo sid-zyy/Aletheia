@@ -76,7 +76,9 @@ An optional `series` column lets one file or database hold several jobs; rows fo
 
 The easiest way to get the layout right: open any job and use **Download this job's data** (CSV, Excel, Database, JSON)
 or the blank **CSV / Excel template** links. Whatever the app exports, it can import again unchanged.
-Importing the same content twice into one job is refused.
+Importing the same content twice into one job is refused. Files added to a job are listed on the job page where they were
+dropped; **Remove** next to an imported file takes the documents it brought in back out (the customer request stays), and
+the job returns to step 1 if nothing else is left. Several files can be dropped at once.
 
 **Existing registers** (Records & Search -> Import existing register; template under **Register template**): a CSV, Excel
 sheet or SQLite table with at least `series` and `customer` columns (also read: `sample`, `rating`, `address`, `serial`,
@@ -153,7 +155,8 @@ The UI uses a JSON API; uploads are sent as `{filename, b64}`.
 | `GET /api/jobs?q=&stage=&verdict=&from=&to=` | List / search records. `stage` 0-4 or `h` (historical); `verdict` `comply`, `not`, `none`; dates `YYYY-MM-DD` |
 | `POST /api/jobs`, `POST /api/jobs/from-file` | New request from the form, or from a data file |
 | `GET /api/jobs/<id>`, `POST /api/jobs/<id>/edit`, `DELETE /api/jobs/<id>` | One record with history, imports, sources and report versions; edit details; delete (refused once a report is released) |
-| `POST /api/jobs/<id>/import`, `POST /api/jobs/<id>/section`, `DELETE /api/jobs/<id>/section/<k>` | Import a data file; save one document typed or read by AI; remove one document |
+| `POST /api/jobs/<id>/import`, `DELETE /api/jobs/<id>/imports/<import id>` | Import a data file; undo an import (the documents it brought in are removed; refused once a report is generated) |
+| `POST /api/jobs/<id>/section`, `DELETE /api/jobs/<id>/section/<k>` | Save one document typed or read by AI; remove one document |
 | `GET /api/jobs/<id>/export/<csv,xlsx,sqlite,json>`, `GET /api/template/<fmt>` | Download a job's data, or the blank layout |
 | `POST /api/jobs/<id>/sources`, `GET` / `DELETE /api/sources/<sid>`, `POST /api/sources/<sid>/extract`, `POST /api/read-scan` | Scans: attach, view, remove, read with AI |
 | `POST /api/jobs/<id>/validate`, `POST /api/jobs/<id>/review` | Run the checks; mark an item reviewed / confirm a requirement not met (`{index, reviewed}`) |
@@ -167,11 +170,11 @@ The UI uses a JSON API; uploads are sent as `{filename, b64}`.
 
     python -m unittest discover -s tests -v
 
-59 tests (`tests/test_app.py` 32, `tests/test_validity.py` 27): exact round trip of the tabular layout, CSV / Excel / database
+60 tests (`tests/test_app.py` 33, `tests/test_validity.py` 27): exact round trip of the tabular layout, CSV / Excel / database
 import against the JSON reference (including CSV files saved with Windows line endings), full CSV-to-approved-report run,
 "does not comply" reports for failing samples, data errors blocking the report, summary verdicts with NA values, bad-file
 rejection, per-job duplicates, incomplete data, historical register import with results and dates, search filters, release
-rules (approver not the engineer, approved-staff list, no deletion after release, customer download), report template,
+rules (approver not the engineer, approved-staff list, no deletion after release, customer download), undoing an import, report template,
 frozen versions and tamper detection, source documents, the AI reader (mocked), and one mutation test per engineering check.
 
 ## Files

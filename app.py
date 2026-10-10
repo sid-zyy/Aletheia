@@ -64,6 +64,8 @@ def init():
         have = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
         for col, ddl in (("archived", "INTEGER DEFAULT 0"), ("verdict", "TEXT"), ("tested", "TEXT")):
             if col not in have: c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
+        # sections: JSON {document: true, or [keys] for the merged ones (ids, other)}, so an import can be undone
+        if "sections" not in {r[1] for r in c.execute("PRAGMA table_info(imports)")}: c.execute("ALTER TABLE imports ADD COLUMN sections TEXT")
 
 def log(c, jid, ev): c.execute("INSERT INTO audit(job_id,event,at) VALUES(?,?,?)", (jid, ev, now()))
 
@@ -75,7 +77,8 @@ def getjob(jid, full=True):
         j["stage_name"] = "Historical record" if j.get("archived") else STAGES[j["stage"]]
         if full:
             j["audit"] = [dict(a) for a in c.execute("SELECT event,at FROM audit WHERE job_id=? ORDER BY id", (jid,))]
-            j["imports"] = [dict(a) for a in c.execute("SELECT source,kind,sha256,at FROM imports WHERE job_id=?", (jid,))]
+            j["imports"] = [dict(a, sections=json.loads(a["sections"]) if a["sections"] else None)
+                            for a in c.execute("SELECT id,source,kind,sha256,at,sections FROM imports WHERE job_id=? ORDER BY id", (jid,))]
             j["sources"] = [dict(a) for a in c.execute("SELECT id,filename,mime,sha256,at FROM sources WHERE job_id=? ORDER BY id", (jid,))]
             j["reports"] = [dict(a) for a in c.execute("SELECT version,token,sha256,approver,approver_id,at FROM reports WHERE job_id=? ORDER BY version DESC", (jid,))]
         return j
@@ -654,7 +657,9 @@ def data_changed(j, d, event):
     found = dict(customer=rq.get("customer") or wk.get("customer"), rating=rq.get("rating"), sample=wk.get("sample"))
     fill = {k: str(v).strip() for k, v in found.items() if j.get(k) in (None, "", "NA") and v and str(v).strip()
             and (k != "sample" or re.fullmatch(SAMPLE_RE, str(v).strip()))}
-    save(j["id"], data=d, stage=max(min(j["stage"], 1), 1), findings=[], approver=None, approver_id=None, verdict=None, archived=0, **fill)
+    has_data = any(k != "request" for k in d)
+    save(j["id"], data=d, stage=1 if has_data else 0, findings=[], approver=None, approver_id=None, verdict=None,
+         archived=0 if has_data else j.get("archived", 0), **fill)
     with db() as c: log(c, j["id"], event + (" - earlier report is now out of date" if stale else ""))
 
 def freeze(j):
@@ -785,7 +790,9 @@ def apply_import(j, i, name, content, kind, notes):
     if bad: return jsonify(error=[f"Section '{k}' must contain named fields" for k in bad]), 400
     sha = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
     try:
-        with db() as c: c.execute("INSERT INTO imports(job_id,source,kind,sha256,at) VALUES(?,?,?,?,?)", (i, name, kind, sha, now()))
+        brought = {k: (sorted(map(str, v)) if k in ("ids", "other") else True) for k, v in content.items() if k != "request"}
+        with db() as c: c.execute("INSERT INTO imports(job_id,source,kind,sha256,at,sections) VALUES(?,?,?,?,?,?)",
+                                  (i, name, kind, sha, now(), json.dumps(brought)))
     except sqlite3.IntegrityError: return jsonify(error=["Duplicate file - identical content already imported for this job"]), 409
     if isinstance(content.get("other"), dict):  # additional log sheets: cleaned, added alongside any already on the job
         content["other"] = {str(k): clean_other(v) for k, v in content["other"].items() if isinstance(v, dict)}
@@ -794,6 +801,30 @@ def apply_import(j, i, name, content, kind, notes):
     label = {"json": "JSON", "csv": "CSV", "xlsx": "Excel", "sqlite": "database"}[kind]
     data_changed(j, d, f"Imported {label} file {name} ({', '.join(content)})" + (f" [{'; '.join(notes)}]" if notes else ""))
     return jsonify(ok=True, kind=kind, sections=list(content), notes=notes)
+
+@app.delete("/api/jobs/<int:i>/imports/<int:imp>")
+def remove_import(i, imp):
+    """Undo one imported data file: the documents it brought in are taken out of the job (the customer request stays, and
+    a document edited by hand since then goes too). The same file can then be imported again. Checks and report are redone."""
+    j = getjob(i)
+    if j["stage"] >= 3: return jsonify(error=["A report has been generated from this data. Withdraw the report first, then remove the file."]), 409
+    row = next((x for x in j["imports"] if x["id"] == imp), None)
+    if not row: return jsonify(error=["This file is not part of the job"]), 404
+    secs = row["sections"]
+    if secs is None:  # imported before the app recorded what each file brought in
+        if len(j["imports"]) > 1: return jsonify(error=["This file was imported before the app recorded which documents it contained. "
+                                                        "Remove its documents one by one under Sources instead."]), 409
+        secs = {k: True for k in j["data"] if k != "request"}  # the only import: everything but the request came from it or was typed
+    d = j["data"]
+    for k, sub in secs.items():
+        if k == "request": continue
+        if sub is True: d.pop(k, None)
+        elif isinstance(d.get(k), dict):
+            for x in sub: d[k].pop(x, None)
+            if not d[k]: del d[k]
+    with db() as c: c.execute("DELETE FROM imports WHERE id=? AND job_id=?", (imp, i))
+    data_changed(j, d, f"Imported file {row['source']} removed ({', '.join({'ids': 'Identifiers on each sheet', 'other': 'additional log sheets'}.get(k) or NAMES.get(k, k) for k in secs if k != 'request') or 'no documents'})")
+    return jsonify(ok=True, stage=getjob(i, False)["stage"])
 
 @app.post("/api/jobs/<int:i>/section")
 def section(i):
@@ -1073,6 +1104,21 @@ def delete(i):
         for t in ("imports", "audit", "sources", "reports"): c.execute(f"DELETE FROM {t} WHERE job_id=?", (i,))
         c.execute("DELETE FROM jobs WHERE id=?", (i,))
     return jsonify(ok=True)
+
+CODE_FILES = ("app.py", "importers.py", "rules.py", "vision.py")
+def code_id():
+    """Fingerprint of the Python code on disk. Taken once at start-up and again on request, it shows whether the running
+    server is older than its files (the page is always served fresh, so an unrestarted server and a new page can disagree)."""
+    h = hashlib.sha256()
+    for f in CODE_FILES:
+        try:
+            with open(os.path.join(HERE, f), "rb") as fh: h.update(fh.read())
+        except OSError: pass
+    return h.hexdigest()[:12]
+STARTED_CODE = code_id()
+
+@app.get("/api/version")
+def version(): return jsonify(running=STARTED_CODE, on_disk=code_id(), stale=STARTED_CODE != code_id())
 
 @app.get("/api/stats")
 def stats():
