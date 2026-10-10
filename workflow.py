@@ -108,17 +108,16 @@ def check_intake(b, now=None, lab=True):
             warns.append(f"PIN code {clean['pin']} belongs to {' / '.join(served)}, but the state is {clean['state']}")
     if not lab: return errs, warns, clean
     t = now or dt.datetime.now()
-    arr = str(b.get("arrived_at") or "").strip()
+    arr = str(b.get("arrived_at") or "").strip()  # not asked for on the page: recorded as the moment of intake
     try:
-        a = dt.datetime.fromisoformat(arr)
+        a = dt.datetime.fromisoformat(arr) if arr else t
         if a > t + dt.timedelta(minutes=5): errs.append("Arrival time: cannot be in the future")
         elif a < t - dt.timedelta(days=60): warns.append(f"Arrival time {arr[:16]} is more than 60 days ago")
         clean["arrived_at"] = a.isoformat(timespec="minutes")
     except ValueError:
-        errs.append("Arrival time: required, as date and time")
+        errs.append("Arrival time: not a date and time")
     opened = str(b.get("opened_by") or "").strip()
-    if opened.lower() in EMPTYISH: errs.append("Box opened by: required (name of the person who opened the packing)")
-    else: clean["opened_by"] = opened
+    clean["opened_by"] = None if opened.lower() in EMPTYISH else opened
     return errs, warns, clean
 
 

@@ -38,14 +38,21 @@ class Intake(Flow):
                             (dict(pin="NA"), "PIN code: required"), (dict(customer=" "), "Customer name: required"),
                             (dict(manufacturer="N/A"), "Manufacturer: required (or mark it not applicable"), (dict(phone="12345"), "Phone"),
                             (dict(email="qa@nowhere"), "Email"), (dict(rating="big"), "Rating"), (dict(state="Atlantis"), "not an Indian state"),
-                            (dict(arrived_at="2099-01-01T10:00"), "future"), (dict(opened_by=""), "Box opened by"),
-                            (dict(witness="maybe"), "yes or no"), (dict(plan=[]), "Test plan"), (dict(org_id=None), "Customer organisation")):
+                            (dict(arrived_at="2099-01-01T10:00"), "future"), (dict(witness="maybe"), "yes or no"), (dict(plan=[]), "Test plan"),
+                            (dict(org_id=99999), "Unknown customer organisation")):
             b = self.intake_body(); b.update(bad)
             r = self.c.post("/api/intake/check", json=b)
             self.assertFalse(r.json["ok"], bad); self.assertTrue(any(expect in e for e in r.json["errors"]), (bad, r.json["errors"]))
             self.assertEqual(self.c.post("/api/intake", json=b).status_code, 400)
         with aletheia.db() as c: self.assertEqual(c.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)  # no number allocated
         with aletheia.db() as c: self.assertEqual(c.execute("SELECT COUNT(*) FROM counters").fetchone()[0], 0)
+
+    def test_arrival_and_organisation_are_filled_in_by_themselves(self):
+        b = {k: v for k, v in self.intake_body(confirm_warnings=True).items() if k not in ("arrived_at", "opened_by", "org_id")}
+        r = self.c.post("/api/intake", json=b); self.assertEqual(r.status_code, 201, r.json)
+        j = self.get(r.json["id"])
+        self.assertEqual(j["org_id"], self.org)  # matched by the customer's name
+        self.assertTrue(j["intake"]["arrived_at"]); self.assertIsNone(j["intake"]["opened_by"])
 
     def test_the_whole_list_at_once(self):
         r = self.c.post("/api/intake/check", json=dict(org_id=self.org, plan=["sc"]))

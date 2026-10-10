@@ -1628,10 +1628,15 @@ def intake_problems(b):
     errs, warns, clean = workflow.check_intake(b)
     plan, perr = workflow.check_plan(b.get("plan"), NAMES)
     errs += perr
-    o = b.get("org_id")
-    with db() as c:
-        if not (isinstance(o, int) and c.execute("SELECT 1 FROM orgs WHERE id=?", (o,)).fetchone()):
-            errs.append("Customer organisation: choose or create it (its customer accounts follow this job)")
+    with db() as c:  # the organisation whose customer accounts follow the job: given, from the customer's own request, or by name
+        o = b.get("org_id")
+        if o in (None, "") and b.get("customer_form_id"):
+            r = c.execute("SELECT org_id FROM customer_forms WHERE id=?", (b["customer_form_id"],)).fetchone(); o = r[0] if r else None
+        if o in (None, "") and clean.get("customer"):
+            r = c.execute("SELECT id FROM orgs WHERE lower(name)=lower(?)", (clean["customer"],)).fetchone(); o = r[0] if r else None
+        if o not in (None, "") and not (isinstance(o, int) and c.execute("SELECT 1 FROM orgs WHERE id=?", (o,)).fetchone()):
+            errs.append("Unknown customer organisation")
+        b["org_id"] = o if o not in ("",) else None
     if warns and not b.get("confirm_warnings"): errs += [f"Confirm: {w}" for w in warns]
     return errs, warns, clean, plan
 

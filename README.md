@@ -62,8 +62,8 @@ Pages: **Dashboard** (with each person's tasks: what to test, take, verify, appr
 
 | Show | Steps |
 |---|---|
-| Whole chain | Sign in as a tester: **Report Workflow -> Try the demo data**. Complete the intake (job page, *Complete intake*), confirm it against the original, run checks, review flagged items. Sign in as a verifier: verify each test, sign off. Tester: generate. Sign in as an approver (not P. Naveenkumar, the engineer on the demo sheets): approve. |
-| Excel logsheets | Templates (Admin) -> *All blank logsheets*, or job page -> *This job as filled logsheets*: drop the workbook on a job to see the preview with source cells |
+| Whole chain | Sign in as a customer: *New request*. Sign in as a tester: open the request, complete the intake, take each test, upload its logsheet (`sample_data/`), run checks, review flagged items. Sign in as a verifier: verify each test, sign off. Tester: generate. Sign in as an approver (not anyone who uploaded or verified): approve. |
+| Excel logsheets | Job page -> *This job as filled logsheets*, or a test's blank logsheet from Templates (Admin): drop the workbook on a job to see the preview with source cells |
 | Several jobs in one workbook | Report Workflow -> *Upload a workbook for several jobs* |
 | Failing sample | `test-files/3 - failing job (top-oil rise over limit).csv`: the logged top-oil rise is over its limit, so the report says the sample does NOT comply |
 | Customer | Create a customer account for the job's organisation, sign in: progress, approved values, partial report |

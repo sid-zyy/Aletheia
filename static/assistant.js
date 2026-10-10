@@ -1,6 +1,6 @@
 /* Aletheia assistant: a rule-based helper (no AI model). It matches keywords in what the user types and drives the
    same API and pages as the rest of the app: start a new request, search records, list open jobs, show status, explain
-   the workflow. Uses the helpers defined in index.html: $, esc, api, go, demo, badge, ST. */
+   the workflow. Uses the helpers defined in index.html: $, esc, api, go, badge, ST. */
 (()=>{
 const box=document.createElement('div');box.id='cb';
 box.innerHTML=`<button class="cbf" id="cbo" aria-expanded="false" aria-controls="cbp" aria-label="Open the assistant">
@@ -54,7 +54,7 @@ async function pending(){const l=(await api('/api/jobs')).filter(j=>j.stage<4&&!
  if(!l.length){say('Nothing is in progress: every record has been approved.');return chips(MAIN)}
  say(`${l.length} report${l.length==1?' is':'s are'} still in progress (most recently updated first):`+jobList(l,'records'));chips(MAIN)}
 async function status(){const s=await api('/api/stats');
- if(!s.total){say('There are no records yet. Start a new report, or load the demo job to try things out.');return chips([['New report','new'],['Load demo job','demo'],['How it works','how']])}
+ if(!s.total){say('There are no records yet. Start a new report.');return chips([['New report','new'],['How it works','how']])}
  say(`<b>${s.total}</b> record${s.total==1?'':'s'} in total:<dl class="cbs">${ST.map((n,i)=>`<dt>${esc(n)}</dt><dd>${s.by_stage[i]}</dd>`).join('')}</dl>`+
   (s.historical?`Plus <b>${s.historical}</b> historical record${s.historical==1?'':'s'} imported from registers. `:'')+
   (s.turnaround_h?`From request to release takes ${dur(s.turnaround_h.avg)} on average (${s.turnaround_h.n} released). `:'')+
@@ -83,7 +83,6 @@ async function handle(t,click){t=t.trim();if(!t)return;const lo=t.toLowerCase();
  if(lo=='form'){say('Opening the new request form.');return go('new')}
  if(/^(hi|hello|hey|good (morning|afternoon|evening))\b/.test(lo)){say('Hello! What would you like to do?');return chips(MAIN)}
  if(/\b(new|create|start|begin|add)\b/.test(lo))return startNew();
- if(/\bdemo\b/.test(lo)){say('Loading the demo job (series 25T1654, all ten documents).');return demo()}
  if(/\b(status|summary|stats?|how many|overview|count)\b/.test(lo))return status();
  if(/\b(pending|in progress|progress|open jobs|unfinished|outstanding|to ?do|waiting|ongoing)\b/.test(lo))return pending();
  if(/\bregister|old records|legacy\b/.test(lo)){say(HELP.register);return chips([['Go to Records','records'],...MAIN.slice(0,2)])}
