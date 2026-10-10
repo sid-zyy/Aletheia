@@ -195,6 +195,26 @@ class SeparationOfDuties(Base):
         self.assertEqual(r.status_code, 403)  # P. Naveenkumar is the engineer on the work instruction, whatever is typed
 
 
+class RoleSwitch(Base):
+    def test_switch_shows_each_end_without_signing_in_only_while_there_are_no_passwords(self):
+        c = aletheia.app.test_client()
+        self.assertEqual(c.post("/api/switch", json=dict(role="admin")).status_code, 403)  # passwords on (as in production): refused
+        self.assertFalse(c.get("/api/me").json["switch"])
+        auth.PASSWORDS = False
+        try:
+            self.assertTrue(c.get("/api/me").json["switch"])
+            for role, perm in (("customer", "tickets.raise"), ("tester", "section.verify"), ("admin", "report.approve")):
+                r = c.post("/api/switch", json=dict(role=role)); self.assertEqual(r.status_code, 200, r.json)
+                me = c.get("/api/me").json; self.assertEqual(me["user"]["roles"], [role]); self.assertIn(perm, me["perms"])
+            self.assertEqual(c.post("/api/switch", json=dict(role="approver")).status_code, 400)
+            with aletheia.db() as d: self.assertIn("Switched to the admin view", d.execute("SELECT event FROM audit ORDER BY id DESC LIMIT 1").fetchone()[0])
+            os.environ["ALETHEIA_ROLE_SWITCH"] = "0"
+            try: self.assertEqual(c.post("/api/switch", json=dict(role="tester")).status_code, 403)
+            finally: os.environ.pop("ALETHEIA_ROLE_SWITCH")
+        finally:
+            auth.PASSWORDS = True
+
+
 class RoleMigration(Base):
     def test_old_roles_convert_and_mixed_accounts_stop_the_migration(self):
         with aletheia.db() as c:

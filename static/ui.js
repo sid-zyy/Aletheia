@@ -5,6 +5,8 @@ input.in,select{height:46px;box-sizing:border-box}
 .fbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;align-items:end}
 .fbar>div{min-width:0;display:flex;flex-direction:column}.fbar label{margin:0 0 6px!important;font-size:13px;font-weight:600;color:var(--mu)}
 .fbar .in,.fbar select,.fbar .btn{width:100%!important;min-width:0!important;max-width:100%;height:46px;margin:0}.fbar .btn{justify-content:center}
+.rsw{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mu);white-space:nowrap;flex-shrink:0}.rsw select{height:auto!important;width:auto;padding:7px 30px 7px 12px;border-radius:12px;border:1px solid var(--ln);background:var(--cd);font-weight:600;color:var(--tx);cursor:pointer}
+@media(max-width:760px){.rsw span{display:none}}
 .um{position:relative}.umb{display:flex;align-items:center;gap:10px;border:1px solid var(--ln);background:var(--cd);border-radius:14px;padding:5px 10px 5px 5px;cursor:pointer;transition:box-shadow .15s}
 .umb:hover,.umb[aria-expanded=true]{box-shadow:0 4px 14px -6px rgba(18,49,95,.35)}
 .av{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:#fff;font-weight:700;font-size:13px;letter-spacing:.02em;flex-shrink:0}
@@ -28,11 +30,13 @@ input.in,select{height:46px;box-sizing:border-box}
 /* ---------------------------------------------------------------- user menu */
 const ROLE_COL={admin:'#7c3aed',tester:'#1c4f9c',customer:'#be123c'};
 const initials=n=>String(n||'?').replace(/^(dr|mr|mrs|ms|prof|sh|smt)\.?\s+/i,'').split(/[\s.]+/).filter(Boolean).slice(0,2).map(x=>x[0].toUpperCase()).join('')||'?';
+function roleSwitch(){if(!SWITCH||!ME)return'';const cur=ME.roles.includes('customer')?'customer':ME.roles.includes('admin')?'admin':'tester';
+ return `<label class="rsw"><span>View as</span><select aria-label="Show the system as" onchange="switchTo(this.value)">${[['customer','Customer'],['tester','Tester'],['admin','Admin']].map(([k,l])=>`<option value="${k}"${k==cur?' selected':''}>${l}</option>`).join('')}</select></label>`}
 function userChip(){if(!ME)return'';const c=ROLE_COL[ME.roles[0]]||'#1c4f9c',r=ME.roles.map(x=>ROLE_LBL[x]).join(', ');
  return `<div class="um"><button class="umb" id="umb" aria-haspopup="true" aria-expanded="false" onclick="umToggle(event)"><span class="av" style="background:${c}">${esc(initials(ME.full_name))}</span><span class="umt"><b>${esc(ME.full_name)}</b><small>${esc(r)}</small></span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
  <div class="ump" id="ump" hidden><div class="uh"><span class="av lg" style="background:${c}">${esc(initials(ME.full_name))}</span><div><b>${esc(ME.full_name)}</b><small>${esc(ME.username)}${ME.employee_id?' &middot; '+esc(ME.employee_id):''}${ME.org?' &middot; '+esc(ME.org):''}</small><small>${ME.roles.map(x=>`<span class="rl" style="background:${ROLE_COL[x]}22;color:${ROLE_COL[x]}">${ROLE_LBL[x]}</span>`).join('')}</small></div></div>
  ${isCust()?`<a href="#/my">Open requests</a><a href="#/my/request">New test request</a>`:ME.roles.includes('admin')?`<a href="#/dashboard">Dashboard and tasks</a>`:`<a href="#/mywork">My work</a>`}
- <a href="#/notifications">Notifications</a><button onclick="umClose();pwView()">Change password</button><button class="so" onclick="logout()">Sign out</button></div></div>`}
+ <a href="#/notifications">Notifications</a><button onclick="umClose();pwView()">Change password</button>${SWITCH?'':'<button class="so" onclick="logout()">Sign out</button>'}</div></div>`}
 function umToggle(e){e.stopPropagation();const p=$('#ump'),b=$('#umb');if(!p)return;p.hidden=!p.hidden;b.setAttribute('aria-expanded',String(!p.hidden))}
 function umClose(){const p=$('#ump');if(p){p.hidden=true;$('#umb').setAttribute('aria-expanded','false')}}
 document.addEventListener('click',e=>{if(!e.target.closest||!e.target.closest('.um'))umClose()});

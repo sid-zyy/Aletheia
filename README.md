@@ -26,6 +26,11 @@ customer*: just a username; its organisation is made for it).
 **Testing phase: no passwords.** Everyone signs in with the username only, and approval and amendments ask for no password.
 Set `ALETHEIA_PASSWORDS=1` to switch every password rule back on (temporary passwords, lock-out, re-entry at release).
 
+**Showing each end: the *View as* switch.** While there are no passwords, the page opens without a sign-in screen, and a
+**View as: Customer / Tester / Admin** menu at the top right of every page switches to that end at once (the first active
+account of that role; the browser remembers the last view chosen). Each switch is in the audit log, and every permission of
+the account switched to still applies. The switch is off as soon as `ALETHEIA_PASSWORDS=1`, or with `ALETHEIA_ROLE_SWITCH=0`.
+
 **Upgrading an existing database:** on the first start of this version the database is copied to
 `aletheia.db.pre-v2-<date>.bak`, then converted (one row per test section, audit trail sealed into a hash chain).
 

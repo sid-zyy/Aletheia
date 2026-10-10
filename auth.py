@@ -272,7 +272,7 @@ def body(): return request.get_json(force=True, silent=True) or {}
 def me():
     u = current()
     with _db() as c: setup_needed = c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
-    if not u: return jsonify(user=None, setup_needed=setup_needed, local=request.remote_addr in LOCAL, passwords=PASSWORDS)
+    if not u: return jsonify(user=None, setup_needed=setup_needed, local=request.remote_addr in LOCAL, passwords=PASSWORDS, switch=switch_on())
     session.setdefault("csrf", secrets.token_urlsafe(24))
     perms = sorted(p for p in PERMS if holds(u, p))
     org = None
@@ -280,7 +280,7 @@ def me():
         with _db() as c: r = c.execute("SELECT name FROM orgs WHERE id=?", (u["org_id"],)).fetchone()
         org = r[0] if r else None
     return jsonify(user=dict(public_user(u), org=org), csrf=session["csrf"], perms=perms, setup_needed=False, names=current_app.config.get("TEST_NAMES"),
-                   idle_minutes=IDLE_MINUTES, passwords=PASSWORDS, features=dict(scan=bool(current_app.config.get("FEATURE_SCAN", os.environ.get("ALETHEIA_FEATURE_SCAN", "0") == "1"))))
+                   idle_minutes=IDLE_MINUTES, passwords=PASSWORDS, switch=switch_on(), features=dict(scan=bool(current_app.config.get("FEATURE_SCAN", os.environ.get("ALETHEIA_FEATURE_SCAN", "0") == "1"))))
 
 
 @bp.post("/api/setup")
@@ -352,6 +352,30 @@ def login():
     lu = load_user(u["id"]); start_session(lu); g.user = lu
     with _db() as c: _log(c, None, f"Signed in from {ip()}", kind="auth")
     return jsonify(ok=True, must_change_password=PASSWORDS and bool(u["must_change_password"]))
+
+
+def switch_on():
+    """The Customer / Tester / Admin switch for showing each end of the system: only while there are no passwords (testing),
+    and not when ALETHEIA_ROLE_SWITCH=0."""
+    return not PASSWORDS and os.environ.get("ALETHEIA_ROLE_SWITCH", "1") != "0"
+
+
+@bp.post("/api/switch")
+@public
+def switch_role():
+    """Become the first active account holding the chosen role (customer, tester or admin), without signing in. The switch
+    is recorded in the audit log like a sign-in; every permission still applies to the account switched to."""
+    if not switch_on(): return jsonify(error=["Switching roles is turned off on this server; sign in instead"]), 403
+    role = str(body().get("role") or "").strip().lower()
+    if role not in ROLES: return jsonify(error=["Choose customer, tester or admin"]), 400
+    with _db() as c:
+        r = c.execute("SELECT id FROM users WHERE active=1 AND (',' || roles || ',') LIKE ? ORDER BY id LIMIT 1", (f"%,{role},%",)).fetchone()
+    if not r: return jsonify(error=[f"There is no active {role} account to switch to; an administrator creates one under Users & customers"]), 404
+    u = load_user(r["id"]); start_session(u); g.user = u
+    with _db() as c:
+        c.execute("UPDATE users SET last_login=? WHERE id=?", (now(), u["id"]))
+        _log(c, None, f"Switched to the {role} view from {ip()} (no sign-in: testing phase)", kind="auth")
+    return jsonify(ok=True, user=u["username"])
 
 
 @bp.post("/api/logout")

@@ -7,7 +7,7 @@ function pwMode(m){PW=!(m&&m.passwords===false);document.body.classList.toggle('
 new MutationObserver(()=>{if(PW)return;document.querySelectorAll('input[type=password],#upw,#rp').forEach(x=>{if(x.hidden)return;x.required=false;x.minLength=0;x.hidden=true;const l=x.id&&document.querySelector(`label[for="${x.id}"]`);if(l)l.hidden=true})}).observe(document.documentElement,{childList:true,subtree:true});
 (()=>{const s=document.createElement('style');s.textContent='body.nopw [onclick^="pwView"],body.nopw [onclick^="resetPw"]{display:none!important}';document.head.append(s)})();
 
-let ME=null,PERMS=[],CSRF='';
+let ME=null,PERMS=[],CSRF='',SWITCH=false;
 const can=p=>PERMS.includes(p),isCust=()=>!!ME&&ME.roles.includes('customer');
 const ROLE_LBL={admin:'Admin',tester:'Tester',customer:'Customer'};
 (()=>{const s=document.createElement('style');s.textContent=`
@@ -40,13 +40,14 @@ body.no-scan [onclick^="readAI"],body.no-scan .svb,body.no-scan label:has(#ff){d
 async function boot(){let m;try{m=await(await fetch('/api/me',{cache:'no-store'})).json();pwMode(m)}catch(e){return gateView('Cannot reach the server','<p>The Aletheia server is not responding. Start it (<code>python app.py</code>) and refresh.</p>')}
  if(location.pathname.startsWith('/verify/')){if(m.user)setMe(m);return route()}  /* the public verification page needs no account */
  if(m.setup_needed)return setupView(m.local);
+ if(!m.user&&m.switch)return switchTo(lastRole(),1);  /* testing phase: open straight into the last view chosen, no sign-in */
  if(!m.user)return loginView();
  setMe(m);if(PW&&ME.must_change_password)return pwView(true);
  shell();route();clockCheck();bellCount()}
 /* timestamps are legal records: warn when this workstation's clock and the server's disagree */
 async function clockCheck(){try{const t0=Date.now(),r=await(await fetch('/api/time')).json(),off=(new Date(r.utc)-(t0+Date.now())/2)/1000;
  if(Math.abs(off)>120){const b=document.createElement('div');b.className='stale';b.setAttribute('role','alert');b.innerHTML=`<b>This computer's clock differs from the server's by ${Math.round(Math.abs(off)/60)} minutes.</b> Times recorded by Aletheia use the server clock; ask the administrator to correct whichever clock is wrong.`;$('#tb').after(b)}}catch(e){}}
-function setMe(m){ME=m.user;PERMS=m.perms||[];CSRF=m.csrf||'';if(m.names&&typeof SECN=='object')Object.assign(SECN,m.names);document.body.classList.toggle('cust',isCust());document.body.classList.toggle('no-scan',!(m.features||{}).scan);roleClasses()}
+function setMe(m){ME=m.user;PERMS=m.perms||[];CSRF=m.csrf||'';SWITCH=!!m.switch;if(m.names&&typeof SECN=='object')Object.assign(SECN,m.names);document.body.classList.toggle('cust',isCust());document.body.classList.toggle('no-scan',!(m.features||{}).scan);roleClasses()}
 let OBS=null;
 function shell(){if(!$('.shell'))document.body.innerHTML=SHELL_HTML;if($('#app')!==OBS){OBS=$('#app');new MutationObserver(anim).observe(OBS,{childList:true})}}
 const SHELL_HTML='<div class="shell"><aside id="nav"></aside><div class="col"><div class="tbar" id="tb"></div><main id="app"></main><footer>Central Power Research Institute, Bengaluru &middot; Ministry of Power, Govt. of India &middot; Short Circuit Laboratory</footer></div></div><div id="toast"></div>';
@@ -69,6 +70,11 @@ function pwView(forced){const h=`${forced?'<p class="note">This is a temporary p
  if(forced)gateView('Choose a new password',h);else modal('<h2>Change your password</h2>'+h);
  $('#pf').onsubmit=async e=>{e.preventDefault();if($('#pn').value!==$('#pn2').value){$('#pe').textContent='The two new passwords differ';return}
   try{await api('/api/password',{old:$('#po').value,new:$('#pn').value});if(forced){document.body.innerHTML=SHELL_HTML;boot()}else{closeModal();const m=await(await fetch('/api/me')).json();setMe(m);toast('Password changed')}}catch(x){$('#pe').textContent=[].concat(x).join(' ')}}}
+/* the Customer / Tester / Admin switch (testing phase only: the server refuses it once passwords are on) */
+const lastRole=()=>{try{return localStorage.getItem('aletheia_view')||'admin'}catch(e){return 'admin'}};
+async function switchTo(role,first){try{const r=await fetch('/api/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role})}),j=await r.json().catch(()=>({}));
+  if(!r.ok){if(first&&role!='admin')return switchTo('admin',1);if(first)return loginView([].concat(j.error||'').join(' '));return toast(j.error||'Could not switch',1)}
+  try{localStorage.setItem('aletheia_view',role)}catch(e){}document.body.innerHTML=SHELL_HTML;location.hash='';boot()}catch(e){if(first)loginView();else toast('Could not switch',1)}}
 async function logout(){try{await api('/api/logout',{})}catch(e){}ME=null;PERMS=[];CSRF='';document.body.innerHTML=SHELL_HTML;location.hash='';boot()}
 /* userChip() (the user menu) is in ui.js */
 /* navigation per role: staff see the laboratory pages, Admin also the administration pages, customers only their jobs */
