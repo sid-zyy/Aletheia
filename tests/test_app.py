@@ -203,6 +203,15 @@ class ImportFormats(Base):
         self.assertEqual(self.c.post(f"/api/jobs/{i}/validate").status_code, 200)
         self.assertEqual(self.gen(i).status_code, 200)
 
+    def test_demo_job_comes_with_its_scans(self):
+        r = self.c.post("/api/demo"); self.assertEqual(r.status_code, 201); i = r.json["id"]
+        names = sorted(x["filename"] for x in self.get(i)["sources"])
+        self.assertEqual(len(names), 9); self.assertIn("Logsheet for temp. rise.pdf", names)
+        again = self.c.post("/api/demo")  # loading it again opens the same job and attaches nothing twice
+        self.assertEqual((again.status_code, again.json["id"], again.json["scans_added"]), (200, i, 0))
+        with aletheia.db() as c: c.execute("DELETE FROM sources WHERE job_id=?", (i,))  # a demo job loaded before scans were bundled
+        self.assertEqual(self.c.post("/api/demo").json["scans_added"], 9)
+
     def test_export_reimports(self):
         i = self.c.post("/api/demo").json["id"]
         for fmt in ("csv", "xlsx", "sqlite", "json"):

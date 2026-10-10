@@ -99,7 +99,7 @@ tamper detection, source documents, and the AI reader (mocked): Gemini and OpenA
 ## Files
 
 `app.py` API, database, validation, PDF | `importers.py` CSV / Excel / SQLite / JSON readers and exporters |
-`vision.py` optional Gemini reader | `static/index.html` UI | `static/assistant.js` rule-based help assistant (no AI) | `sample_data/` demo job in every format and two legacy registers |
+`vision.py` optional Gemini reader | `static/index.html` UI | `static/assistant.js` rule-based help assistant (no AI) | `sample_data/` demo job in every format, its scanned sheets (`sample_data/scans/`, attached when the demo is loaded) and two legacy registers |
 `tests/` | `docs/ARCHITECTURE.md`
 
 ## Limits to know about

@@ -19,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.environ.get("ALETHEIA_DB") or os.path.join(HERE, "aletheia.db")
 AI_CACHE = os.path.join(os.path.dirname(os.path.abspath(DB)), "ai_cache.db")  # survives deleting the job database
 DEMO = os.path.join(HERE, "sample_data", "AP_Transformers_25T1654.json")
+DEMO_SCANS = os.path.join(HERE, "sample_data", "scans")  # the scanned sheets the demo data was typed from
 
 def load_demo():
     with open(DEMO, encoding="utf-8") as f: return json.load(f)
@@ -800,12 +801,15 @@ def sniff(raw):
 def add_source(i):
     getjob(i, False); name, raw = upload(body())
     if len(raw) > importers.MAX_BYTES: raise importers.ImportError_("File is too large (20 MB maximum)")
-    mime = sniff(raw); sha = hashlib.sha256(raw).hexdigest()
     try:
-        with db() as c:
-            cur = c.execute("INSERT INTO sources(job_id,filename,mime,sha256,content,at) VALUES(?,?,?,?,?,?)", (i, name, mime, sha, raw, now()))
-            log(c, i, f"Source document attached: {name} (SHA-256 {sha[:12]}...)"); return jsonify(id=cur.lastrowid), 201
+        with db() as c: return jsonify(id=insert_source(c, i, name, raw)), 201
     except sqlite3.IntegrityError: return jsonify(error=["This document is already attached to the job"]), 409
+
+def insert_source(c, i, name, raw):
+    """Store a scanned sheet with its fingerprint. Raises IntegrityError if the same file is already attached to the job."""
+    mime = sniff(raw); sha = hashlib.sha256(raw).hexdigest()
+    cur = c.execute("INSERT INTO sources(job_id,filename,mime,sha256,content,at) VALUES(?,?,?,?,?,?)", (i, name, mime, sha, raw, now()))
+    log(c, i, f"Source document attached: {name} (SHA-256 {sha[:12]}...)"); return cur.lastrowid
 
 def source_row(sid):
     with db() as c: r = c.execute("SELECT * FROM sources WHERE id=?", (sid,)).fetchone()
@@ -959,13 +963,27 @@ def stats():
 
 @app.post("/api/demo")
 def demo():
+    """Load the demo job with its scanned sheets. If it is already loaded, attach any scans it is missing and return it."""
     data = load_demo(); w = data["work"]
+    with db() as c: old = c.execute("SELECT id FROM jobs WHERE series=?", (w["series"],)).fetchone()
+    if old: i = old[0]
+    else:
+        r = app.test_client()
+        i = r.post("/api/jobs", json=dict(series=w["series"], sample=w["sample"], customer=data["request"]["customer"], rating=data["request"]["rating"], request=data["request"])).get_json()["id"]
+        r.post(f"/api/jobs/{i}/import", json=dict(filename=os.path.basename(DEMO), content={k: v for k, v in data.items() if k != "request"}))
+    added = attach_demo_scans(i)
+    return jsonify(id=i, existing=bool(old), scans_added=added), 200 if old else 201
+
+def attach_demo_scans(i):
+    """The form page matches each section to its scan by file name (e.g. 'Logsheet for temp. rise' -> temperature rise)."""
+    names = sorted(f for f in os.listdir(DEMO_SCANS) if os.path.splitext(f)[1].lower() in (".pdf", ".png", ".jpg", ".jpeg", ".webp")) if os.path.isdir(DEMO_SCANS) else []
     with db() as c:
-        if c.execute("SELECT id FROM jobs WHERE series=?", (w["series"],)).fetchone(): return jsonify(error=["Demo job already loaded"]), 409
-    r = app.test_client()
-    i = r.post("/api/jobs", json=dict(series=w["series"], sample=w["sample"], customer=data["request"]["customer"], rating=data["request"]["rating"], request=data["request"])).get_json()["id"]
-    r.post(f"/api/jobs/{i}/import", json=dict(filename=os.path.basename(DEMO), content={k: v for k, v in data.items() if k != "request"}))
-    return jsonify(id=i), 201
+        have = {r[0] for r in c.execute("SELECT sha256 FROM sources WHERE job_id=?", (i,))}
+        n = 0
+        for f in names:
+            with open(os.path.join(DEMO_SCANS, f), "rb") as fh: raw = fh.read()
+            if hashlib.sha256(raw).hexdigest() not in have: insert_source(c, i, f, raw); n += 1
+    return n
 
 init()
 if __name__ == "__main__":

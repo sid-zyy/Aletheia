@@ -284,7 +284,7 @@ async function verifyView(tok){$('#nav').innerHTML=side('');$('#tb').innerHTML='
  <p class="note">SHA-256 of the PDF</p><div class="hash">${v.sha256}</div></div>`}catch(e){h=`<div class="card empty"><h2>Report not found</h2>This verification code is not known to this system.</div>`}
  $('#app').innerHTML=head('Report verification','Check that a printed or forwarded report is genuine and current',`<a class="btn g" href="/">Open dashboard</a>`)+h}
 const go=h=>location.hash='#/'+h,stop=(e,f)=>{e.stopPropagation();f()};
-async function demo(){try{const r=await api('/api/demo',{});go('job/'+r.id)}catch(e){toast(e,1)}}
+async function demo(){try{const r=await api('/api/demo',{});if(r.existing)toast('The demo job is already loaded'+(r.scans_added?`; attached ${r.scans_added} missing scan${r.scans_added==1?'':'s'}`:''));go('job/'+r.id)}catch(e){toast(e,1)}}
 
 async function dashboard(){const [s,l]=await Promise.all([api('/api/stats'),api('/api/jobs')]),fj=l.find(j=>j.sections.includes('temp')),F=fj?await api('/api/jobs/'+fj.id):null,fc={pass:0,warn:0,fail:0};l.forEach(j=>j.findings.forEach(f=>fc[f.level]++));
  const ck=fc.pass+fc.warn+fc.fail,pr=ck?Math.round(fc.pass/ck*100):0,rel=s.total?Math.round(s.by_stage[4]/s.total*100):0,prog=s.total-s.by_stage[4],C=2*Math.PI*52;let off=0;
