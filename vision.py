@@ -388,35 +388,3 @@ def _read_one(con, cfg, s, content, mime, section, title, example, focus, transp
     result = dict(data=data, uncertain=uncertain, notes=notes)
     if cache_path and sha: remember(cache_path, sha, key, cfg["model"], result)
     return dict(result, cached=False)
-
-
-# ------------------------------------------------------------------ text only (ticket reply drafts)
-def write(con, prompt, transport=None, max_tokens=700):
-    """One text-only request to the configured model (same provider, key and daily limit as the scan reader); returns
-    (text, model). Used for drafts a person edits before anything is sent."""
-    cfg, s = _config(), status(con)
-    if not s["configured"]: raise VisionError("No AI model is set up (set GEMINI_API_KEY, or AI_BASE_URL and AI_MODEL)")
-    if not re.fullmatch(r"gemini-[a-z0-9.\-]+" if cfg["kind"] == "gemini" else r"[A-Za-z0-9._:/\-]+", cfg["model"]): raise VisionError("Invalid model name")
-    if not cfg["provider"].startswith("this computer") and s["calls_today"] >= s["daily_limit"]: raise VisionError("Daily AI request limit reached")
-    con.execute("INSERT INTO vision_calls(day,model) VALUES(?,?)", (s["day"], cfg["model"])); con.commit()
-    if cfg["kind"] == "gemini":
-        body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens}}
-        resp = (transport or _send)(cfg["model"], cfg["key"], body)
-    elif cfg["kind"] == "ollama":
-        body = {"model": cfg["model"], "stream": False, "messages": [{"role": "user", "content": prompt}],
-                "options": {"temperature": 0.3, "num_ctx": int(os.getenv("AI_NUM_CTX", "8192")), "num_predict": max_tokens}}
-        resp = transport(cfg["model"], cfg["key"], body) if transport else _post(re.sub(r"/v1$", "", cfg["base"]) + "/api/chat", {}, body, cfg["provider"])
-    else:
-        body = {"model": cfg["model"], "temperature": 0.3, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]}
-        headers = {"Authorization": f"Bearer {cfg['key']}"} if cfg["key"] else {}
-        resp = transport(cfg["model"], cfg["key"], body) if transport else _post(cfg["base"] + "/chat/completions", headers, body, cfg["provider"])
-    try:
-        text = _answer_text(resp, cfg["kind"])
-    except (KeyError, IndexError, TypeError):
-        raise VisionError("The AI returned an unreadable answer; try again") from None
-    text = re.sub(r"^\s*```[a-z]*|```\s*$", "", str(text or "")).strip()
-    if not text: raise VisionError("The AI returned an empty answer; try again")
-    return text, cfg["model"]
-
-
-def status_configured(): return _config()["configured"]
