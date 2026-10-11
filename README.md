@@ -16,6 +16,36 @@ laboratory's administrators.
 It runs on one ordinary lab PC (Flask + SQLite, no other services) and is used over the lab's local network.
 The plan this build follows, with the status of every phase, is in [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
 
+## Presentation
+
+**[📊 Download the presentation: Aletheia_CyberSiege_Deck_Track3_polished.pptx](docs/Aletheia_CyberSiege_Deck_Track3_polished.pptx)**
+(19 slides, PowerPoint). It covers the problem, the four objectives (less time, fewer errors, better productivity, a better
+customer experience), the workflow, integrity (audit chain, QR verification), architecture and results.
+
+## Before the demo: create a customer and a tester (demo mode)
+
+In demo mode there are no passwords, so the **View as: Customer / Tester / Admin** menu switches straight to the first
+active account of that role. This makes it quick to show every part of the system without signing in and out. The
+switch can only open accounts that **already exist**, though. A fresh database has only the administrator, so choosing
+*Customer* or *Tester* shows *"There is no active customer account to switch to"*. Create one account of each role
+first:
+
+1. Start the app (`python app.py`) and open http://localhost:5000 **on the server PC**. On the first start, fill in
+   *Create the administrator*: username, full name and a password of 10 characters or more. The password is not checked
+   in demo mode, but the form still asks for one.
+2. As the administrator, open **Users & customers** in the menu.
+3. **Customer:** click **New customer**, enter a username (e.g. `ap.transformers`) and, if you like, the name shown on
+   requests (e.g. `A.P. Transformers`), then **Create customer**. Its organisation is created automatically.
+4. **Tester:** click **New staff user**, enter a username (e.g. `a.rao`) and a full name, choose the role **Tester**,
+   leave *Certified tests* empty (all tests), type any temporary password of 10 or more characters (the form needs one,
+   but it is not used in demo mode), then **Create user**.
+5. Optional: create a **second Admin** the same way if you want to show an amendment, which needs a second signature.
+   A second tester is not needed: a tester may verify their own upload.
+6. Use **View as** at the top right to switch between Customer, Tester and Admin.
+
+These accounts only make demo mode easy to use. With `ALETHEIA_PASSWORDS=1` each person signs in with their own password,
+and the View as menu disappears.
+
 ## Install and run
 
     python -m venv .venv && .venv\Scriptsctivate     # Windows (Linux / macOS: source .venv/bin/activate)
@@ -270,7 +300,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `rules.py` | every engineering threshold with its source and status |
 | `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
 | `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `tickets.js`, `assistant.js` |
-| `docs/` | [NEXT_STEPS.md](docs/NEXT_STEPS.md) (plan and progress), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VALIDITY.md](docs/VALIDITY.md), [LAB_WORKFLOW.md](docs/LAB_WORKFLOW.md), [CHECKLIST.md](docs/CHECKLIST.md), [NOTES.md](docs/NOTES.md) |
+| `docs/` | [the presentation](docs/Aletheia_CyberSiege_Deck_Track3_polished.pptx), [NEXT_STEPS.md](docs/NEXT_STEPS.md) (plan and progress), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VALIDITY.md](docs/VALIDITY.md), [LAB_WORKFLOW.md](docs/LAB_WORKFLOW.md), [CHECKLIST.md](docs/CHECKLIST.md), [NOTES.md](docs/NOTES.md) |
 | `sample_data/tests/` | the demo job's data per test, as a CSV and as a filled Excel logsheet (paper layout, version 2, read by the upload preview) (proforma, work instruction, losses, resistance, no-load, routine, short circuit, temperature rise, pressure), to upload test by test |
 | `sample_data/`, `test-files/` | demo job in every format with its scans (including the scanned CPRI/QAF/01A request form), the sample report, legacy registers; three CSV demo jobs |
 
