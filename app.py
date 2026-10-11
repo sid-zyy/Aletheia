@@ -147,9 +147,11 @@ def save(jid, **kw):
         c.execute(f"UPDATE jobs SET {','.join(k + '=?' for k in kw)} WHERE id=?", (*[json.dumps(v) if isinstance(v, (dict, list)) else v for v in kw.values()], jid))
 
 # --------------------------------------------------------------- validation
-def validate(d, plan=None):
+def validate(d, plan=None, job=None):
     """Returns (findings, calc). Levels: pass / warn (needs reviewer attention) / fail (blocks).
-    plan: the job's required tests (section keys); documents outside it are neither expected nor reported missing."""
+    plan: the job's required tests (section keys); documents outside it are neither expected nor reported missing.
+    job: the job row (series, sample). Its registered identifiers are what every sheet is checked against; the work
+    instruction's transcription is used only when the job has none (e.g. data checked before a job exists)."""
     F, C = [], {}
     def add(l, c, t, src=None, found=None, exp=None, fix=None, na=False, basis=None, inconclusive=False, cause=None, blocks=False, advisory=False):
         """src: document(s) checked; found / exp: observed vs required value; fix: what the engineer should do.
@@ -193,20 +195,27 @@ def validate(d, plan=None):
             fix="Import the proforma to evaluate these results against their limits.")
     # 1. identifiers must agree across documents (handwriting: 4 can read as H or 6)
     norm = lambda s: s.upper().replace("H", "4")
-    ids = d.get("ids", {})
+    ids = d.get("ids") or {}
+    bad_ids = [k for k, v in ids.items() if not isinstance(v, (list, tuple))] if isinstance(ids, dict) else ["ids"]
+    if bad_ids: raise TypeError(f"identifiers not a [series, sample] pair: {', '.join(map(str, bad_ids))}")  # safe_validate names the section
+    two = lambda v: (list(v) + [None, None])[:2] if isinstance(v, (list, tuple)) else [None, None]
+    written = lambda x: x is not None and str(x).strip() not in ("", "NA")  # an identifier left off a sheet is not compared
+    # the reference: the job's registered test series and sample code, else the work instruction's
+    w0, w1 = two(ids.get("work"))
+    js, jm = (job or {}).get("series"), (job or {}).get("sample")
+    ref_s = js if written(js) else w0 if written(w0) else (d.get("work") or {}).get("series")
+    ref_m = jm if written(jm) else w1 if written(w1) else (d.get("work") or {}).get("sample")
+    ws, wm = (norm(str(ref_s))[-7:] if written(ref_s) else None), (norm(str(ref_m))[-4:] if written(ref_m) else None)
+    ref_of = "the job's" if written(js) else "the work instruction's"
     with na('Identifier consistency', name("ids")):
-        two = lambda v: (list(v) + [None, None])[:2] if isinstance(v, (list, tuple)) else [None, None]
-        written = lambda x: x is not None and str(x).strip() not in ("", "NA")  # an identifier left off a sheet is not compared
-        if "work" in ids and written(two(ids["work"])[0]):
-            w0, w1 = two(ids["work"])
-            ws, wm = norm(str(w0))[-7:], norm(str(w1))[-4:] if written(w1) else None
+        if ws:
             bad = [(k, s, m) for k, v in ids.items() for s, m in [two(v)] if (k in d or k == "work")
                    and ((written(s) and norm(str(s))[-7:] != ws) or (written(m) and wm and norm(str(m))[-4:] != wm))]  # sheets uploaded only
             for k, s, m in bad:
-                add("warn", "Identifier consistency", f"{name(k)}: transcribed '{s}' / '{m}' but work instruction = {ws} / {wm}. Verify handwriting (4/6/H).",
-                    src=name(k), found=f"Series {s}, sample {m}", exp=f"Series ...{ws}, sample ...{wm} (as on the work instruction)",
+                add("warn", "Identifier consistency", f"{name(k)}: transcribed '{s}' / '{m}' but {ref_of} test series / sample = ...{ws} / ...{wm}. Verify handwriting (4/6/H).",
+                    src=name(k), found=f"Series {s}, sample {m}", exp=f"Series ...{ws}, sample ...{wm} ({ref_of} identifiers)",
                     fix=f"Look at the IDs on the scanned {name(k).lower()}; handwritten 4, 6 and H are easy to confuse. If it was mistyped, correct it under '{name('ids')}'.")
-            if not bad: add("pass", "Identifier consistency", f"Series {ws} / sample {wm} agree in all documents", src="All source documents")
+            if ids and not bad: add("pass", "Identifier consistency", f"Series {ws} / sample {wm} agree with {ref_of} identifiers in all documents", src="All source documents")
     P = d.get("proforma", {})
     if P:
         with na(None):
@@ -414,9 +423,6 @@ def validate(d, plan=None):
                 fix=None if lv else "Leakage was recorded; the sample fails the oil leakage test." if lv is False
                     else "The recorded observation could not be interpreted; check it against the scan.")
     # 9. additional log sheets of other types: no known limits, so only completeness and identifiers
-    work_ids = (ids.get("work") or [None, None]) if isinstance(ids, dict) else [None, None]
-    ws_all = norm(str(work_ids[0] or (d.get("work") or {}).get("series") or ""))[-7:]
-    wm_all = norm(str(work_ids[1] or (d.get("work") or {}).get("sample") or ""))[-4:]
     for o in (d.get("other") or {}).values():
         with na("Supplementary test record", "Supplementary test record"):
             t = str(o.get("title") or "Supplementary test record"); src = f"Supplementary test record: {t}"
@@ -430,7 +436,7 @@ def validate(d, plan=None):
             for f in o.get("fields") or []:
                 lab, v = str(f.get("label") or "").lower(), str(f.get("value") or "")
                 if not v.strip(): continue
-                want, got = (ws_all, norm(v)[-7:]) if "series" in lab else (wm_all, norm(v)[-4:]) if "sample" in lab else (None, None)
+                want, got = (ws, norm(v)[-7:]) if "series" in lab else (wm, norm(v)[-4:]) if "sample" in lab else (None, None)
                 if want and got != want:
                     add("warn", "Identifier consistency", f"{t}: {f.get('label')} written as '{v}' but the job's is ...{want}. Verify handwriting (4/6/H).",
                         src=src, found=v, exp=f"...{want}", fix="Check the identifier on the scan and correct it on the sheet's page if it was misread.")
@@ -440,23 +446,23 @@ def required(plan):
     """The documents a job needs: the customer's request and the tests in its plan (every document when it has no plan)."""
     return [k for k in NAMES if k == "request" or k in plan] if plan else list(NAMES)
 
-def safe_validate(d, plan=None):
+def safe_validate(d, plan=None, job=None):
     """validate() for data that may be incomplete or mis-shaped (hand-edited spreadsheets): never raises.
     If one document's layout breaks the checks, it is named in a blocking finding and the other documents are still checked."""
     try:
-        return validate(d, plan)
+        return validate(d, plan, job)
     except Exception as e:  # noqa: BLE001 - any shape problem becomes a blocking finding the user can act on
         err = e
     culprits = []
     for k in [k for k in d if k != "request"]:
-        try: validate({x: v for x, v in d.items() if x != k}, plan)
+        try: validate({x: v for x, v in d.items() if x != k}, plan, job)
         except Exception: continue  # noqa: BLE001 - still failing without k, so k alone is not the cause
         culprits.append(k)
     what = lambda x: f"missing field {x}" if isinstance(x, KeyError) else f"{type(x).__name__}: {x}"
     if not culprits:
         return [dict(level="fail", blocks=True, check="Data structure", detail=f"Imported data is incomplete or not in the expected layout ({what(err)}). "
                      "Compare with a downloaded template, correct the file and import it again.")], {}
-    try: F, C = validate({x: v for x, v in d.items() if x not in culprits}, plan)
+    try: F, C = validate({x: v for x, v in d.items() if x not in culprits}, plan, job)
     except Exception: F, C = [], {}  # noqa: BLE001
     F = [f for f in F if not (f["check"] == "Completeness of source documents")]
     for k in culprits:
@@ -1034,7 +1040,7 @@ def extract(sid):
 def val(i):
     j = getjob(i)
     if locked(j): return locked(j)
-    F, _ = safe_validate(j["data"], j.get("plan")); fails = sum(f["level"] == "fail" for f in F); blocks = len(blocking(F))
+    F, _ = safe_validate(j["data"], j.get("plan"), j); fails = sum(f["level"] == "fail" for f in F); blocks = len(blocking(F))
     done = {(f["check"], f["detail"]): f.get("note") for f in j["findings"] if f.get("reviewed")}  # unchanged items keep their review
     for f in F:
         if f["level"] in ("warn", "fail") and not f.get("blocks") and (f["check"], f["detail"]) in done:

@@ -168,7 +168,7 @@ def build(A, j, version=None, verify_url=None, manifest=None, partial=None):
     partial=dict(version, approved, pending, sections) builds the customer's partial report: approved tests only, no
     conclusion, no signatures, no ULR, watermark on every page."""
     t = template(A.TEMPLATE_FILE)
-    try: F, C = A.validate(j["data"], j.get("plan"))
+    try: F, C = A.validate(j["data"], j.get("plan"), j)
     except Exception: F, C = [], {}  # noqa: BLE001 - the report shows what it can
     prev, buf = {}, None
     for _ in range(3):  # lay out until the sheet numbers no longer move (normally twice)

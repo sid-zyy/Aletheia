@@ -243,6 +243,12 @@ class ImportFormats(Base):
         finally:
             for v in ("AI_BASE_URL", "AI_MODEL", "AI_NUM_CTX"): os.environ.pop(v)
 
+    def test_ids_checked_against_job_series(self):
+        i = self.job("CPRIBLRSCL25T1999"); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
+        f = [x for x in self.c.post(f"/api/jobs/{i}/validate").json["findings"] if x["check"] == "Identifier consistency"]
+        self.assertTrue(f and all(x["level"] == "warn" for x in f))  # sheets agree with each other but not with the job's series
+        self.assertTrue(any("25T1999" in x["expected"] for x in f))
+
     def test_other_log_sheet(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
         sheet = {"title": "Noise level test", "fields": [{"label": "Test series no.", "value": "25T1656"}, {"label": "Ambient", "value": 31.2},
