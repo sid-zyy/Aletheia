@@ -184,6 +184,14 @@ thread; the customer sees the answer signed *CPRI Short Circuit Laboratory* (nev
 **open** (waiting for the laboratory) -> **answered** -> **closed**; a customer's reply re-opens it. Customers see only
 their organisation's tickets; messages cannot be changed or removed, and every step is in the audit log (kind `ticket`).
 
+**AI reply drafts (optional, off by default).** With `ALETHEIA_FEATURE_DRAFT=1` and an AI model set up (the same settings as
+the scan reader, below), the administrator sees **Draft a reply (AI)** on a ticket. The draft fills the reply box; nothing is
+sent until the administrator edits it and clicks *Send reply*. The model sees only what the customer may see: the thread
+(staff shown as "Laboratory", never by name) and the job's progress per test (no values, findings or files). Small local
+models still invent timelines ("ready within 2-3 weeks"), so every time or date in a draft that is not in the job's records is
+flagged in red under the draft. Each draft request is in the audit log and counts toward `ALETHEIA_DAILY_CALL_LIMIT` (cloud
+models only). A cloud model receives the ticket's text; use a local model (Ollama) to keep it on the lab PC.
+
 ## Excel logsheets and templates
 
 Each test has an Excel **template**: a mapping, stored in the database, from cells to fields. One mapping both draws the blank
@@ -256,7 +264,8 @@ Environment variables, read when the app starts; they may also be written in a `
 | `ALETHEIA_ROLE_SWITCH` | `1` | `0` turns the *View as* menu off even while passwords are off |
 | `ALETHEIA_DEMO` | `0` | `1` enables `/api/demo` (loads the demo job; used by the tests). A real job always starts from a customer's request |
 | `ALETHEIA_FEATURE_SCAN` | `0` | `1` turns on the optional AI reading of scanned sheets (below) |
-| `GEMINI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY`, `AI_*` | unset | AI reader for scans (only with `ALETHEIA_FEATURE_SCAN=1`) |
+| `ALETHEIA_FEATURE_DRAFT` | `0` | `1` turns on AI drafts of the administrator's ticket replies (see *Customer tickets*) |
+| `GEMINI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY`, `AI_*` | unset | AI model for scans and ticket reply drafts (only with `ALETHEIA_FEATURE_SCAN=1` / `ALETHEIA_FEATURE_DRAFT=1`) |
 
 `.aletheia_secret` holds the key that signs session cookies; keep it with the database, out of git.
 
@@ -279,7 +288,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | Data | `/api/jobs/<id>/import`, `/api/jobs/<id>/excel/preview|import`, `/api/jobs/<id>/section`, `/api/jobs/<id>/history`, `/api/files/<id>`, `/api/files/<id>/preview` |
 | Verification | `/api/jobs/<id>/sections/<test>/verify|return|reopen|na`, `/api/jobs/<id>/assign`, `/api/jobs/<id>/signoff` |
 | Reports | `/api/jobs/<id>/validate|review|generate|approve|amend`, `/api/jobs/<id>/report.pdf`, `/api/verify/<code>` |
-| Tickets | `/api/tickets[?status=]`, `/api/tickets/<id>`, `/api/tickets/<id>/messages|close|reopen` |
+| Tickets | `/api/tickets[?status=]`, `/api/tickets/<id>`, `/api/tickets/<id>/messages|close|reopen`, `/api/tickets/<id>/draft` (AI draft, admin only) |
 | Customer | `/api/jobs/<id>/approved-values`, `/api/jobs/<id>/partials`, `/api/jobs/<id>/partial.pdf`, `/api/customer/request-forms` |
 | Excel | `/api/templates[...]`, `/api/logsheets/<test|all>.xlsx`, `/api/jobs/<id>/logsheets/<test>.xlsx`, `/api/request-form.xlsx`, `/api/jobs/<id>/logsheets.xlsx`, `/api/records.xlsx` |
 | Operations | `/api/my-work`, `/api/notifications`, `/api/audit[/verify|/tip]`, `/api/admin/backups[...]`, `/api/jobs/<id>/package.zip` |

@@ -53,6 +53,34 @@ class Tickets(Base):
         with aletheia.db() as c:  # messages are kept as written
             with self.assertRaises(Exception): c.execute("UPDATE ticket_messages SET body='changed'")
 
+    def test_admin_gets_an_ai_reply_draft_built_only_from_what_the_customer_may_see(self):
+        i = self.job()
+        tid = self.cust.post("/api/tickets", json=dict(category="Test report", job_id=i, subject="Report date?", message="When will our report be ready?")).json["id"]
+        self.admin.post(f"/api/tickets/{tid}/messages", json=dict(message="We will check."))
+        self.assertEqual(self.admin.post(f"/api/tickets/{tid}/draft").status_code, 404)  # off by default
+        self.assertNotIn("draft", self.cust.get(f"/api/tickets/{tid}").json)
+        aletheia.app.config["FEATURE_DRAFT"] = True; os.environ["GEMINI_API_KEY"] = "test"; sent = []
+        try:
+            self.assertTrue(self.admin.get(f"/api/tickets/{tid}").json["draft"])
+            self.assertEqual(self.cust.post(f"/api/tickets/{tid}/draft").status_code, 403)
+            def fake(model, key, body):
+                sent.append(body["contents"][0]["parts"][0]["text"]); return {"candidates": [{"content": {"parts": [{"text": "```\nThank you. We will let you know.\n```"}]}}]}
+            aletheia.app.config["VISION_TRANSPORT"] = fake
+            r = self.admin.post(f"/api/tickets/{tid}/draft"); self.assertEqual(r.status_code, 200, r.json)
+            self.assertEqual(r.json["draft"], "Thank you. We will let you know."); self.assertEqual(r.json["warnings"], [])
+            p = sent[0]
+            self.assertIn("When will our report be ready?", p); self.assertIn("[Laboratory,", p); self.assertIn("No report has been released yet", p)
+            self.assertNotIn("Lab Admin", p)  # no staff names reach the model
+            self.assertEqual(len(self.admin.get(f"/api/tickets/{tid}").json["messages"]), 2)  # a draft is never sent or saved
+            for said, flagged in (("Ready within 3-5 business days.", ["within 3-5 business days"]), ("Expect it by the end of next week.", ["by the end of next week"]),
+                                  ("It takes 2-3 weeks, by 20/10/2026.", ["2-3 weeks", "20/10/2026"]), ("We will reply in this ticket.", [])):
+                aletheia.app.config["VISION_TRANSPORT"] = lambda *a, s=said: {"candidates": [{"content": {"parts": [{"text": s}]}}]}
+                self.assertEqual([w.split('"')[1] for w in self.admin.post(f"/api/tickets/{tid}/draft").json["warnings"]], flagged, said)
+            aletheia.app.config["VISION_TRANSPORT"] = lambda *a: {"candidates": []}
+            self.assertEqual(self.admin.post(f"/api/tickets/{tid}/draft").status_code, 503)
+        finally:
+            aletheia.app.config.pop("FEATURE_DRAFT"); aletheia.app.config.pop("VISION_TRANSPORT", None); os.environ.pop("GEMINI_API_KEY")
+
 
 if __name__ == "__main__":
     unittest.main()

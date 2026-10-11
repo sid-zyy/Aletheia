@@ -30,7 +30,14 @@ async function ticketPage(id){const t=await api('/api/tickets/'+id),cust=isCust(
     <div style="display:flex;justify-content:space-between;gap:10px;font-size:13px;margin-bottom:6px"><b>${esc(m.from_lab?T(m.author||''):m.author||'')}${m.from_lab&&!cust?' (laboratory)':''}</b><span class="m">${esc(m.at.replace('T',' ').slice(0,16))}</span></div>
     <div style="white-space:pre-wrap">${esc(m.body)}</div></div>`).join('')}
    <label for="tk_rep" style="margin-top:8px">${T(t.status=='closed'?'Reply (re-opens the ticket)':'Reply')}</label><textarea id="tk_rep" rows="4" style="width:100%;font:inherit;padding:10px;border:1px solid var(--ln);border-radius:8px;background:var(--bg);color:var(--tx)"></textarea>
-   <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:12px">${t.status=='closed'?(cust?'':`<button class="btn g" id="tk_re">Re-open</button>`):`<button class="btn g" id="tk_close">${T('Close the ticket')}</button>`}<button class="btn" id="tk_send">${T('Send reply')}</button></div></div>`;
+   ${t.draft?`<p class="m" id="tk_note" hidden style="margin:6px 0 0">AI draft: check every fact, date and promise before you send it. The customer only sees what you send.</p>`:''}
+   <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:12px">${t.draft?`<button class="btn g" id="tk_draft" style="margin-right:auto">Draft a reply (AI)</button>`:''}${t.status=='closed'?(cust?'':`<button class="btn g" id="tk_re">Re-open</button>`):`<button class="btn g" id="tk_close">${T('Close the ticket')}</button>`}<button class="btn" id="tk_send">${T('Send reply')}</button></div></div>`;
  $('#tk_send').onclick=async()=>{try{await api(`/api/tickets/${id}/messages`,{message:$('#tk_rep').value});toast(T('Reply sent'));ticketPage(id)}catch(e){toast(e,1)}};
+ if($('#tk_draft'))$('#tk_draft').onclick=async()=>{const b=$('#tk_draft'),box=$('#tk_rep');
+  if(box.value.trim()&&!confirm('Replace what you have written with an AI draft?'))return;
+  b.disabled=true;b.textContent='Drafting...';
+  try{const x=await api(`/api/tickets/${id}/draft`,{});box.value=x.draft;const n=$('#tk_note');n.hidden=false;
+   n.innerHTML='AI draft: check every fact, date and promise before you send it. The customer only sees what you send.'+(x.warnings||[]).map(w=>`<br><b style="color:var(--er)">${esc(w)}</b>`).join('');box.focus();toast('Draft ready ('+x.model+'): edit it, then send')}
+  catch(e){toast(e,1)}finally{b.disabled=false;b.textContent='Draft a reply (AI)'}};
  if($('#tk_close'))$('#tk_close').onclick=async()=>{try{await api(`/api/tickets/${id}/close`,{});toast(T('Ticket closed'));ticketPage(id)}catch(e){toast(e,1)}};
  if($('#tk_re'))$('#tk_re').onclick=async()=>{try{await api(`/api/tickets/${id}/reopen`,{});ticketPage(id)}catch(e){toast(e,1)}}}
