@@ -166,7 +166,7 @@ def kv(pairs, widths=(62 * mm, 6 * mm, W - 68 * mm), style=BASE):
 def build(A, j, version=None, verify_url=None, manifest=None, partial=None):
     """A = the app module (validate, NAMES, signed, report_template file). Returns a BytesIO with the PDF.
     partial=dict(version, approved, pending, sections) builds the customer's partial report: approved tests only, no
-    conclusion, no signatures, no ULR, watermark on every page (NEXT_STEPS.md 7.1)."""
+    conclusion, no signatures, no ULR, watermark on every page."""
     t = template(A.TEMPLATE_FILE)
     try: F, C = A.validate(j["data"], j.get("plan"))
     except Exception: F, C = [], {}  # noqa: BLE001 - the report shows what it can
@@ -609,7 +609,7 @@ def _render(A, t, j, F, C, version, verify_url, manifest, partial, prev, seen):
             row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")])); tail.append(row)
         elif acc:
             tail += acc
-        if manifest:  # traceability annex: what the report was built from (NEXT_STEPS.md 4.4, 6.2)
+        if manifest:  # traceability annex: what the report was built from
             m, msha = manifest
             tail += [Spacer(1, 8), P_("Traceability of this report", H3)]
             if m.get("supersedes"):

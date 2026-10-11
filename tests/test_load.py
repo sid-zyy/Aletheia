@@ -1,4 +1,4 @@
-"""Several people at once (NEXT_STEPS.md phase 7: "load test with 5+ simultaneous users").
+"""Several people at once.
 
 Eight sessions run together against one database: three testers uploading (each to their own job, and all three into one
 shared job, different tests), two more testers verifying whatever the others uploaded, a customer reloading the portal and an

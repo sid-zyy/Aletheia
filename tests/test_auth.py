@@ -1,4 +1,4 @@
-"""Accounts, login, roles and permissions (docs/NEXT_STEPS.md section 2 and the test plan in section 11)."""
+"""Accounts, login, roles and permissions."""
 import datetime as dt, os, re, sys, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

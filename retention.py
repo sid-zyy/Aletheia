@@ -1,4 +1,4 @@
-"""Retention for 10+ years (docs/NEXT_STEPS.md section 6.6).
+"""Retention for 10+ years.
 
 * Backups: a consistent copy of the database (SQLite online backup) with a SHA-256 file beside it, made on request and
   once a day by a background timer. The newest N are kept, plus the first backup of every month, which are never removed.

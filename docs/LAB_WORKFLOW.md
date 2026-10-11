@@ -9,17 +9,19 @@ attach the card to the product. Every bay copies the number into its logsheet he
 sheet is compared with the job's on upload, and a mismatch is flagged in the preview.
 
 ## 2. Standard Excel logsheets
-Use the blank logsheets downloaded from Aletheia (Templates, or *Excel logsheets* on any job): input cells are marked, every
-value cell has a name, and the sheet carries its form name and version. Do not type averages or totals by hand; if the sheet
+Use the blank logsheets downloaded from Aletheia (**Blank sheet** on each test's row of the job page, with the job's series
+number, sample code and customer already written in; or Templates). Each is laid out as the paper logsheet: input cells are
+yellow, printed text and calculated cells are locked, choices are dropdowns, and the sheet carries its form name and version. Do not type averages or totals by hand; if the sheet
 computes them, save the file in Excel before uploading so the value is stored. *Aletheia:* a formula that was never
 calculated is refused; a required empty cell blocks the test instead of being stored as NA.
 
 ## 3. File names
-`<series>_<test>_<bay>_<yyyymmdd>.xlsx`, for example `CPRIBLRSCL26T0042_noload_bay3_20261010.xlsx`. *Aletheia:* the file is
+`<series>_<test>_<yyyymmdd>.xlsx`, for example `CPRIBLRSCL26T0042_noload_20261010.xlsx`. *Aletheia:* the file is
 kept byte-for-byte with its fingerprint; the name helps people, the fingerprint proves which file it was.
 
-## 4. Record the bay
-Choose the bay on the job page before uploading (the PC remembers it). *Aletheia:* every test shows which bay it came from,
+## 4. Upload on the test's own row
+Upload each file with *Upload* on the row of the test it belongs to, and attach the scan of the paper sheet there too.
+*Aletheia:* nothing is assigned to a test by itself; every test shows who uploaded it, from which file and which revision,
 and the dashboard shows what is outstanding and whose it is.
 
 ## 5. Verify during the day, not at the end

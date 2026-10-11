@@ -1,4 +1,4 @@
-"""Excel extraction with changeable templates (docs/NEXT_STEPS.md section 5).
+"""Excel extraction with changeable templates.
 
 A template is data, not code: a JSON mapping stored in the database. When the lab changes a sheet, an administrator updates
 the mapping and the Python does not change. One mapping does two jobs:

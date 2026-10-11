@@ -1,4 +1,4 @@
-"""Workflow: strict intake, per-section verification, ownership, sign-off, assignment notifications, "My work" (NEXT_STEPS.md sections 3, 4, 11)."""
+"""Workflow: strict intake, per-section verification, ownership, sign-off, assignment notifications, "My work"."""
 import os, sys, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

@@ -1,4 +1,4 @@
-"""Customer portal, partial reports and notifications (NEXT_STEPS.md section 7, test plan in 11)."""
+"""Customer portal, partial reports and notifications."""
 import datetime as dt, io, json, os, sys, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

@@ -1,4 +1,4 @@
-"""Integrity after release: manifest, amendments that supersede, retention packages, backups (NEXT_STEPS.md 6.2, 6.5, 6.6)."""
+"""Integrity after release: manifest, amendments that supersede, retention packages, backups."""
 import hashlib, io, json, os, sqlite3, sys, unittest, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

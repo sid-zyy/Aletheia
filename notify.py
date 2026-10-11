@@ -1,4 +1,4 @@
-"""In-app notifications (docs/NEXT_STEPS.md section 7.3). Aletheia sends no email: every notice is in the portal, where it
+"""In-app notifications. Aletheia sends no email: every notice is in the portal, where it
 opens the job, test or request it is about. (The settings and outbox tables of earlier versions are left in the database,
 unused.)
 """

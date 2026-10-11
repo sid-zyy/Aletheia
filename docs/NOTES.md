@@ -1,7 +1,7 @@
 # Aletheia: structure and model notes
 
 Quick reference for the team. The README has install, usage, settings and the API; `docs/ARCHITECTURE.md` has the diagram,
-the data model and the job lifecycle; `docs/VALIDITY.md` says what the checks do and do not establish.
+the data model and the job lifecycle; the README's *Validity* section says what the checks do and do not establish.
 
 ## Structure
 
@@ -14,18 +14,18 @@ the data model and the job lifecycle; `docs/VALIDITY.md` says what the checks do
 | `importers.py` | CSV / Excel / SQLite / JSON in and out, using rows of `section, field, value`; register import |
 | `vision.py` | Scan reader: Gemini, Ollama, or any OpenAI-compatible service; page clean-up, part-by-part reading, saved scans |
 | `static/index.html` + `static/*.js` | The web UI (single page; see the README's file list) |
-| `static/assistant.js` | Rule-based chat assistant for staff: customer requests, record search, status, how-to answers (keyword matching, no AI model) |
-| `tests/` | 143 tests: `python -m unittest discover -s tests` (the README lists what each file covers) |
+| `static/assistant.js` | Rule-based chat assistant for every role (staff: customer requests, record search, status, how-to; customers: their jobs, a new request, a ticket); keyword matching, no AI model |
+| `tests/` | 157 tests: `python -m unittest discover -s tests` (the README lists what each file covers) |
 | `report_template.json` | Wording and laboratory details of the report (headings, ULR, address, clauses, notes) |
-| `sample_data/` | The A.P. Transformers sample job in every format, its 9 scans, plus two legacy registers (the CSV one has test dates and results) |
+| `sample_data/` | The A.P. Transformers sample job in every format, its 9 scans, plus two legacy registers (the CSV one has test dates and results); `sample_data/tests/` has each test's logsheet filled in, as Excel (paper layout, version 2) and as a flat CSV generated from it |
 | `test-files/` | Three CSV jobs for demos: full (`...25T1654`), partial (`...25T1704`), failing (`...25T1714`); different series, so they load side by side |
 
 **Data:** each job stores one object per document: `request, proforma, work, losses, resistance, noload, routine, sc, temp, pressure`. It also stores `ids` (series and sample number as written on each sheet) and `other` (additional log sheets of any type, keyed `x1, x2…`).
 
-**Workflow:** Customer request → Intake (sheet 3) → Import → Verify → Review → Sign-off → Report → Approve. The README has the full workflow; the notes below are about the checks and records.
+**Workflow:** Customer request → Intake (sheet 3) → Upload per test → Checks and review → Verify (tester) → Approve (admin) → Generate report → Sign off and release (admin). The README has the full workflow; the notes below are about the checks and records.
 - **Checks** run on whatever documents are present. Missing documents and empty (NA) values come out as "not evaluated", never as blockers. In the report's summary a test reads PASS only if every check behind it ran; otherwise NOT EVALUATED or NOT FULLY EVALUATED, and the statement of conformity names what was left out.
 - **Review:** the engineer goes through the flagged items one by one. A *data error* (sheet arithmetic that doesn't add up, a broken layout) blocks the report until it's fixed. A *requirement not met* is confirmed by the engineer and the report says the sample does not comply. The report is only built once every flagged item is reviewed or confirmed.
-- **Release:** the test engineer named on the report can't approve it, nor can anyone who worked on the data. A released report can't be deleted or withdrawn (the customer's QR code must keep working); it is corrected by an amendment.
+- **Release:** an administrator approves the job once every planned test is verified or not applicable, generates the report and signs it off (the one who approved may sign). Administrators never enter or verify data, and the test engineer named on the work instruction can't sign the report off. A released report can't be deleted or withdrawn (the customer's QR code must keep working); it is corrected by an amendment.
 - **Historical records:** register imports are archived records with a result and test date, kept out of the pipeline, work queue and turnaround. Importing test data into one makes it a live job.
 - **Dashboard turnaround** is request captured -> first approval, from the audit log. Open jobs show how long they have waited.
 - **Report wording** is in `report_template.json` (read on every report, no restart needed).
@@ -76,5 +76,5 @@ Settings are environment variables, set before `python app.py`. They're saved as
 
 - **Speed:** run Ollama on an NVIDIA GPU (RTX 3060 12 GB → `qwen2.5vl:7b`, a few seconds per page). Check with `ollama ps` that it says "100% GPU".
 - **Accuracy without a GPU:** hosted Qwen2.5-VL-72B via OpenRouter (`AI_BASE_URL=https://openrouter.ai/api/v1`, `AI_API_KEY`).
-- **Demo day:** scan every sheet once beforehand, so the saved scans load instantly on stage. Keep the CSV import as the no-AI fallback (`test-files/`). Approve with a name other than the test engineer (P. Naveenkumar), or approval is refused. The README has the demo scripts (passing, failing, partial, historical, customer view).
+- **Demo day:** scan every sheet once beforehand, so the saved scans load instantly on stage. Keep the CSV import as the no-AI fallback (`test-files/`). Identity comes from the account, not a typed name: in demo mode create a customer and a tester first (README, *Before the demo*), then switch with *View as*. The README has the demo table and the presentation ([docs/Aletheia_CyberSiege_Deck_Track3_polished.pptx](Aletheia_CyberSiege_Deck_Track3_polished.pptx)).
 - **Fine-tuning later:** every engineer-corrected scan is a labelled example. Fine-tune once a few hundred sheets are collected; it isn't practical with one job's 15 pages.

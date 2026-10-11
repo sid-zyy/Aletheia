@@ -5,7 +5,7 @@ One Flask process and one SQLite database on a lab PC; browsers on the lab netwo
 ```mermaid
 flowchart LR
     subgraph People
-        T[Test engineer: receives requests, takes tests, uploads, runs checks, verifies colleagues' tests]
+        T[Test engineer: receives requests, takes tests, uploads, runs checks, verifies tests, own uploads included]
         AD[Admin: approves jobs, generates and signs off reports, amends with a second admin, assigns tests, answers tickets, users, templates, backups]
         CU[Customer: raises requests and tickets, portal]
     end
@@ -34,7 +34,7 @@ flowchart LR
         O3[Backups, audit tip, record packages]
         O4[Customer tickets to the admins]
     end
-    T & V & AP & AD & CU --> G
+    T & AD & CU --> G
     G --> X1 & X2 & X3 & X4 --> S1
     S1 --> E1 --> E2 --> S3
     S1 -.-> S2
@@ -56,7 +56,8 @@ previous one by hash.
 |---|---|
 | `report.py` | The report PDF in the lab's format (sheets, sheet references, ULR footer), normal and partial |
 | `app.py` | REST API, job lifecycle, checks (`validate`), report (`build_pdf`, which calls `report.py`), workflow routes (verify, sign-off, intake), approval and amendment, search, statistics |
-| `auth.py` | Users and customer organisations, password hashing, sessions (idle/absolute timeout, lock-out), CSRF, `PERMS` and the `before_request` gate that refuses any route without a rule |
+| `auth.py` | Users and customer organisations, password hashing, sessions (idle/absolute timeout, lock-out), CSRF, `PERMS` and the `before_request` gate that refuses any route without a rule; while passwords are off (`ALETHEIA_PASSWORDS=0`, the demo version) no sign-in and the *View as* switch (`/api/switch`) |
+| `config.py` | Settings from the environment or a `.env` file (every setting and its default is in `.env.example`); `app.serve()` runs Waitress |
 | `integrity.py` | Section rows with revisions (optimistic locking), section history, files, series/sample allocation, audit hash chain, database triggers, numbered migrations with backup |
 | `workflow.py` | The Customer Request Form CPRI/QAF/01A: fields of sheets 1-2 (customer) and sheet 3 (laboratory) and their rules (required fields, formats, PIN-code table, choices, declarations), test plan, ownership and certification, progress, sign-off readiness |
 | `xltemplates.py` | Template engine: read a sheet (names, labels, cells, tables; statuses per value), draw blank and filled sheets, diff and validate mappings |
@@ -70,7 +71,7 @@ previous one by hash.
 | `importers.py` | Flat-layout readers and exporters (CSV, Excel, SQLite, JSON), legacy registers |
 | `vision.py` | Optional AI reading of scanned sheets (off unless `ALETHEIA_FEATURE_SCAN=1`) |
 | `rules.py` | Engineering thresholds with source and status |
-| `static/` | Single-page UI: `index.html` (pages, job page, report), `auth.js` (sign-in, roles, Admin and customer pages), `workflow.js` (verification card, intake, My work, amendments), `excel.js` (upload preview, templates), `portal.js` (notifications, customer additions), `request.js` (Customer Request Form laid out as the printed form, customer requests, intake inbox and receiving a request), `tickets.js` (tickets for customers and administrators), `ui.js` (user menu, dashboard tasks, take / assign tests, dashboard emblem) |
+| `static/` | Single-page UI: `index.html` (pages, job page, report), `auth.js` (sign-in, roles, the *View as* switch, Admin and customer pages), `workflow.js` (verification card, intake, My work, amendments), `excel.js` (upload preview, templates), `portal.js` (notifications, customer additions), `request.js` (Customer Request Form laid out as the printed form, customer requests, intake inbox and receiving a request), `tickets.js` (tickets for customers and administrators), `ui.js` (user menu, dashboard tasks, take / assign tests, dashboard emblem), `assistant.js` (rule-based assistant for every role, no AI model) |
 
 ## Data model (`aletheia.db`, schema version 2)
 
@@ -78,7 +79,7 @@ previous one by hash.
 |---|---|
 | `users`, `orgs` | Accounts (roles, employee ID, certified tests, lock-out, session epoch) and customer organisations. Never deleted |
 | `jobs` | One job: series (unique), sample, customer, stage 0-4, findings, verdict, org, test `plan`, `intake` record, sign-off, open `amend`, `completed_at` (release time) |
-| `sections` | One row per test of a job: state (uploaded / returned / verified / na), data, data SHA-256, revision, file, template, uploader + bay, verifier, note |
+| `sections` | One row per test of a job: state (uploaded / returned / verified / na), data, data SHA-256, revision, file, template, uploader, verifier, note |
 | `section_history` | Every revision and state change of every section (append-only) |
 | `files` | Uploaded data files byte-for-byte with SHA-256 (append-only) |
 | `imports` | Each import: file, kind, sections brought, user (lets an import be undone before release) |
@@ -87,7 +88,7 @@ previous one by hash.
 | `amendments` | Reason, tests reopened, both signers, from / to version (kept for good) |
 | `partials` | Every partial report version shown to the customer, with its hash |
 | `templates` | Template versions with mapping, status, sample sheet |
-| `assignments`, `bays`, `counters` | Test-to-engineer assignments with the bay, test bays, series/sample counters |
+| `assignments`, `counters` | Test-to-engineer assignments, series/sample counters (the `bays` table and the bay columns of earlier versions are no longer used) |
 | `notifications`, `customer_forms` | In-app notices (the `outbox` and `settings` tables of earlier versions are no longer used), customers' requests as sent (status received / returned with reason / used / replaced) |
 | `tickets`, `ticket_messages` | Customer tickets and their messages (messages cannot be changed or removed) |
 | `audit` | Every action: who, role, workstation, kind, text, previous hash, own hash |
@@ -97,10 +98,10 @@ previous one by hash.
 
 | Who | Can |
 |---|---|
-| Administrator | Assign or reassign any test of an open job, or the whole job at once, to a test engineer (certified for the test), with the bay; the engineer is notified |
-| Test engineer | Take a planned test nobody is assigned to and nobody has started, choosing the bay; give it back before starting. At intake, tick the tests they will do themselves |
+| Administrator | Assign or reassign any test of an open job, or the whole job at once, to a test engineer (certified for the test); the engineer gets one notification per assignment |
+| Test engineer | Take a planned test nobody is assigned to and nobody has started; give it back before starting. At intake, tick the tests they will do themselves |
 
-Uploads without a bay use the bay of the assignment. Each person's dashboard lists their tasks: engineers what to test and what is
+Each person's dashboard lists their tasks: engineers what to test and what is
 free to take and what colleagues uploaded for them to verify; the administrator what is ready to approve and to sign off,
 tests not assigned, customer requests waiting, customer tickets to answer, and locked accounts.
 

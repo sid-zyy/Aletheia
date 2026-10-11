@@ -14,7 +14,6 @@ laboratory's administrators.
 > sign-in with passwords, lock-out and password re-entry at release come back, and the View as menu disappears.
 
 It runs on one ordinary lab PC (Flask + SQLite, no other services) and is used over the lab's local network.
-The plan this build follows, with the status of every phase, is in [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
 
 ## Presentation
 
@@ -215,7 +214,7 @@ logsheet) are optional template fields; when a logsheet does not carry them the 
 - Each report version prints a manifest hash; the verification page (QR code on the report) checks the PDF and the manifest.
 - Daily backups with checksums; *Check* on a backup verifies it without stopping the lab. A **record package** (zip) per
   released job holds every version, its manifest, source files, history and audit, with checksums.
-- Checks take values **as logged** (faculty note F5): see [docs/VALIDITY.md](docs/VALIDITY.md).
+- Checks take values **as logged** (faculty note F5): see Validity below.
 
 ## Configuration
 
@@ -300,7 +299,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `rules.py` | every engineering threshold with its source and status |
 | `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
 | `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `tickets.js`, `assistant.js` |
-| `docs/` | [the presentation](docs/Aletheia_CyberSiege_Deck_Track3_polished.pptx), [NEXT_STEPS.md](docs/NEXT_STEPS.md) (plan and progress), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [VALIDITY.md](docs/VALIDITY.md), [LAB_WORKFLOW.md](docs/LAB_WORKFLOW.md), [CHECKLIST.md](docs/CHECKLIST.md), [NOTES.md](docs/NOTES.md) |
+| `docs/` | [the presentation](docs/Aletheia_CyberSiege_Deck_Track3_polished.pptx), [ARCHITECTURE.md](docs/ARCHITECTURE.md) (diagram, data model, job lifecycle), [LAB_WORKFLOW.md](docs/LAB_WORKFLOW.md) (recommendations for the lab), [NOTES.md](docs/NOTES.md) (structure and scan-reader notes) |
 | `sample_data/tests/` | the demo job's data per test, as a CSV and as a filled Excel logsheet (paper layout, version 2, read by the upload preview) (proforma, work instruction, losses, resistance, no-load, routine, short circuit, temperature rise, pressure), to upload test by test |
 | `sample_data/`, `test-files/` | demo job in every format with its scans (including the scanned CPRI/QAF/01A request form), the sample report, legacy registers; three CSV demo jobs |
 
@@ -309,16 +308,25 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 - No engineering threshold has been confirmed by the lab or checked against the text of IS 1180 / IS 2026 (see Validity).
 - The report's "Limit as per the standard" column for temperature rise (35 / 40 C) and the clause numbers come from
   `report_template.json` and are to be confirmed by the lab; the checks themselves use the limits on the proforma.
-- The version-1 logsheet templates are Aletheia's own layouts; the lab's real sheets (Q8 in NEXT_STEPS) become new template
+- The version-1 logsheet templates are Aletheia's own layouts; the lab's real sheets become new template
   versions when they arrive. The request form follows CPRI/QAF/01A (Issue 02); the address, contact, phone and email lines
   are asked separately so they can be checked (and used for notifications).
 - Demo values were typed from handwritten scans; the validator flags the doubtful ones.
-- The development web server is used; on a lab network, run it on the server PC behind the lab's firewall (customers on the
-  same network only, as agreed).
+- On a lab network, run it on the server PC behind the lab's firewall (customers on the same network only, as agreed).
 - Reports are not yet PDF/A; the record package keeps the PDF with its manifest and source data instead.
 - Not an official CPRI system.
 
 ## Validity
 
-Thresholds live in `rules.py`, each with its source and a status (`secondary` / `unconfirmed`). See
-[docs/VALIDITY.md](docs/VALIDITY.md) for what is and is not established, including which checks are advisory under F5.
+Thresholds live in `rules.py`, each with its source and a status (`secondary` / `unconfirmed`); change a rule there.
+
+- **Shown:** each check detects the fault it is meant to detect (`tests/test_validity.py`: one injected error per check). On
+  complete data no check is silently skipped, and a skipped check reports its cause. A sample that fails a requirement gets a
+  "does not comply" report listing what was not met; only a broken data layout blocks the report. A test reads PASS in the
+  summary only if every check behind it ran, otherwise NOT EVALUATED or NOT FULLY EVALUATED.
+- **Values as logged (F5):** where the lab's sheet states a figure (an average, a total, a rise), Aletheia uses that figure.
+  Its own arithmetic on the same readings is advisory: shown to the engineer as a possible slip, never blocking, never
+  printed in the report.
+- **Not shown:** no lab engineer has reviewed any threshold, and no rule has been checked against the text of IS 1180 or
+  IS 2026 itself. The regression numbers in the tests use the same formulas as the code, so they show stability, not
+  correctness.

@@ -1,4 +1,4 @@
-"""Workflow rules (docs/NEXT_STEPS.md section 3): strict intake validation, test plans, section states and assignment.
+"""Workflow rules: strict intake validation, test plans, section states and assignment.
 
 Pure functions only (no Flask): app.py calls them from its routes and inside its transactions.
 

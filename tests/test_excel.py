@@ -1,4 +1,4 @@
-"""Excel extraction with templates (NEXT_STEPS.md section 5 and the Excel / template-change items of section 11)."""
+"""Excel extraction with templates."""
 import copy, io, json, os, re, sqlite3, sys, unittest, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

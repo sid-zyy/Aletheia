@@ -486,7 +486,7 @@ TEMPLATE_FILE = os.environ.get("ALETHEIA_TEMPLATE") or os.path.join(HERE, "repor
 def build_pdf(j, version=None, verify_url=None, manifest=None, partial=None):
     """The test report in the laboratory's format (report.py). partial=dict(version, approved=[names], pending=[names],
     sections=[(name, revision, sha)]) builds the customer's partial report instead: approved tests' values only, no conclusion,
-    no signatures, a PARTIAL - NOT FINAL watermark on every page (NEXT_STEPS.md 7.1)."""
+    no signatures, a PARTIAL - NOT FINAL watermark on every page."""
     return report.build(sys.modules[__name__], j, version, verify_url, manifest, partial)
 
 # --------------------------------------------------------------------- API
@@ -580,7 +580,7 @@ def conflict(e):
 def manifest(j, version):
     """What this report version was built from: each section's revision and data hash, its source file's hash, the template
     version that read it, who uploaded and verified it, plus the intake, sign-off, signer and software. Its own SHA-256 is
-    printed on the report, so a reader can check later that nothing behind the report changed (NEXT_STEPS.md 6.2)."""
+    printed on the report, so a reader can check later that nothing behind the report changed."""
     with db() as c:
         secs = [dict(test=name(r["key"]), key=r["key"],
                      revision=r["revision"], state=r["state"], data_sha256=r["data_sha256"], file=r["fname"], file_sha256=r["fsha"],
@@ -964,7 +964,7 @@ def register_template():
     return send_file(io.BytesIO(rows.encode("utf-8-sig")), mimetype="text/csv", as_attachment=True, download_name="ALETHEIA_register_template.csv")
 
 # ---- source documents (scans / photographs kept as evidence) and optional AI reading
-# Scanning (AI reading of photographed sheets) is an optional fallback since Excel became the primary input (NEXT_STEPS.md 8).
+# Scanning (AI reading of photographed sheets) is an optional fallback since Excel became the primary input.
 scan_on = lambda: app.config.get("FEATURE_SCAN", os.environ.get("ALETHEIA_FEATURE_SCAN", "0") == "1")
 def scan_off(): return jsonify(error=["Scanning (AI reading of sheets) is turned off on this server; set ALETHEIA_FEATURE_SCAN=1 to enable it"]), 404
 
@@ -1120,7 +1120,7 @@ def approve(i):
 @app.post("/api/jobs/<int:i>/amend")
 @auth.require("report.amend")
 def amend(i):
-    """Correct a released report by superseding it (NEXT_STEPS.md 6.5). An administrator and a second administrator sign the
+    """Correct a released report by superseding it. An administrator and a second administrator sign the
     reason; only the named tests reopen; the usual upload, verification, approval and sign-off give version n+1. The released version
     stays stored, downloadable and verifiable, marked superseded once the new one is released."""
     j = getjob(i); b = body(); u = auth.current()
@@ -1272,7 +1272,7 @@ def audit_log():
                                            "WHERE " + " AND ".join(where) + " ORDER BY a.id DESC LIMIT 501", args)]
     return jsonify(rows=rows[:500], more=len(rows) > 500)
 
-# ---- workflow: per-section verification, assignment, sign-off (NEXT_STEPS.md section 3)
+# ---- workflow: per-section verification, assignment, sign-off
 def section_action(i, k, state, verb, need_reason=False, need_data=True, allowed_from=("uploaded", "returned")):
     j = getjob(i); b = body(); u = auth.current()
     if locked(j): return locked(j)
@@ -1396,7 +1396,7 @@ def signoff(i):
         log(c, i, "Job approved by the administrator: every test verified or not applicable", kind="approve")
     return jsonify(ok=True)
 
-# ---- intake (NEXT_STEPS.md section 3.6): a customer's request (CPRI/QAF/01A sheets 1-2), received by the laboratory (sheet 3).
+# ---- intake: a customer's request (CPRI/QAF/01A sheets 1-2), received by the laboratory (sheet 3).
 # Only a customer raises a request. The laboratory never edits the customer's answers: it records sheet 3 and the test
 # plan, or returns the request to the customer with the reason.
 def customer_request(c, fid):

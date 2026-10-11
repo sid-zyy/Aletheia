@@ -1,4 +1,4 @@
-"""Customer portal (docs/NEXT_STEPS.md section 7.1): the partial report, approved values, and request forms sent in by customers.
+"""Customer portal: the partial report, approved values, and request forms sent in by customers.
 
 * A customer sees numbers only for approved (verified) tests. Everything else is shown by status alone, so a customer never
   sees a figure that may still be corrected.

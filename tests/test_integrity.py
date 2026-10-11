@@ -1,4 +1,4 @@
-"""Data integrity: sections, concurrency, numbering, audit chain, release locks, migration (NEXT_STEPS.md sections 4, 6, 11)."""
+"""Data integrity: sections, concurrency, numbering, audit chain, release locks, migration."""
 import glob, hashlib, json, os, sqlite3, sys, threading, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

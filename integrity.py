@@ -1,4 +1,4 @@
-"""Data integrity (docs/NEXT_STEPS.md sections 4.1, 4.5 and 6).
+"""Data integrity.
 
 * One row per section (`sections`) instead of one JSON blob per job, so testers working on different tests of the same job
   never overwrite each other. Each row carries a revision counter: a write that names an older revision is refused (409).

@@ -1,4 +1,4 @@
-"""Template registry and Excel routes (docs/NEXT_STEPS.md section 5). Installed into the app by install(app_module).
+"""Template registry and Excel routes. Installed into the app by install(app_module).
 
 * Registry: versioned templates (draft -> active -> retired), seeded once from seed_templates.py, then managed by Admin.
 * Upload: a workbook is matched sheet by sheet to the active templates; the preview shows every value with its source cell;
