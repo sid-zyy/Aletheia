@@ -84,6 +84,15 @@ class PaperLayout(Base):
         self.assertEqual(self.c.get(f"/api/jobs/{i}/logsheets/request.xlsx").status_code, 404)
         self.assertEqual(self.cust.get(f"/api/jobs/{i}/logsheets/sc.xlsx").status_code, 403)
 
+    def test_the_uploaded_excel_file_is_shown_beside_the_values(self):
+        i = self.job(); self.assertEqual(self.c.post(f"/api/jobs/{i}/import", json=dict(up("sc.xlsx", paper(["sc"])), section="sc")).status_code, 200)
+        fid = self.get(i)["meta"]["sc"]["file_id"]
+        p = self.c.get(f"/api/files/{fid}/preview").json; self.assertEqual(p["kind"], "sheet")
+        cells = [v for _, r in p["sheets"][0]["rows"] for v in r]
+        self.assertIn("LOG-SHEET FOR SHORT CIRCUIT TEST ON TRANSFORMERS", cells); self.assertIn("S002", cells)
+        self.assertNotIn("Aletheia template sc v2", cells)  # the hidden fingerprint row is not shown
+        self.assertEqual(self.cust.get(f"/api/files/{fid}/preview").status_code, 403)
+
     def test_preview_names_each_value_as_printed(self):
         i = self.job(); p = self.c.post(f"/api/jobs/{i}/excel/preview", json=dict(up("sc.xlsx", paper(["sc"])), section="sc")).json
         self.assertTrue(p["ok"], p); f = {x["field"]: x for x in p["sheets"][0]["fields"]}

@@ -1662,6 +1662,42 @@ def get_file(fid):
     resp = send_file(io.BytesIO(r["content"]), mimetype=r["mime"] or "application/octet-stream", as_attachment=True, download_name=r["name"])
     resp.headers["X-Content-Type-Options"] = "nosniff"; return resp
 
+@app.get("/api/files/<int:fid>/preview")
+@auth.require("sources.view")
+def file_preview(fid):
+    """An uploaded data file as the edit page shows it beside the values: the visible sheets of a workbook (or the rows of a
+    CSV), cell by cell, as written in the file. Hidden rows (the template's fingerprint) are left out."""
+    with db() as c: r = c.execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
+    if not r: abort(404)
+    getjob(r["job_id"], False)
+    name, raw = r["name"] or "", r["content"]
+    cell = lambda v: None if v is None else v.strftime("%d-%m-%Y") if isinstance(v, (dt.date, dt.datetime)) else v if isinstance(v, (int, float, str)) else str(v)
+    if name.lower().endswith((".xlsx", ".xlsm")) or raw[:2] == b"PK":
+        from openpyxl import load_workbook
+        from openpyxl.utils import get_column_letter
+        try: wb = load_workbook(io.BytesIO(raw), data_only=True, read_only=False)
+        except Exception: return jsonify(kind="other", name=name)  # noqa: BLE001 - shown as a download instead
+        sheets, pick, want = [], 0, f"aletheia template {request.args.get('section', '')}".lower()
+        for ws in wb.worksheets:
+            if ws.sheet_state != "visible": continue
+            top = " ".join(str(ws.cell(r_, c_).value or "") for r_ in range(1, 4) for c_ in range(1, 13)).lower()
+            if request.args.get("section") and want in top: pick = len(sheets)  # the sheet of the test being edited opens first
+            cols = min(ws.max_column, 30); rows = []
+            for n in range(1, min(ws.max_row, 200) + 1):
+                if ws.row_dimensions[n].hidden: continue
+                vals = [cell(ws.cell(n, k).value) for k in range(1, cols + 1)]
+                rows.append([n, vals])
+            while rows and all(v in (None, "") for v in rows[-1][1]): rows.pop()
+            sheets.append(dict(name=ws.title, cols=[get_column_letter(k) for k in range(1, cols + 1)], rows=rows))
+        return jsonify(kind="sheet", name=name, sheets=sheets, pick=pick)
+    if name.lower().endswith((".csv", ".tsv", ".txt")):
+        import csv
+        text = raw.decode("utf-8-sig", errors="replace")
+        rows = list(csv.reader(io.StringIO(text), delimiter="\t" if name.lower().endswith(".tsv") else ","))[:200]
+        width = min(max((len(x) for x in rows), default=0), 30)
+        return jsonify(kind="sheet", name=name, sheets=[dict(name=name, cols=[str(k + 1) for k in range(width)], rows=[[n + 1, (x + [None] * width)[:width]] for n, x in enumerate(rows)])])
+    return jsonify(kind="other", name=name)
+
 CODE_FILES = ("app.py", "importers.py", "rules.py", "vision.py", "auth.py", "integrity.py", "workflow.py", "xltemplates.py", "paper_templates.py", "excel_routes.py", "retention.py")
 def code_id():
     """Fingerprint of the Python code on disk. Taken once at start-up and again on request, it shows whether the running

@@ -30,7 +30,6 @@ const ROLE_LBL={admin:'Admin',tester:'Tester',customer:'Customer'};
 .ps{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--ln);font-size:14.5px}.ps:first-child{border:0}
 .pst{font-size:12.5px;font-weight:600;padding:2px 10px;border-radius:99px;white-space:nowrap}
 .pst.not_started{background:var(--cd2);color:var(--mu)}.pst.received,.pst.uploaded{background:var(--wn2);color:var(--wn)}.pst.returned{background:var(--er2);color:var(--er)}.pst.verified{background:var(--ok2);color:var(--ok)}.pst.na{background:var(--cd2);color:var(--mu)}
-body.cust #cb{display:none!important}
 body.no-scan [onclick^="readAI"],body.no-scan .svb,body.no-scan label:has(#ff){display:none!important}
 .sby{display:block;color:var(--mu);font-size:12px;font-weight:400;line-height:1.3}
 .locked [onclick^="editJob"],.locked [onclick^="discard"],.locked [onclick^="editSec"],.locked [onclick^="rmSec"],.locked [onclick^="rmImp"],.locked [onclick^="delSrc"],.locked [onclick^="readAI"],.locked [onclick^="pick(ACC"],.locked [onclick^="act('validate'"],.locked [onclick^="delJob"]{display:none!important}
@@ -43,7 +42,7 @@ async function boot(){let m;try{m=await(await fetch('/api/me',{cache:'no-store'}
  if(!m.user&&m.switch)return switchTo(lastRole(),1);  /* testing phase: open straight into the last view chosen, no sign-in */
  if(!m.user)return loginView();
  setMe(m);if(PW&&ME.must_change_password)return pwView(true);
- shell();route();clockCheck();bellCount()}
+ shell();route();clockCheck();bellCount();if(typeof assistantMount=='function')assistantMount()}
 /* timestamps are legal records: warn when this workstation's clock and the server's disagree */
 async function clockCheck(){try{const t0=Date.now(),r=await(await fetch('/api/time')).json(),off=(new Date(r.utc)-(t0+Date.now())/2)/1000;
  if(Math.abs(off)>120){const b=document.createElement('div');b.className='stale';b.setAttribute('role','alert');b.innerHTML=`<b>This computer's clock differs from the server's by ${Math.round(Math.abs(off)/60)} minutes.</b> Times recorded by Aletheia use the server clock; ask the administrator to correct whichever clock is wrong.`;$('#tb').after(b)}}catch(e){}}

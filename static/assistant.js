@@ -1,27 +1,38 @@
 /* Aletheia assistant: a rule-based helper (no AI model). It matches keywords in what the user types and drives the
    same API and pages as the rest of the app: open the customer requests, search records, list open jobs, show status, explain
-   the workflow. Uses the helpers defined in index.html: $, esc, api, go, badge, ST. */
-(()=>{
-const box=document.createElement('div');box.id='cb';
+   the workflow. Uses the helpers defined in index.html: $, esc, api, go, badge, ST.
+   Staff and customers each get their own version (customers: their jobs, a new request, a ticket). It is built again whenever
+   the page is rebuilt (signing in, switching roles), so it is always there. */
+let box,log,inp,panel,opener,flow=null,started=false;
+function assistantMount(){
+if(document.getElementById('cb')&&box&&document.body.contains(box))return;
+box=document.createElement('div');box.id='cb';flow=null;started=false;
 box.innerHTML=`<button class="cbf" id="cbo" aria-expanded="false" aria-controls="cbp" aria-label="Open the assistant">
  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/><path d="M8 12h.01M12 12h.01M16 12h.01" stroke-width="2.6"/></svg></button>
  <section class="cbp" id="cbp" role="dialog" aria-label="Aletheia assistant" hidden>
-  <header><div><b>Aletheia assistant</b><span>Reports, records and help</span></div><button class="cbx" id="cbc" aria-label="Close the assistant">&times;</button></header>
+  <header><div><b>Aletheia assistant</b><span>${isCust()?'Your jobs, requests and reports':'Reports, records and help'}</span></div><button class="cbx" id="cbc" aria-label="Close the assistant">&times;</button></header>
   <div class="cbl" id="cbl" aria-live="polite"></div>
   <div class="cbq" id="cbq"></div>
-  <form class="cbi" id="cbf"><input id="cbt" autocomplete="off" placeholder="Ask, or type a series, customer or sample" aria-label="Message the assistant"><button class="btn s" aria-label="Send">Send</button></form>
+  <form class="cbi" id="cbf"><input id="cbt" autocomplete="off" placeholder="${isCust()?'Ask, or type a series or sample number':'Ask, or type a series, customer or sample'}" aria-label="Message the assistant"><button class="btn s" aria-label="Send">Send</button></form>
  </section>`;
 document.body.append(box);
-const log=$('#cbl'),inp=$('#cbt'),panel=$('#cbp'),opener=$('#cbo');
-let flow=null,started=false;
+log=$('#cbl');inp=$('#cbt');panel=$('#cbp');opener=$('#cbo');
+opener.onclick=()=>toggle(panel.hidden);$('#cbc').onclick=()=>toggle(false);
+panel.addEventListener('keydown',e=>{if(e.key=='Escape'&&!$('#ov')){e.stopPropagation();toggle(false)}});
+$('#cbf').onsubmit=e=>{e.preventDefault();const t=inp.value.trim();if(!t)return;inp.value='';say(esc(t),'me');send(t)};
+panel.addEventListener('click',e=>{const j=e.target.closest('[data-job]'),a=e.target.closest('[data-a]');
+ if(j)return go((isCust()?'my/':'job/')+j.dataset.job);
+ if(a){const label=a.textContent;$('#cbq').innerHTML='';send(label,a.dataset.a)}})}
 
 /* ---------- rendering */
 const say=(html,who='bot')=>{const m=document.createElement('div');m.className='cbm '+who;m.innerHTML=html;log.append(m);log.scrollTop=log.scrollHeight;return m};
 const chips=list=>{$('#cbq').innerHTML=list.map(([t,a])=>`<button type="button" data-a="${esc(a)}">${esc(t)}</button>`).join('');log.scrollTop=log.scrollHeight};
-const MAIN=[['Customer requests','requests'],['Search records','search'],['In progress','pending'],['Status summary','status'],['How it works','how']];
+const STAFF_MAIN=[['Customer requests','requests'],['Search records','search'],['In progress','pending'],['Status summary','status'],['How it works','how']];
+const CUST_MAIN=[['My jobs','myjobs'],['Released reports','reports'],['New test request','newreq'],['Raise a ticket','ticket'],['How it works','how']];
+let MAIN=STAFF_MAIN;
 const think=async()=>{const t=say('<i class="cbd"></i><i class="cbd"></i><i class="cbd"></i>');
  await new Promise(r=>setTimeout(r,matchMedia('(prefers-reduced-motion: reduce)').matches?0:350));t.remove()};
-const jobRow=j=>`<button type="button" class="cbj" data-job="${j.id}"><b>${esc(j.series)}</b><span>${esc(j.customer)} &middot; ${esc(j.rating)}</span>${badge(j)}</button>`;
+const jobRow=j=>`<button type="button" class="cbj" data-job="${j.id}"><b>${esc(j.series)}</b><span>${isCust()?'Sample '+esc(j.sample):esc(j.customer)} &middot; ${esc(j.rating)}</span>${isCust()?`<span class="st ${j.stage==4?'s4':'s1'}">${j.stage==4?'Report released':'In progress'}</span>`:badge(j)}</button>`;
 const jobList=(l,more)=>l.slice(0,5).map(jobRow).join('')+(l.length>5?`<button type="button" class="lk" data-a="${esc(more)}">Show all ${l.length} in Records &amp; Search</button>`:'');
 
 /* ---------- answers */
@@ -49,11 +60,30 @@ const HELP={
  help:`I can help you:<ul class="cbo"><li>open the <b>customer requests</b> waiting for intake</li><li><b>search</b> records by series, sample code, customer or rating</li><li>list reports <b>in progress</b> and give a <b>status summary</b></li><li>explain importing, checks, approval and verification</li><li>open a page: dashboard, records, preview or architecture</li></ul>I match keywords rather than understanding full sentences, so short requests work best.`};
 const PAGES=[[/dashboard|home/,'dashboard','the dashboard'],[/records?|archive/,'records','Records & Search'],[/preview|pdf/,'preview','Report Preview'],[/architect/,'arch','the architecture page'],[/workflow/,'workflow','Report Workflow']];
 
+/* ---------- the customer's assistant: only their own organisation's jobs, through the same pages */
+const CUST_HELP={
+ how:`How your test job goes:<ol class="cbo"><li><b>Raise a test request</b> online (the Customer Request Form). The laboratory checks it; if something is missing it is returned to you with the reason.</li><li>When your sample arrives, the laboratory <b>accepts the request</b> and gives the job its series number.</li><li>The tests are carried out and checked. On each job you see which tests are approved, and their values, as soon as they are approved.</li><li>When the <b>final report is released</b> you are notified; download it from the job, and anyone can check it is genuine with its verification link.</li></ol>`,
+ help:`I can:<ul class="cbo"><li>list <b>your jobs</b> and show their progress</li><li>find a job by its <b>series or sample number</b></li><li>show your <b>released reports</b></li><li>open a <b>new test request</b> or <b>raise a ticket</b> to the laboratory</li></ul>`};
+async function custJobs(term,released){let l=await api('/api/jobs'+(term?'?q='+encodeURIComponent(term):''));if(released)l=l.filter(j=>j.stage==4);
+ if(!l.length){say(term?`None of your jobs match <b>${esc(term)}</b>.`:released?'No report has been released yet. You are notified when one is.':'You have no jobs yet. A job starts when the laboratory accepts your test request.');return chips(CUST_MAIN)}
+ say((released?`${l.length} released report${l.length==1?'':'s'} (open a job to download it):`:term?`${l.length} job${l.length==1?'':'s'} match <b>${esc(term)}</b>:`:`Your ${l.length} job${l.length==1?'':'s'}, most recent first:`)+l.slice(0,6).map(jobRow).join(''));chips(CUST_MAIN)}
+async function custHandle(t,click){const lo=t.toLowerCase();
+ if(/^(hi|hello|hey|good (morning|afternoon|evening))\b/.test(lo)){say('Hello! What would you like to do?');return chips(CUST_MAIN)}
+ if(lo=='newreq'||/\b(new|raise|send|submit)\b.*\brequest\b|\brequest\b.*\bnew\b/.test(lo)){say('Opening a new test request.');return go('my/request')}
+ if(lo=='ticket'||/\b(ticket|problem|complain\w*|question|contact|query)\b/.test(lo)){say('Opening a new ticket to the laboratory.');return go('tickets/new')}
+ if(lo=='reports'||/\b(released|download|final report|certificate)\b/.test(lo))return custJobs('',true);
+ if(lo=='myjobs'||/\b(my jobs?|jobs?|progress|status|pending|open)\b/.test(lo))return custJobs('');
+ if(/\b(how|steps?|process|works?)\b/.test(lo)){say(CUST_HELP.how);return chips(CUST_MAIN)}
+ if(/\b(help|what can you|options|menu)\b/.test(lo)){say(CUST_HELP.help);return chips(CUST_MAIN)}
+ const term=searchTerm(t);if(term)return custJobs(term);
+ say('Sorry, I didn\'t understand that. Try one of these, or type <i>help</i>.');chips(CUST_MAIN)}
+
 /* ---------- routing what the user typed or clicked */
 /* words dropped from a search, compared one word at a time so names like "A.P. Transformers" stay intact */
 const STOP=new Set('please can could would you i want to what about is are there where which do does have has my get search for find look up show me open the a an by with of any all record records report reports job jobs customer series sample code number'.split(' '));
 const searchTerm=t=>t.split(/\s+/).map(w=>w.replace(/^["'(]+|[?!,"')]+$/g,'').replace(/^([^.]+)\.$/,'$1')).filter(w=>w&&!STOP.has(w.toLowerCase())).join(' ');
 async function handle(t,click){t=t.trim();if(!t)return;const lo=t.toLowerCase();
+ if(isCust())return custHandle(t,click);
  if(lo=='cancel'){flow=null;say('Cancelled. What would you like to do?');return chips(MAIN)}
  if(flow&&flow.search){flow=null;return search(t)}
  flow=null;
@@ -81,15 +111,10 @@ async function handle(t,click){t=t.trim();if(!t)return;const lo=t.toLowerCase();
 async function send(t,click){if(click)say(esc(t),'me');
  try{await think();await handle(click?click:t,!!click)}catch(e){say(`Something went wrong: ${esc([].concat(e).join(' '))}`);chips(MAIN)}}
 function toggle(open){panel.hidden=!open;opener.setAttribute('aria-expanded',open);box.classList.toggle('on',open);
- if(open&&!started){started=true;say('Hello, I\'m the Aletheia assistant. I can open the customer requests, find existing reports, or explain how the app works.');chips(MAIN)}
+ if(open&&!started){started=true;MAIN=isCust()?CUST_MAIN:STAFF_MAIN;
+  say(isCust()?'Hello, I\'m the Aletheia assistant. I can show your jobs and released reports, open a new test request, or raise a ticket to the laboratory.'
+   :'Hello, I\'m the Aletheia assistant. I can open the customer requests, find existing reports, or explain how the app works.');chips(MAIN)}
  if(open)inp.focus();else opener.focus()}
 
-opener.onclick=()=>toggle(panel.hidden);$('#cbc').onclick=()=>toggle(false);
 /* a press anywhere outside the assistant minimises it; pointerdown runs before the chat re-renders its own buttons */
-document.addEventListener('pointerdown',e=>{if(!panel.hidden&&!box.contains(e.target))toggle(false)});
-panel.addEventListener('keydown',e=>{if(e.key=='Escape'&&!$('#ov')){e.stopPropagation();toggle(false)}});
-$('#cbf').onsubmit=e=>{e.preventDefault();const t=inp.value.trim();if(!t)return;inp.value='';say(esc(t),'me');send(t)};
-panel.addEventListener('click',e=>{const j=e.target.closest('[data-job]'),a=e.target.closest('[data-a]');
- if(j)return go('job/'+j.dataset.job);
- if(a){const label=a.textContent;$('#cbq').innerHTML='';send(label,a.dataset.a)}});
-})();
+document.addEventListener('pointerdown',e=>{if(panel&&!panel.hidden&&!box.contains(e.target))toggle(false)});

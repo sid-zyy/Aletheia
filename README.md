@@ -7,6 +7,12 @@ approves the job, generates and signs off a signed, hash-verifiable PDF test rep
 portal (what is approved, what is pending, a partial report built from approved tests only) and raise **tickets** to the
 laboratory's administrators.
 
+> **This is currently the dummy (demonstration) version.** Passwords are switched off (`ALETHEIA_PASSWORDS` is `0` by
+> default), so nobody signs in: the page opens straight away and the **View as: Customer / Tester / Admin** menu at the
+> top right shows each end of the system. Anyone who can open the address can act as any role, so it must not hold real
+> customer data or be used to release real reports. To make it the real system, start it with `ALETHEIA_PASSWORDS=1`:
+> sign-in with passwords, lock-out and password re-entry at release come back, and the View as menu disappears.
+
 It runs on one ordinary lab PC (Flask + SQLite, no other services) and is used over the lab's local network.
 The plan this build follows, with the status of every phase, is in [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
 
