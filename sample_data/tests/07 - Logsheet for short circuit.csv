@@ -1,6 +1,7 @@
 ﻿section,field,value
-sc,date,31-10-2025
 sc,condition,As after routine test
+sc,date,31-10-2025
+sc,notes,null
 sc,required.NT[0],7.61
 sc,required.NT[1],16.73
 sc,required.HT[0],7.5
@@ -117,8 +118,11 @@ sc,shots[10][6],7.55
 sc,shots[10][7],7.55
 sc,shots[10][8],2.01
 sc,shots[10][9],thermal
+sc,shots_extra,null
 sc,during,No abnormalities
 sc,after,No abnormalities
 sc,inspection,"Conductor, core & clampings: no visible damage; spacers/support blocks: intact; oil: clear"
-ids,sc[0],CPRIBLRSCL25T1654
-ids,sc[1],HVD25S0847
+sc,insp_core,null
+sc,insp_spacers,null
+sc,insp_oil,null
+sc,sig,null

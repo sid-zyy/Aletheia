@@ -1,6 +1,12 @@
 ﻿section,field,value
-noload,v100,433.06
-noload,v1125,487.32
+noload,date_bt,null
+noload,date_at,null
+noload,serial,null
+noload,kva,null
+noload,customer,null
+noload,material,null
+noload,manufacturer,null
+noload,rated_v,null
 noload,rows[0][0],BT
 noload,rows[0][1][0],251.133
 noload,rows[0][1][1],252.814
@@ -46,6 +52,15 @@ noload,rows[2][5][2],288.72
 noload,rows[2][6],553.73
 noload,rows[2][7],49.94
 noload,rows[2][8],548.36
+noload,v100,433.06
+noload,v1125,487.32
+noload,i100,null
+noload,i1125,null
+noload,perm100,null
+noload,perm1125,null
+noload,obs100,null
+noload,obs1125,null
 noload,remarks,Within limit at 100% and 112.5%
-ids,noload[0],25T1656
-ids,noload[1],HVD25S0847
+noload,ll50,null
+noload,load_meas,null
+noload,sig,null

@@ -2,10 +2,20 @@
 work,series,CPRIBLRSCL25T1654
 work,sample,HVD25S0847
 work,customer,"M/s. A.P. Transformers, Chennai"
+work,customer_ref,null
+work,description,null
+work,mounting,null
+work,special,null
 work,start,28-10-2025
-work,completed,18-11-2025
+work,requirement,null
+work,tests_required,null
 work,standard,IS 1180 (latest: yes)
+work,standard_latest,null
+work,deviation,null
 work,allotted,Sh. NMR / Sh. NK / Mr. Utley
+work,sig,null
+work,completed,18-11-2025
+work,performed_by,null
 work,engineer,P. Naveenkumar
-ids,work[0],CPRIBLRSCL25T165H
-ids,work[1],HVD25S08H7
+work,deviations_noticed,null
+work,discrepancies,null

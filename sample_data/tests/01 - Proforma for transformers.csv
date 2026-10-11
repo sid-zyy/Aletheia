@@ -1,25 +1,46 @@
 ﻿section,field,value
+proforma,type_seal,null
+proforma,type_insulation,null
+proforma,type_location,null
+proforma,serial,null
+proforma,description,null
 proforma,kva,250
 proforma,hv,11000
 proforma,lv,433
 proforma,hv_max_kv,12
 proforma,bil,HV LI 75 kV / AC 28 kV rms; LV AC 3 kV rms
+proforma,bil_hv,null
+proforma,bil_lv,null
 proforma,z_pct,4.5
 proforma,phases,3
 proforma,freq,50
 proforma,vector,Dyn11
+proforma,efficiency,null
 proforma,cooling,ONAN
 proforma,taps,+5% to -10% in steps of 2.5% (7 taps)
+proforma,nll_guar,null
+proforma,ll_guar,null
 proforma,loss50,980
 proforma,loss100,2930
+proforma,noise,null
 proforma,oil_l,"""460"""
 proforma,mfg,10/2025
-proforma,construction,"Oil immersed, non-sealed, outdoor; LV helical/spiral copper, HV crossover copper; circular coils; CRGO core; tank plain/corrugated"
-proforma,limits.oil,35
-proforma,limits.wdg,40
+proforma,sig,null
+proforma,material,null
+proforma,coil,null
+proforma,core,null
+proforma,lv_winding,null
+proforma,hv_winding,null
 proforma,tests[0],Dynamic ability to withstand short circuit (with thermal short)
 proforma,tests[1],Temperature rise test
 proforma,tests[2],Pressure test (IS 2026)
 proforma,tests[3],Vacuum test (IS 1180)
 proforma,tests[4],No load current at 112.5%
 proforma,tests[5],Oil leakage test
+proforma,tests_std,null
+proforma,instructions,null
+proforma,insulation_class,null
+proforma,tank,null
+proforma,construction,"Oil immersed, non-sealed, outdoor; LV helical/spiral copper, HV crossover copper; circular coils; CRGO core; tank plain/corrugated"
+proforma,limits.oil,35
+proforma,limits.wdg,40

@@ -1,11 +1,18 @@
 ﻿section,field,value
+routine,customer,null
 routine,date_bt,29-10-2025
 routine,date_at,04-11-2025
+routine,sample_details,null
+routine,standard,null
+routine,serial,null
+routine,condition,null
 routine,amb[0],26.8
 routine,amb[1],26.7
 routine,rh[0],79.8
-routine,rh[1],71.0
+routine,rh[1],71
+routine,type,null
 routine,vector,Dyn11
+routine,vector_at,null
 routine,ir.HV-Earth[0],4.19
 routine,ir.HV-Earth[1],6.11
 routine,ir.LV-Earth[0],1.22
@@ -13,10 +20,10 @@ routine,ir.LV-Earth[1],1.35
 routine,ir.HV-LV[0],6.56
 routine,ir.HV-LV[1],7.81
 routine,induced.v,866
-routine,induced.f,100
-routine,induced.t,60
 routine,induced.i[0],1.58
 routine,induced.i[1],1.66
+routine,induced.f,100
+routine,induced.t,60
 routine,induced.obs,"No disruptive discharge, withstood"
 routine,hvac.kv,28
 routine,hvac.t,60
@@ -56,7 +63,7 @@ routine,ratio.AT[2][1],44.09
 routine,ratio.AT[2][2],44.07
 routine,ratio.AT[3][0],43.03
 routine,ratio.AT[3][1],43.05
-routine,ratio.AT[3][2],43.0
+routine,ratio.AT[3][2],43
 routine,ratio.AT[4][0],41.93
 routine,ratio.AT[4][1],41.92
 routine,ratio.AT[4][2],41.92
@@ -66,5 +73,5 @@ routine,ratio.AT[5][2],40.81
 routine,ratio.AT[6][0],39.73
 routine,ratio.AT[6][1],39.72
 routine,ratio.AT[6][2],39.72
-ids,routine[0],25T1654
-ids,routine[1],HVD25S0867
+routine,sig,null
+routine,instruments,null
