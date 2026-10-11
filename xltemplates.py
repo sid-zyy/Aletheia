@@ -39,6 +39,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Si
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.pagebreak import Break
 
 MAX_ROWS = 2000
 
@@ -694,6 +695,7 @@ def draw_paper(ws, mapping, data=None, ids=None, wb=None):
     if pg.get("orientation") == "landscape": ws.page_setup.orientation = "landscape"
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.sheet_properties.pageSetUpPr.fitToPage = True; ws.page_setup.fitToWidth = 1; ws.page_setup.fitToHeight = 0
+    for r in pg.get("breaks") or []: ws.row_breaks.append(Break(id=int(r) - 1))  # a new printed page starts at row r
     for it in mapping.get("layout") or []:
         if it.get("style") == "fingerprint":  # recognises the sheet on upload; kept out of sight in a hidden row
             c = ws[it["at"]]; c.value = it["text"]; c.font = Font(size=6, color="FFFFFF")

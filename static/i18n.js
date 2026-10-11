@@ -84,6 +84,12 @@ const I18N=[
 ['1 thing to correct','1 सुधार आवश्यक','1 ತಿದ್ದುಪಡಿ ಅಗತ್ಯ'],['{n} things to correct','{n} सुधार आवश्यक','{n} ತಿದ್ದುಪಡಿಗಳು ಅಗತ್ಯ'],['Please check','कृपया जाँचें','ದಯವಿಟ್ಟು ಪರಿಶೀಲಿಸಿ'],
 ['Test requests','परीक्षण अनुरोध','ಪರೀಕ್ಷಾ ವಿನಂತಿಗಳು'],
 ['Fill in the Customer Request Form online; the laboratory receives it and opens the job when your sample arrives.','ग्राहक अनुरोध प्रपत्र ऑनलाइन भरें; प्रयोगशाला इसे प्राप्त करती है और आपका नमूना पहुँचने पर कार्य खोलती है।','ಗ್ರಾಹಕ ವಿನಂತಿ ನಮೂನೆಯನ್ನು ಆನ್‌ಲೈನ್‌ನಲ್ಲಿ ಭರ್ತಿ ಮಾಡಿ; ಪ್ರಯೋಗಾಲಯವು ಅದನ್ನು ಸ್ವೀಕರಿಸಿ, ನಿಮ್ಮ ಮಾದರಿ ಬಂದಾಗ ಕಾರ್ಯವನ್ನು ತೆರೆಯುತ್ತದೆ.'],
+['Prefer to fill it in on Excel?','क्या आप इसे Excel में भरना चाहेंगे?','ಇದನ್ನು Excel ನಲ್ಲಿ ಭರ್ತಿ ಮಾಡಲು ಬಯಸುವಿರಾ?'],
+['Download the form as an Excel sheet laid out like the printed form, fill it in, then upload it here. The form below is filled in from it: check it and send it as usual.','मुद्रित प्रपत्र जैसी बनावट वाली Excel शीट के रूप में प्रपत्र डाउनलोड करें, उसे भरें और फिर यहाँ अपलोड करें। नीचे का प्रपत्र उसी से भर जाएगा: उसकी जाँच करें और हमेशा की तरह भेजें।','ಮುದ್ರಿತ ನಮೂನೆಯಂತೆಯೇ ವಿನ್ಯಾಸಗೊಂಡ Excel ಹಾಳೆಯಾಗಿ ನಮೂನೆಯನ್ನು ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ, ಭರ್ತಿ ಮಾಡಿ, ನಂತರ ಇಲ್ಲಿ ಅಪ್‌ಲೋಡ್ ಮಾಡಿ. ಕೆಳಗಿನ ನಮೂನೆ ಅದರಿಂದ ಭರ್ತಿಯಾಗುತ್ತದೆ: ಅದನ್ನು ಪರಿಶೀಲಿಸಿ ಎಂದಿನಂತೆ ಕಳುಹಿಸಿ.'],
+['Download the Excel form','Excel प्रपत्र डाउनलोड करें','Excel ನಮೂನೆಯನ್ನು ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ'],['Fill in from Excel','Excel से भरें','Excel ನಿಂದ ಭರ್ತಿ ಮಾಡಿ'],
+['Reading {f}…','{f} पढ़ा जा रहा है…','{f} ಓದಲಾಗುತ್ತಿದೆ…'],
+['Filled in from {f}: {n} answers. Check the form below and send it.','{f} से भरा गया: {n} उत्तर। नीचे दिए प्रपत्र की जाँच करें और उसे भेजें।','{f} ನಿಂದ ಭರ್ತಿ ಮಾಡಲಾಗಿದೆ: {n} ಉತ್ತರಗಳು. ಕೆಳಗಿನ ನಮೂನೆಯನ್ನು ಪರಿಶೀಲಿಸಿ ಕಳುಹಿಸಿ.'],
+['This file is not the Customer Request Form: download the Excel form from this page and fill that in','यह फ़ाइल ग्राहक अनुरोध प्रपत्र नहीं है: इसी पृष्ठ से Excel प्रपत्र डाउनलोड करें और उसे भरें','ಈ ಫೈಲ್ ಗ್ರಾಹಕ ವಿನಂತಿ ನಮೂನೆಯಲ್ಲ: ಇದೇ ಪುಟದಿಂದ Excel ನಮೂನೆಯನ್ನು ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ ಅದನ್ನು ಭರ್ತಿ ಮಾಡಿ'],
 ['Request {id}','अनुरोध {id}','ವಿನಂತಿ {id}'],['sent {at}','भेजा गया {at}','ಕಳುಹಿಸಿದ್ದು {at}'],['Reason:','कारण:','ಕಾರಣ:'],['Job {s}','कार्य {s}','ಕಾರ್ಯ {s}'],
 ['No requests yet.','अभी कोई अनुरोध नहीं।','ಇನ್ನೂ ಯಾವುದೇ ವಿನಂತಿಗಳಿಲ್ಲ.'],
 /* request form: fields (workflow.py REQUEST_FIELDS) */

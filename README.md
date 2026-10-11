@@ -125,6 +125,16 @@ a scan is attached to that test. Nothing is assigned to a test by itself (no gen
 Pages for customers: **Open requests** (their jobs and their test requests, *New test request*), **Tickets**, **Notifications**.
 Required fields on every form are marked with a red asterisk.
 
+### Filling in the request form on Excel
+
+On **New test request** a customer can choose **Download the Excel form**: the Customer Request Form CPRI/QAF/01A as an
+Excel sheet laid out like the scanned paper form (sheet 1, sheet 2, and sheet 3 shown as the laboratory's part), started
+with their organisation, contact and email. They fill in the yellow cells (dropdowns for Yes/No, MSME, decision rule (i)-(iii),
+the declarations and the tests to be carried out) and choose **Fill in from Excel**: the online form is filled in from the
+file and checked, and the customer reviews it and sends it as usual. Nothing is sent by reading the file. Examples:
+`sample_data/Customer request form - blank.xlsx` and `sample_data/Customer request form - filled example.xlsx`.
+Template: `paper_templates.request_form` (version 2 of the `request-form` template; version 1 is retired).
+
 ### Languages for customers
 
 Customers can read their screens in **English, हिन्दी (Hindi) or ಕನ್ನಡ (Kannada)**: the globe menu in the top bar switches

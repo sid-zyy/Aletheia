@@ -2,7 +2,7 @@
 import copy, io, json, os, re, sqlite3, sys, unittest, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_app import Base, DEMO, aletheia, signed_in, up  # noqa: E402
+from test_app import Base, DEMO, REQUEST, aletheia, signed_in, up  # noqa: E402
 import paper_templates as P, seed_templates as S, xltemplates as X  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402
 
@@ -213,6 +213,41 @@ class RequestForm(Base):
         self.assertEqual(self.c.get("/api/request-form.xlsx").status_code, 200)
         self.assertEqual(self.c.post("/api/intake/from-excel", json=up("filled form.xlsx", b"PK")).status_code, 404)
         self.assertIn(self.cust.post("/api/customer/request-forms", json=up("filled form.xlsx", b"PK")).status_code, (404, 405))
+
+    def fill(self, raw, values):
+        """The downloaded form filled in as a customer would, cell by named cell."""
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(raw))
+        for name, v in values.items():
+            sheet, ref = next(iter(wb.defined_names[name].destinations))
+            wb[sheet][ref.replace("$", "")].value = v
+        out = io.BytesIO(); wb.save(out); return out.getvalue()
+
+    def test_excel_form_fills_the_online_form(self):
+        # the Excel sheet laid out as the paper form fills the online form; the customer still checks it and sends it online
+        r = self.cust.get("/api/request-form.xlsx"); self.assertEqual(r.status_code, 200)
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(r.data)).worksheets[0]
+        printed = " ".join(str(c.value) for row in ws.iter_rows() for c in row if isinstance(c.value, str))
+        for text in ("CENTRAL POWER RESEARCH INSTITUTE", "Sheet 1 of 3", "Sheet 2 of 3", "Sheet 3 of 3", "Rating of the sample(s) to be tested", "MSME Discount"):
+            self.assertIn(text, printed)
+        cells = {f"RQ_{k.upper()}": ("Yes" if v is True else v) for k, v in REQUEST.items() if v != ""}
+        cells.update(RQ_DRAWINGS="Not applicable: no drawings for a standard design", RQ_PLAN_SC="Yes", RQ_PLAN_TEMP="Yes", RQ_PLAN_PRESSURE="No")
+        got = self.cust.post("/api/customer/requests/excel", json=up("my request.xlsx", self.fill(r.data, cells)))
+        self.assertEqual(got.status_code, 200, got.json); got = got.json
+        self.assertEqual(got["plan"], ["sc", "temp"]); self.assertEqual(got["na"], {"drawings": "no drawings for a standard design"})
+        self.assertEqual(got["values"]["pin"], "600058"); self.assertEqual(got["values"]["samples"], "1")
+        self.assertTrue(got["values"]["declare_terms"]); self.assertTrue(got["values"]["decision_rule"].startswith("(i) Decision on compliance"))
+        self.assertEqual(got["problems"], [])
+        chk = self.cust.post("/api/customer/requests/check", json=dict(got["values"], na=got["na"], plan=got["plan"])).json
+        self.assertTrue(chk["ok"], chk)  # what the sheet gave passes the online form's own checks
+        with aletheia.db() as c: self.assertEqual(c.execute("SELECT COUNT(*) FROM customer_forms").fetchone()[0], 0)  # nothing is sent by reading
+
+    def test_excel_form_only_for_the_request_form_and_customers(self):
+        r = self.cust.get("/api/request-form.xlsx").data
+        self.assertEqual(self.c.post("/api/customer/requests/excel", json=up("f.xlsx", r)).status_code, 403)
+        bad = self.cust.post("/api/customer/requests/excel", json=up("logsheet.xlsx", self.c.get("/api/logsheets/sc.xlsx").data))
+        self.assertEqual(bad.status_code, 400); self.assertIn("not the Customer Request Form", bad.json["error"][0])
 
 
 if __name__ == "__main__":

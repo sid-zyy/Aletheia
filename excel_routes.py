@@ -59,6 +59,30 @@ def paper_rollout(c):
             c.execute("UPDATE templates SET status='retired', retired_at=? WHERE key=? AND status='active'", (t, key))
         c.execute("INSERT INTO templates(key,kind,section,name,version,status,mapping,created_at,activated_at,note) VALUES(?,?,?,?,?,?,?,?,?,?)",
                   (key, "logsheet", section, m["title"], v, "active" if shipped or cur is None else "draft", json.dumps(m), t, t if shipped or cur is None else None, PAPER_NOTE))
+    request_rollout(c, t)
+
+
+REQUEST_NOTE = "Version 2 shipped with Aletheia: the layout of the paper Customer Request Form, read into the online form"
+
+
+def request_rollout(c, t):
+    """Once per database, the same for the Customer Request Form (paper_templates.request_form): version 1 (a short list of
+    fields from before the online form) is retired when it is still the shipped one; otherwise version 2 waits as a draft."""
+    key = "request-form"
+    if c.execute("SELECT 1 FROM templates WHERE key=? AND note=?", (key, REQUEST_NOTE)).fetchone(): return
+    cur = c.execute("SELECT * FROM templates WHERE key=? AND status='active'", (key,)).fetchone()
+    shipped = cur is not None and cur["version"] == 1 and str(cur["note"] or "").startswith("Version 1 shipped")
+    v = c.execute("SELECT COALESCE(MAX(version),0)+1 FROM templates WHERE key=?", (key,)).fetchone()[0]
+    m = dict(paper_templates.request_form(request_tests()), version=v)
+    live = shipped or cur is None
+    if live: c.execute("UPDATE templates SET status='retired', retired_at=? WHERE key=? AND status='active'", (t, key))
+    c.execute("INSERT INTO templates(key,kind,section,name,version,status,mapping,created_at,activated_at,note) VALUES(?,?,?,?,?,?,?,?,?,?)",
+              (key, "request_form", "request", m["title"], v, "active" if live else "draft", json.dumps(m), t, t if live else None, REQUEST_NOTE))
+
+
+def request_tests():
+    """The tests a customer can tick on the request form, as on the online form (api/intake/fields)."""
+    return {k: v for k, v in A.NAMES.items() if k != "request"}
 
 
 def row(r, full=False):
@@ -354,11 +378,41 @@ def install(app_module):
     @app.get("/api/request-form.xlsx")
     @auth.require("jobs.view")
     def request_form_blank():
-        """The customer request form as an Excel file (customers can download it from their portal too)."""
-        with db() as c: ts = active(c, "request_form")
+        """The customer request form as an Excel file laid out as the paper form (customers download it from New test request).
+        For a customer it starts with what the portal already knows: organisation, contact, email."""
+        with db() as c:
+            ts = active(c, "request_form")
+            u = auth.current()
+            org = c.execute("SELECT name FROM orgs WHERE id=?", (u["org_id"],)).fetchone() if auth.is_customer() and u.get("org_id") else None
         if not ts: abort(404)
-        return send_file(io.BytesIO(X.workbook([(ts[0]["mapping"], None, None)])), mimetype=XLSX, as_attachment=True,
+        data = None
+        if auth.is_customer():
+            data = {k: v for k, v in dict(customer=org[0] if org else None, contact=u.get("full_name"), signed_name=u.get("full_name"),
+                                          email=u.get("email")).items() if v}
+        return send_file(io.BytesIO(X.workbook([(ts[0]["mapping"], data, None)])), mimetype=XLSX, as_attachment=True,
                          download_name=f"CPRI_SCL_customer_request_form_v{ts[0]['version']}.xlsx")
+
+    @app.post("/api/customer/requests/excel")
+    @auth.require("jobs.view")
+    def request_form_read():
+        """A Customer Request Form filled in on the Excel sheet, read into the online form. Nothing is sent or stored: the
+        customer sees the online form filled in, checks it and sends it as usual."""
+        if not auth.is_customer(): return jsonify(error=["Only a customer fills in a test request"]), 403
+        try:
+            name, raw = file_arg(A.body())
+            b = book(name, raw)
+        except A.importers.ImportError_ as e: return jsonify(error=[str(e)]), 400
+        with db() as c: ts = active(c, "request_form", retired=True)
+        found = X.detect(b, ts)
+        if not found: return jsonify(error=["This file is not the Customer Request Form: download the Excel form from this page and fill that in"]), 400
+        ws, t = found[0]
+        try: r = X.extract(b, t["mapping"], ws)
+        except X.TemplateError as e: return jsonify(error=[str(e)]), 400
+        out = paper_templates.request_values(r["data"])
+        out["plan"] = [k for k in out["plan"] if k in request_tests()]
+        problems = [e for e in r["errors"] if ": empty" not in e]  # an empty cell is reported by the online form's own check, in its words
+        return jsonify(**out, problems=problems, filled=sum(1 for v in out["values"].values() if v not in (None, "")) + len(out["na"]),
+                       template=dict(key=t["key"], version=t["version"]))
 
     # ---------------------------------------------------------------- upload with preview (one job)
     @app.post("/api/jobs/<int:i>/excel/preview")

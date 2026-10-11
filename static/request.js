@@ -15,6 +15,8 @@
 .qreq{color:var(--er);font-weight:700}.qv{padding-top:7px;white-space:pre-wrap}.qv.na{color:var(--mu)}.qbad{outline:2px solid var(--er);outline-offset:2px;border-radius:6px}
 .qtests{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px 14px;margin-top:8px}.qtests label{display:flex;gap:8px;margin:0;font-weight:500;font-size:13.5px}
 .qsig{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px;font-size:14px}
+.qxl{display:flex;gap:14px 20px;align-items:center;justify-content:space-between;flex-wrap:wrap}.qxl>div:first-child{flex:1 1 360px}.qxb{display:flex;gap:10px;flex-wrap:wrap}.qxl ul{margin:6px 0 0;padding-left:18px;color:var(--wn)}
+input.fill,textarea.fill{animation:fillin 1s ease}
 @media(max-width:680px){.qr{grid-template-columns:1fr}.qr .qc{display:none}.qf{padding:16px}}`;document.head.append(s)})();
 
 const QS={received:['uploaded','Waiting for the laboratory'],returned:['returned','Returned to you for correction'],used:['verified','Received by the laboratory'],replaced:['na','Replaced by a corrected request']};
@@ -43,6 +45,15 @@ function qCollect(fields,p){const b={na:{}};for(const f of fields){const id=p+f.
   if(f.kind=='yesno'||f.kind=='choice'){const e=document.querySelector(`[name="${id}"]:checked`);b[f.key]=e?e.value:'';continue}
   const e=$('#'+id);b[f.key]=e?e.value:'';const n=$('#'+id+'_na');if(n&&n.checked)b.na[f.key]=$('#'+id+'_nr').value}
  return b}
+/* put values read elsewhere (the Excel request form) into the form's inputs: the reverse of qCollect */
+function qFill(F,p,r){for(const f of F.fields){const id=p+f.key,v=r.values[f.key],na=r.na&&r.na[f.key];
+  if(na!=null){const c=$('#'+id+'_na'),t=$('#'+id+'_nr');if(c&&t){c.checked=true;t.style.display='';t.value=na}continue}
+  if(v==null)continue;
+  if(f.kind=='agree'){const e=$('#'+id);if(e)e.checked=!!v;continue}
+  if(f.kind=='yesno'||f.kind=='choice'){const s=String(v).toLowerCase(),o=[...document.querySelectorAll(`[name="${id}"]`)].find(x=>x.value.toLowerCase()==s||x.value.toLowerCase()==({y:'yes',n:'no'}[s]||''));if(o)o.checked=true;continue}
+  const e=$('#'+id);if(!e)continue;
+  if(e.tagName=='SELECT'){const n=s=>String(s).toLowerCase().replace(/[^a-z]/g,''),o=[...e.options].find(x=>x.value&&n(x.value)==n(v));e.value=o?o.value:''}
+  else{e.value=v;e.classList.remove('fill');void e.offsetWidth;e.classList.add('fill')}}}
 /* rows that only apply after a certain answer (e.g. the decision rule when a statement of conformity is wanted) */
 function qWhen(fields,p,root){const upd=()=>{for(const f of fields){if(!f.when)continue;const e=document.querySelector(`[name="${p+f.when[0]}"]:checked`),r=root.querySelector(`[data-k="${f.key}"]`);if(r)r.style.display=e&&e.value==f.when[1]?'':'none'}};
  root.addEventListener('change',upd);upd()}
@@ -55,7 +66,9 @@ async function custRequestPage(fid){const [F,old]=await Promise.all([api('/api/i
  const ticks=`<div class="qr"><div class="ql">${T('Tests to be carried out')}<div class="qnote" style="font-weight:400">${T('Tick each test you need; the laboratory plans the job from these.')}</div></div><div class="qc">:</div><div class="qtests">${Object.entries(F.tests).map(([k,l])=>`<label><input type="checkbox" name="cp" value="${k}" ${plan.includes(k)?'checked':''}> ${esc(T(l))}</label>`).join('')}</div></div>`;
  $('#app').innerHTML=`<button class="back" onclick="go('my')">&larr; ${T('Open requests')}</button>`+head(T(old?'Correct and send again':'New test request'),
   old&&old.note?`${T('Returned by the laboratory:')} <b>${esc(old.note)}</b>`:T('Customer Request Form {fmt}, filled in online for {org}. Every value is checked as you type; the laboratory receives it and records the rest when the sample arrives.',{fmt:esc(F.form.format_no),org:esc(ME.org||T('your organisation'))}))+
- `<div class="qf" id="qs1">${qHead(F,1)}${qFields(s1,v,'c_',false,F,{tests:ticks})}</div>
+ `<div class="card qxl"><div><h2 style="margin:0 0 4px">${T('Prefer to fill it in on Excel?')}</h2><p class="note" style="margin:0">${T('Download the form as an Excel sheet laid out like the printed form, fill it in, then upload it here. The form below is filled in from it: check it and send it as usual.')}</p></div>
+   <div class="qxb"><a class="btn g" href="/api/request-form.xlsx">${T('Download the Excel form')}</a><label class="btn" for="cxl">${T('Fill in from Excel')}</label><input type="file" id="cxl" accept=".xlsx,.xlsm" hidden></div><div id="cxr" class="note" style="flex-basis:100%;margin:0" aria-live="polite"></div></div>
+ <div class="qf" id="qs1">${qHead(F,1)}${qFields(s1,v,'c_',false,F,{tests:ticks})}</div>
   <div class="qf" id="qs2">${qHead(F,2)}${qFields(s2,v,'c_',false,F)}<div class="qsig"><div></div><div style="text-align:right">${T('Customers Name & Signature with Date')}<br><b id="qsn">${esc(v.signed_name||'')}</b> &middot; ${new Date().toLocaleDateString(LOC())}</div></div></div>
   <div class="qf" style="opacity:.75">${qHead(F,3,1)}<p class="note" style="margin:0">${T("Physical condition of the sample on receipt, the laboratory's capability and the acceptance of the job are recorded by the laboratory when your sample arrives.")}</p></div>
   <div id="cv"></div><div class="card" style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap"><button class="btn g" id="cck">${T('Check for problems')}</button><button class="btn lg" id="csd">${T(old?'Send the corrected request':'Send the request')}</button></div>`;
@@ -65,6 +78,13 @@ async function custRequestPage(fid){const [F,old]=await Promise.all([api('/api/i
   document.querySelectorAll('.qr,.qagree').forEach(x=>{const f=F.fields.find(f=>f.key==x.dataset.k);x.classList.toggle('qbad',!!f&&e.some(m=>m.startsWith(f.label)||m.includes(f.label)))})};
  let tm;$('#app').addEventListener('input',()=>{const n=$('#c_signed_name');if(n)$('#qsn').textContent=n.value;clearTimeout(tm);tm=setTimeout(()=>api('/api/customer/requests/check',collect()).then(show).catch(()=>{}),700)});
  $('#cck').onclick=async()=>{try{show(await api('/api/customer/requests/check',collect()))}catch(e){toast(e,1)}};
+ /* the Excel sheet fills the form on the page; nothing is sent until the customer presses Send */
+ $('#cxl').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;$('#cxr').textContent=T('Reading {f}…',{f:f.name});
+  try{const r=await api('/api/customer/requests/excel',{filename:f.name,b64:await b64(f)});qFill(F,'c_',r);
+   document.querySelectorAll('[name=cp]').forEach(x=>x.checked=r.plan.includes(x.value));$('#app').dispatchEvent(new Event('change'));
+   $('#cxr').innerHTML=`<b style="color:var(--ok)">${T('Filled in from {f}: {n} answers. Check the form below and send it.',{f:esc(f.name),n:r.filled})}</b>`+(r.problems.length?`<ul>${r.problems.map(x=>`<li>${esc(TF(x))}</li>`).join('')}</ul>`:'');
+   const n=$('#c_signed_name');if(n)$('#qsn').textContent=n.value;show(await api('/api/customer/requests/check',collect()))}
+  catch(x){$('#cxr').innerHTML=`<span style="color:var(--er)">${esc([].concat(x).map(TF).join(' '))}</span>`}};
  $('#csd').onclick=async()=>{const b=collect();try{await api('/api/customer/requests',b);toast(T('Request sent to the laboratory'));go('my')}
   catch(e){try{show(await api('/api/customer/requests/check',b))}catch(x){toast(e,1)}scrollTo(0,$('#cv').offsetTop-80)}}}
 

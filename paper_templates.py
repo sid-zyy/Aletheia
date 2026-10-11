@@ -9,6 +9,7 @@ read from the new layout, and what the paper adds (time of each reading, voltage
 signatures...) is stored under new names alongside. Version 1 stays importable (retired), so files filled in earlier still
 read. The scans these follow: sample_data/scans/.
 """
+import re
 from openpyxl.utils import get_column_letter as L
 
 NUM, TXT, DATE = "number", "text", "date"
@@ -513,3 +514,107 @@ BUILD = dict(work=work, proforma=proforma, losses=losses, resistance=resistance,
 
 
 def paper(section): return BUILD[section]()
+
+
+# ------------------------------------------------------------------ the Customer Request Form
+YES_NO = ["Yes", "No"]
+REQUEST_NOTE = ("Fill in the yellow cells as you would the printed form; grey cells are printed text and are locked. Choose from the list "
+                "where a cell offers one. Then, in the Aletheia customer portal, open New test request and choose Fill in from Excel: the "
+                "online form is filled in from this file, you check it and send it. Where Manufacturer's Details or Drawing Number(s) do "
+                "not apply, write: Not applicable: <the reason>.")
+
+
+def request_form(test_names):
+    """Customer Request Form CPRI/QAF/01A as an Excel sheet laid out as the scanned paper form (scans/Customer request form.pdf):
+    sheet 1 (customer, sample, storage, tests, witnesses, despatch), sheet 2 (MSME, statement of conformity and decision rule,
+    the notes and the two declarations, the signature) and sheet 3, the laboratory's part, as printed text only. Each value
+    is stored under the key of the online form (workflow.REQUEST_FIELDS), so a filled sheet fills the online form; the
+    tests to be carried out are read as plan.<test> = Yes. Labels come from workflow.py, so the two forms cannot drift apart.
+    test_names: {key: formal name} of the tests a customer may ask for."""
+    import workflow as W
+    F = {f["key"]: f for f in W.REQUEST_FIELDS}
+    form = W.FORM
+    p = Paper("request", "RQ", form["title"], form["org"], unit=form["unit"], note=REQUEST_NOTE,
+              meta=(f"Format No: {form['format_no']}\nRevision No. 00", f"{form['issue']}\n{form['issue_date']}"))
+
+    def ask(key, typ=TXT, h=None, **kw):
+        f = F[key]
+        if f["kind"] == "yesno": kw.setdefault("choices", YES_NO)
+        elif f["kind"] == "choice" and key != "decision_rule": kw.setdefault("choices", f["options"])
+        p.row(f["label"], key, typ, req=not f.get("optional"), h=h, **kw)
+
+    def group(text):
+        p.text(f"A{p.r}", f"{L(p.n)}{p.r}", text, "label_b"); p.r += 1
+
+    p.section_head("Sheet 1 of 3")
+    group(F["customer"]["group"])
+    for k in ("customer", "address", "city", "state", "pin", "contact", "phone", "email"): ask(k, h=24 if k == "address" else None)
+    for k in ("sample", "rating"): ask(k)
+    ask("description", h=36)
+    for k in ("type", "serial"): ask(k)
+    ask("manufacturer", h=36)
+    ask("drawings"); ask("requirement", h=24); ask("criteria", h=24)
+    ask("samples", NUM, min=1, max=999, int=True)
+    group(F["take_back"]["group"])
+    ask("take_back"); ask("scrap", h=28)
+    p.para("Note: " + F["scrap"]["note"], h=20)
+    ask("tests", h=24)
+    group("Tests to be carried out: choose Yes for each test you need (the laboratory plans the job from these)")
+    for k, name in test_names.items(): p.row(name, f"plan.{k}", TXT, choices=YES_NO, title=f"Test to be carried out: {name}")
+    ask("mounting", h=24)
+    group(F["witness"]["group"])
+    ask("witness"); ask("witness_other")
+    ask("dispatch"); ask("dispatch_mode"); ask("additional_reports", h=30)
+    p.gap()
+
+    breaks = [p.r]  # each sheet of the paper form starts a new printed page
+    p.section_head("Sheet 2 of 3")
+    ask("msme")
+    p.para(F["msme"]["note"], h=28)
+    ask("conformity", h=30)
+    p.para(F["conformity"]["note"], h=28)
+    for rule in W.DECISION_RULES: p.para(rule, h=42)
+    ask("decision_rule", choices=["(i)", "(ii)", "(iii)"], title="Decision rule (if Yes): (i), (ii) or (iii)")
+    p.para(F["decision_rule"]["note"], h=56)
+    p.para("Note: " + F["declare_terms"]["note"], h=42)
+    p.para(F["declare_drawings"]["label"], h=28)
+    p.row("Guarantee accepted (choose Yes)", "declare_drawings", TXT, True, choices=["Yes"])
+    p.para(F["declare_terms"]["label"], h=28)
+    p.row("Terms and conditions accepted (choose Yes)", "declare_terms", TXT, True, choices=["Yes"])
+    ask("signed_name")
+    p.para("Customers Name & Signature with Date: the date is added when the request is sent from the portal.", h=20)
+    p.gap()
+
+    breaks.append(p.r)
+    p.section_head("Sheet 3 of 3 (To be filled by the laboratory)")
+    p.para("Recorded by the laboratory when your sample arrives, nothing to fill in here: " +
+           "; ".join(f["label"] for f in W.LAB_FIELDS) + "; name and signature of the Test Engineer / Test In charge accepting the job, with date.", h=56)
+    p.footer(f"Format No: {form['format_no']}   {form['issue']}   {form['issue_date']}   Customer Request Form, read by Aletheia (template request v2)")
+    m = p.mapping()
+    m.update(kind="request_form", sheet_title=form["title"])
+    m["page"]["breaks"] = breaks
+    for it in m["layout"]:
+        if it.get("style") == "note": it["h"] = 44  # the instructions are longer than a logsheet's
+    return m
+
+
+def request_values(data):
+    """A filled request sheet (the data read by xltemplates.extract) -> the body of the online form: {values, na, plan}.
+    'Not applicable: <reason>' in a field that allows it becomes the not-applicable box with its reason, as online."""
+    import workflow as W
+    data = dict(data or {})
+    plan_cells = data.pop("plan", None) or {}
+    plan = [k for k, v in plan_cells.items() if str(v or "").strip().lower() in ("yes", "y")]
+    values, na = {}, {}
+    for f in W.REQUEST_FIELDS:
+        v = data.get(f["key"])
+        if v is None or (isinstance(v, str) and not v.strip()) or str(v).strip().upper() == "NA": continue
+        v = str(int(v) if isinstance(v, float) and v.is_integer() else v).strip()
+        m = re.match(r"(?i)^not applicable\s*[:\-]\s*(.*)$", v)
+        if f.get("na_ok") and m: na[f["key"]] = m.group(1).strip(); continue
+        if f["kind"] == "agree": values[f["key"]] = v.lower() in ("yes", "y", "agreed", "true"); continue
+        if f["key"] == "decision_rule":
+            hit = next((o for o in f["options"] if o.startswith(v.split(")")[0] + ")")), None) if v.startswith("(") else None
+            values[f["key"]] = hit or v; continue
+        values[f["key"]] = v
+    return dict(values=values, na=na, plan=plan)
