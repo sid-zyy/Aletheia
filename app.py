@@ -1,18 +1,18 @@
 """Aletheia - Automated Test Report Generation System (CPRI Short Circuit Laboratory).
-Run:  pip install -r requirements.txt && python app.py   ->  http://localhost:5000
+Run:  pip install -r requirements.txt && python app.py   ->  http://localhost:5000  (settings: .env.example)
 Modules: Data Collection (importers.py: JSON / CSV / Excel / SQLite, registers; vision.py: optional scan reading)
          | Database (SQLite) | Validation (thresholds in rules.py) | Report Engine (PDF from report_template.json,
          frozen versions + QR verification, customer download) | Dashboard (static/index.html)
 Settings, API and the data model: README.md and docs/ARCHITECTURE.md.
 """
-import base64, json, hashlib, io, math, os, re, secrets, sqlite3, sys, datetime as dt
+import config  # first: settings from .env reach every module below
+import base64, json, hashlib, io, logging, math, os, re, secrets, sqlite3, sys, datetime as dt
 import importers, vision
 import rules, report
 import auth, integrity, workflow, excel_routes, retention, notify, portal, tickets
-from integrity import Conflict, Locked
+from integrity import Conflict
 from rules import val as rule, nll_limits, ratio_tolerance, classify_observation
 from statistics import mean
-from xml.sax.saxutils import escape as xesc
 from flask import Flask, request, jsonify, send_file, send_from_directory, abort, has_request_context
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -25,6 +25,9 @@ def load_demo():
     with open(DEMO, encoding="utf-8") as f: return json.load(f)
 
 app = Flask(__name__, static_folder=os.path.join(HERE, "static"))
+logger = logging.getLogger("aletheia")
+# behind HTTPS (a reverse proxy with a certificate) the session cookie is only ever sent encrypted
+app.config.update(SESSION_COOKIE_SECURE=config.flag("ALETHEIA_HTTPS"))
 STAGES = ["Request Captured", "Data Imported", "Validated", "Report Generated", "Approved & Exported"]
 # The formal name of every test record: the one list the pages, notifications, audit entries, Excel titles and the report
 # use. Only display names: the keys stored with the data never change.
@@ -84,7 +87,7 @@ def init():
         for col, ddl in (("plan", "TEXT"), ("intake", "TEXT"), ("signed_off_by", "INT"), ("signed_off_at", "TEXT")):
             if col not in have: c.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
         saved = integrity.migrate(c, DB)
-        if saved: print(f"Database migrated to schema {integrity.SCHEMA_VERSION}; backup kept at {saved}")
+        if saved: logger.warning("Database migrated to schema %s; backup kept at %s", integrity.SCHEMA_VERSION, saved)
         integrity.install_triggers(c)
         clash = auth.migrate_roles(c, log)
         if clash: raise SystemExit("The verifier and approver roles were removed. These accounts would combine Admin with Tester, which is not "
@@ -528,13 +531,6 @@ def check_ids(b, auto=False):
         for f in ("sample", "customer", "rating"): b[f] = str(b.get(f) or "").strip() or "NA"
     return err
 
-def org_problem(b):
-    """The customer organisation a job belongs to (whose customer accounts may follow it). Optional until intake is tightened."""
-    o = b.get("org_id")
-    if o in (None, ""): b["org_id"] = None; return []
-    with db() as c: ok = isinstance(o, int) and c.execute("SELECT 1 FROM orgs WHERE id=?", (o,)).fetchone()
-    return [] if ok else ["Unknown customer organisation"]
-
 def after_change(c, jid, event):
     """Inside the write transaction that changed some sections: the checks and any generated report must be redone, and
     record details left as NA are filled from the imported documents (request form, work instruction)."""
@@ -572,10 +568,6 @@ def write_check(c, i, keys):
         row = c.execute("SELECT state FROM sections WHERE job_id=? AND key=?", (i, k)).fetchone()
         if row and row["state"] == "verified" and k not in workflow.MERGED:
             return f"{name(k)} has been verified and is locked; a tester must reopen it (with a reason) first", 409
-    return None
-
-def bay_of(b):
-    """Test bays were removed: uploads record none (older sections keep the bay they were recorded in)."""
     return None
 
 def conflict(e):
@@ -626,6 +618,9 @@ def no_stale_pages(r):
     an old script after an update. API responses are never cached."""
     if request.path == "/" or request.path.startswith(("/static/", "/verify/")): r.headers["Cache-Control"] = "no-cache"
     elif request.path.startswith("/api/") and "Cache-Control" not in r.headers: r.headers["Cache-Control"] = "no-store"
+    r.headers.setdefault("X-Content-Type-Options", "nosniff")      # files are served as what they are, never guessed
+    r.headers.setdefault("X-Frame-Options", "SAMEORIGIN")          # pages and PDFs framed only by Aletheia itself
+    r.headers.setdefault("Referrer-Policy", "same-origin")
     return r
 
 # Searched text: record details plus what the request and work instruction say (tests, standard, engineer, dates) and the outcome
@@ -650,8 +645,8 @@ def jobs():
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.get(k, "")): where.append(f"{DAY} {op} ?"); args.append(a[k])
     cust = auth.is_customer()
     if cust: where.append("org_id IS NOT NULL AND org_id=? AND archived=0"); args.append(auth.current().get("org_id") or -1)
-    sql = (f"SELECT id,series,sample,customer,rating,stage,approver,approver_id,created,updated,archived,verdict,tested,"
-           f"(SELECT group_concat(key) FROM sections WHERE job_id=jobs.id AND data IS NOT NULL) AS secs,"
+    sql = ("SELECT id,series,sample,customer,rating,stage,approver,approver_id,created,updated,archived,verdict,tested,"
+           "(SELECT group_concat(key) FROM sections WHERE job_id=jobs.id AND data IS NOT NULL) AS secs,"
            + ",".join(f"(SELECT COUNT(*) FROM json_each(jobs.findings) WHERE json_extract(value,'$.level')='{l}') AS n_{l}" for l in ("pass", "warn", "fail"))
            + " FROM jobs WHERE " + " AND ".join(where) + " ORDER BY updated DESC, id DESC")
     with db() as c: rows = [dict(r) for r in c.execute(sql, args)]
@@ -712,48 +707,6 @@ def create():
         return jsonify(id=i, series=b["series"], sample=b["sample"]), 201
     except sqlite3.IntegrityError: return jsonify(error=["Series number already exists"]), 409
 
-@app.post("/api/jobs/from-file")
-@auth.require("job.create")
-def create_from_file():
-    """New job for a customer's waiting request (customer_form_id), with its test data from a file: the series number comes
-    from the file (or the form, if typed). The request itself is always the customer's; a request section in the file is ignored."""
-    b = body(); name, raw = upload(b)
-    with db() as c: f, req, _, rerr, _ = customer_request(c, b.get("customer_form_id"))
-    if rerr: return jsonify(error=rerr), 400
-    typed = str(b.get("series") or "").strip().upper() or None
-    content, kind, notes, used = excel_routes.load_any(name, raw, typed)
-    if not isinstance(content, dict) or not content: return jsonify(error=["No test data found in this file"]), 400
-    content.pop("request", None); wk = content.get("work") or {}
-    ids = (content.get("ids") or {}).get("work") or [None, None]
-    series = typed or str(wk.get("series") or ids[0] or "").strip().upper()
-    new = dict(series=series, sample=str(wk.get("sample") or ids[1] or "").strip().upper(), customer=req["customer"], rating=req["rating"],
-               request={}, org_id=f["org_id"])
-    if not series: return jsonify(error=["This file has no test series number. Type it in the form, then drop the file again."]), 400
-    if new["sample"] and not re.fullmatch(SAMPLE_RE, new["sample"]): new["sample"] = ""  # a misread sample code must not block the job
-    err = check_ids(new)
-    if err: return jsonify(error=err + ["Type the correct test series number in the form and drop the file again."]), 400
-    try:
-        with db() as c:
-            if c.execute("SELECT status FROM customer_forms WHERE id=?", (f["id"],)).fetchone()[0] != "received": return jsonify(error=["This customer request was taken meanwhile"]), 409
-            i = insert_job(c, new, f"Job opened for the customer's request, test data from {name}"); use_request(c, i, f, req)
-    except sqlite3.IntegrityError: return jsonify(error=[f"Series {series} already exists. Open that job, or type a different series number."]), 409
-    r = apply_import(getjob(i), i, name, content, kind, notes, raw, templates=used)
-    if isinstance(r, tuple): return jsonify(id=i, warning=r[0].get_json().get("error")), 201  # job exists; import problem shown on its page
-    return jsonify(id=i, **r.get_json()), 201
-
-@app.post("/api/read-scan")
-@auth.require("job.create")
-def read_scan():
-    """AI reading of a customer request form or work instruction before the job exists (pre-fills the New request form)."""
-    if not scan_on(): return scan_off()
-    b = body(); k = b.get("section") if b.get("section") in ("request", "work") else "request"
-    name, raw = upload(b)
-    if len(raw) > importers.MAX_BYTES: raise importers.ImportError_("File is too large (20 MB maximum)")
-    with db() as c:
-        out = vision.extract(c, raw, sniff(raw), k, NAMES[k], load_demo().get(k, {}), app.config.get("VISION_TRANSPORT"),
-                             sha=hashlib.sha256(raw).hexdigest(), cache_path=AI_CACHE, fresh=bool(b.get("fresh")))
-    return jsonify(out)
-
 @app.get("/api/jobs/<int:i>")
 @auth.require("jobs.view")
 def one(i):
@@ -784,15 +737,14 @@ def customer_view(j):
 def imp(i):
     j = getjob(i); b = body(); notes = []
     if locked(j): return locked(j)
-    bay = bay_of(b)
     if isinstance(b.get("content"), dict):
         name, content, kind = str(b.get("filename") or "upload"), b["content"], "json"; raw = integrity.canon(content).encode()
     else:
         name, raw = upload(b); content, kind, notes, used = excel_routes.load_any(name, raw, j["series"])
         if b.get("section"): content, notes = for_test(content, b["section"]), notes + [f"uploaded for {NAMES.get(b['section'], b['section'])}"]
-        return apply_import(j, i, name, content, kind, notes, raw, bay, templates=used)
+        return apply_import(j, i, name, content, kind, notes, raw, templates=used)
     if b.get("section"): content = for_test(content, b["section"])
-    return apply_import(j, i, name, content, kind, notes, raw, bay)
+    return apply_import(j, i, name, content, kind, notes, raw)
 
 def test_key(k):
     """A test a file can be uploaded for: one of the job's documents (not the customer's request) or an additional log sheet."""
@@ -811,7 +763,7 @@ def for_test(content, k):
 
 MIMES = {"json": "application/json", "csv": "text/csv", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "sqlite": "application/vnd.sqlite3"}
 
-def apply_import(j, i, name, content, kind, notes, raw, bay=None, templates=None):
+def apply_import(j, i, name, content, kind, notes, raw, templates=None):
     """Write the imported sections (also used when a job is created from a file). The file is kept byte-for-byte with its
     SHA-256; each section it brings becomes a new revision of that section only, so other people's sections are untouched."""
     ok = set(NAMES) | {"ids", "other"}
@@ -892,7 +844,7 @@ def section(i):
             c.execute("BEGIN IMMEDIATE")
             why = write_check(c, i, [k])
             if why: return refuse(c, i, *why)
-            integrity.write_section(c, i, k, b["data"], me(), f"{name(k)} {how}", expect=expected(c, i, k, b), bay=bay_of(b))
+            integrity.write_section(c, i, k, b["data"], me(), f"{name(k)} {how}", expect=expected(c, i, k, b))
             after_change(c, i, f"{name(k)} {how}")
             notify.on_uploaded(c, i, [k])
     except Conflict as e: return conflict(e)
@@ -1698,7 +1650,7 @@ def file_preview(fid):
         return jsonify(kind="sheet", name=name, sheets=[dict(name=name, cols=[str(k + 1) for k in range(width)], rows=[[n + 1, (x + [None] * width)[:width]] for n, x in enumerate(rows)])])
     return jsonify(kind="other", name=name)
 
-CODE_FILES = ("app.py", "importers.py", "rules.py", "vision.py", "auth.py", "integrity.py", "workflow.py", "xltemplates.py", "paper_templates.py", "excel_routes.py", "retention.py")
+CODE_FILES = ("app.py", "config.py", "importers.py", "rules.py", "vision.py", "auth.py", "integrity.py", "workflow.py", "xltemplates.py", "paper_templates.py", "excel_routes.py", "retention.py")
 def code_id():
     """Fingerprint of the Python code on disk. Taken once at start-up and again on request, it shows whether the running
     server is older than its files (the page is always served fresh, so an unrestarted server and a new page can disagree)."""
@@ -1778,6 +1730,26 @@ retention.install(sys.modules[__name__])     # backups, audit tip, export packag
 notify.install(sys.modules[__name__])        # in-app notifications
 portal.install(sys.modules[__name__])        # partial reports, approved values, customers' request forms
 tickets.install(sys.modules[__name__])       # customers' tickets to the administrators
+
+
+def serve():
+    """Run the server: Waitress (a production WSGI server, works on Windows) when installed, otherwise Flask's own server
+    with a warning. ALETHEIA_HOST=0.0.0.0 makes it reachable from other computers on the lab network."""
+    config.setup_logging()
+    host, port = os.environ.get("ALETHEIA_HOST", "127.0.0.1"), int(os.environ.get("PORT", 5000))
+    retention.schedule()  # one backup a day while the server runs
+    if not auth.PASSWORDS:
+        logger.warning("Passwords are OFF (dummy / demonstration mode): anyone who opens the page can act as any role. "
+                       "Set ALETHEIA_PASSWORDS=1 before real use.")
+    try:
+        from waitress import serve as waitress_serve
+    except ImportError:
+        logger.warning("waitress is not installed: using Flask's development server (pip install -r requirements.txt)")
+        app.run(host=host, port=port, debug=False, threaded=True)
+        return
+    logger.info("Aletheia on http://%s:%s (waitress)", "localhost" if host in ("127.0.0.1", "0.0.0.0") else host, port)
+    waitress_serve(app, host=host, port=port, threads=int(os.environ.get("ALETHEIA_THREADS", "8")), ident="Aletheia")
+
+
 if __name__ == "__main__":
-    retention.schedule()                     # one backup a day while the server runs
-    app.run(debug=False, port=int(os.environ.get("PORT", 5000)))
+    serve()

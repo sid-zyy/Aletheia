@@ -3,14 +3,13 @@
 * Registry: versioned templates (draft -> active -> retired), seeded once from seed_templates.py, then managed by Admin.
 * Upload: a workbook is matched sheet by sheet to the active templates; the preview shows every value with its source cell;
   the import stores exactly what was previewed, with the template version that read it.
-* Multi-report workbooks: one workbook holding several tests, or the sheets of several jobs (routed by the series number
-  written on each sheet).
+* One workbook may hold several tests of one job; each file is uploaded for one test from its row on the job page.
 * Downloads: blank logsheets (one test or all in one workbook), the customer request form, a job's data as filled logsheets,
   and a register of many jobs in one workbook.
 """
 import datetime as dt, io, json, re
 from flask import jsonify, request, send_file, abort
-import auth, integrity, xltemplates as X, seed_templates, paper_templates
+import auth, xltemplates as X, seed_templates, paper_templates
 
 A = None  # the running app module (app.py), set by install()
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -385,7 +384,6 @@ def install(app_module):
         """Store what the preview showed: the workbook is read again here (same file, same templates, same result)."""
         j = A.getjob(i); b = A.body(); name, raw = file_arg(b)
         if A.locked(j): return A.locked(j)
-        bay = A.bay_of(b)
         with db() as c: sheets, _ = read_workbook(c, name, raw, b.get("template_id"))
         if b.get("sheets"): sheets = [r for r in sheets if r["sheet"] in b["sheets"]]
         if b.get("section"): A.test_key(b["section"]); sheets = [r for r in sheets if r["section"] == b["section"]]
@@ -394,55 +392,7 @@ def install(app_module):
         content, dup = to_content(sheets)
         if errs or dup: return jsonify(error=dup + errs), 400
         notes = [f"sheet '{r['sheet']}' read with template {r['template']['key']} v{r['template']['version']}" for r in sheets]
-        return A.apply_import(j, i, name, content, "xlsx", notes, raw, bay, templates={r["section"]: r["template"]["id"] for r in sheets})
-
-    # ---------------------------------------------------------------- one workbook, several jobs
-    @app.post("/api/excel/preview")
-    @auth.require("data.write")
-    def excel_multi_preview():
-        """A workbook with sheets of several jobs: each sheet is routed by the series number written on it."""
-        name, raw = file_arg(A.body())
-        with db() as c:
-            sheets, unmatched = read_workbook(c, name, raw)
-            jobs = [dict(r) for r in c.execute("SELECT id, series, stage, archived FROM jobs WHERE archived=0")]
-        for r in sheets:
-            s = norm_series(r["series_on_sheet"]); r["job"] = None; r["route"] = "no series on the sheet"
-            if s:
-                exact = [x for x in jobs if norm_series(x["series"]) == s]
-                near = [x for x in jobs if len(s) >= 7 and norm_series(x["series"]).endswith(s[-7:])]
-                pick = exact or (near if len(near) == 1 else [])
-                if pick: r["job"] = dict(id=pick[0]["id"], series=pick[0]["series"], released=pick[0]["stage"] == 4); r["route"] = "exact" if exact else "matched by the last 7 characters"
-                else: r["route"] = "no open job with this series" if not near else f"{len(near)} jobs match; choose one"
-        return jsonify(sheets=sheets, unmatched=unmatched)
-
-    @app.post("/api/excel/import")
-    @auth.require("data.write")
-    def excel_multi_import():
-        """Import the routed sheets: route = {sheet name: job id}. Each job gets its own copy of the file and its own audit entry."""
-        b = A.body(); name, raw = file_arg(b); route = b.get("route") or {}
-        bay = A.bay_of(b)
-        with db() as c: sheets, _ = read_workbook(c, name, raw)
-        per_job, errs = {}, []
-        for r in sheets:
-            jid = route.get(r["sheet"])
-            if not jid: continue
-            if r["errors"]: errs += [f"{r['sheet']}: {e}" for e in r["errors"]]
-            per_job.setdefault(int(jid), []).append(r)
-        if not per_job: return jsonify(error=["Choose a job for at least one sheet"]), 400
-        for jid, rs in per_job.items():
-            _, dup = to_content(rs); errs += dup
-        if errs: return jsonify(error=errs), 400
-        jobs = {jid: A.getjob(jid) for jid in per_job}  # every target exists and is visible, before anything is written
-        results = {}
-        for jid, rs in per_job.items():
-            j = jobs[jid]
-            if A.locked(j): results[j["series"]] = dict(status=409, error=A.locked(j)[0].get_json()["error"]); continue
-            content, _ = to_content(rs)
-            res = A.apply_import(j, jid, name, content, "xlsx", [f"sheet '{r['sheet']}' (template {r['template']['key']} v{r['template']['version']})" for r in rs],
-                                 raw, bay, templates={r["section"]: r["template"]["id"] for r in rs})
-            resp, code = (res, 200) if not isinstance(res, tuple) else res
-            results[j["series"]] = dict(status=code, **resp.get_json())
-        return jsonify(results=results)
+        return A.apply_import(j, i, name, content, "xlsx", notes, raw, templates={r["section"]: r["template"]["id"] for r in sheets})
 
     # ---------------------------------------------------------------- downloads across reports
     @app.get("/api/jobs/<int:i>/logsheets/<section>.xlsx")

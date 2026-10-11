@@ -31,7 +31,8 @@ class PaperLayout(Base):
     def test_the_paper_layout_is_handed_out_and_version_1_still_imports(self):
         for k in LOGS:
             st = {t["version"]: (t["status"], t["note"]) for t in self.admin.get(f"/api/templates?key={k}-std").json}
-            self.assertEqual(st[1][0], "retired", k); self.assertEqual(st[2], ("active", excel_routes.PAPER_NOTE), k)
+            self.assertEqual(st[1][0], "retired", k); self.assertEqual(st[2][1], excel_routes.PAPER_NOTE, k)
+            self.assertTrue(st[2][0] == "active" or any(v > 2 and x == "active" for v, (x, _) in st.items()), k)  # unless a test made a later one active
         i = self.job(); r = self.c.post(f"/api/jobs/{i}/import", json=up("paper.xlsx", paper()))
         self.assertEqual(r.status_code, 200, r.json); self.assertIn("read with template temp-std v2", " ".join(r.json["notes"]))
         d = self.get(i)["data"]
@@ -92,6 +93,13 @@ class PaperLayout(Base):
         self.assertIn("LOG-SHEET FOR SHORT CIRCUIT TEST ON TRANSFORMERS", cells); self.assertIn("S002", cells)
         self.assertNotIn("Aletheia template sc v2", cells)  # the hidden fingerprint row is not shown
         self.assertEqual(self.cust.get(f"/api/files/{fid}/preview").status_code, 403)
+
+    def test_the_most_specific_fingerprint_reads_the_sheet(self):
+        import seed_templates as S
+        v1, v2 = dict(key="noload-std", version=3, mapping=S.layout("noload")), dict(key="noload-std", version=2, mapping=P.paper("noload"))
+        # an active version built from version 1 ("Aletheia template noload") must not read a paper sheet ("... noload v2")
+        self.assertEqual([t["version"] for _, t in X.detect(X.Book(paper(["noload"])), [v1, v2])], [2])
+        self.assertEqual([t["version"] for _, t in X.detect(X.Book(filled(["noload"])), [v1, v2])], [3])
 
     def test_preview_names_each_value_as_printed(self):
         i = self.job(); p = self.c.post(f"/api/jobs/{i}/excel/preview", json=dict(up("sc.xlsx", paper(["sc"])), section="sc")).json

@@ -59,7 +59,6 @@ def _refresh(i):
     # (a test reopened after approval produces a new version without it, so the customer no longer sees its values)
     v = (last["version"] if last else 0) + 1
     name = A.name
-    plan = [p["key"] for p in j["progress"]]
     part = dict(version=v, approved=[name(k) for k in keys if k in A.NAMES or k == "other"],
                 pending=[p["name"] for p in j["progress"] if p["key"] not in keys and p["state"] != "na"],
                 sections=[(name(k), j["meta"][k]["revision"], j["meta"][k]["data_sha256"] or "") for k in keys])

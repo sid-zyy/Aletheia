@@ -260,28 +260,6 @@ class ImportFormats(Base):
         self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/other:{key}").status_code, 200); self.assertNotIn("other", self.get(i)["data"])
         self.assertEqual(self.c.delete(f"/api/jobs/{i}/section/other:{key}").status_code, 404)
 
-    def test_new_request_from_a_data_file(self):
-        csv = raw("AP_Transformers_25T1654.csv")
-        self.assertEqual(self.c.post("/api/jobs/from-file", json=up("job.csv", csv)).status_code, 400)  # no customer request
-        r = self.c.post("/api/jobs/from-file", json=dict(customer_form_id=self.request(), **up("job.csv", csv))); self.assertEqual(r.status_code, 201, r.json)
-        j = self.get(r.json["id"])
-        self.assertEqual((j["series"], j["sample"], j["customer"]), ("CPRIBLRSCL25T1654", "HVD25S0847", "A.P. Transformers"))
-        self.assertEqual(len([k for k in j["data"] if k != "ids"]), 10)
-        self.assertEqual(self.c.post("/api/jobs/from-file", json=dict(customer_form_id=self.request(), **up("job.csv", csv))).status_code, 409)  # same series again
-        r = self.c.post("/api/jobs/from-file", json=dict(series="CPRIBLRSCL25T2001", customer_form_id=self.request(), **up("job.csv", csv)))  # typed series wins
-        self.assertEqual(r.status_code, 201); self.assertEqual(self.get(r.json["id"])["series"], "CPRIBLRSCL25T2001")
-        no_series = b"section,field,value" + bytes([10]) + b"proforma,kva,250" + bytes([10])
-        self.assertEqual(self.c.post("/api/jobs/from-file", json=dict(customer_form_id=self.request(), **up("x.csv", no_series))).status_code, 400)  # no series
-
-    def test_read_a_request_scan_before_the_job_exists(self):
-        os.environ.update(GEMINI_API_KEY="test")
-        try:
-            aletheia.app.config["VISION_TRANSPORT"] = lambda *a: {"candidates": [{"content": {"parts": [{"text": json.dumps({"data": DEMO["request"], "uncertain": []})}]}}]}
-            r = self.c.post("/api/read-scan", json=dict(section="request", **up("Customer request form.png", PNG))); self.assertEqual(r.status_code, 200, r.json)
-            self.assertEqual(r.json["data"]["customer"], "A.P. Transformers")
-        finally:
-            os.environ.pop("GEMINI_API_KEY")
-
     def test_review_one_by_one_before_the_report(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
         F = self.c.post(f"/api/jobs/{i}/validate").json["findings"]; warns = [n for n, f in enumerate(F) if f["level"] == "warn" and not f.get("advisory")]

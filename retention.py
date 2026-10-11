@@ -10,7 +10,7 @@
   the audit extract, with a README on how to verify them. It is self-contained: readable without Aletheia.
 """
 import csv, datetime as dt, glob, hashlib, io, json, os, re, sqlite3, threading, zipfile
-from flask import jsonify, request, send_file, abort
+from flask import jsonify, send_file, abort
 import auth, integrity
 
 A = None

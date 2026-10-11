@@ -62,7 +62,7 @@ previous one by hash.
 | `xltemplates.py` | Template engine: read a sheet (names, labels, cells, tables; statuses per value), draw blank and filled sheets, diff and validate mappings |
 | `seed_templates.py` | Version 1 of the logsheet templates and of an Excel request form kept in the registry (seeds it once) |
 | `paper_templates.py` | Version 2 of the logsheet templates: each sheet laid out as its scanned paper logsheet (header, readings, remarks, signatures), with locked printed text, calculated cells, dropdowns and limits; made active once per database, version 1 retired but still importable |
-| `excel_routes.py` | Template registry (draft / active / retired), upload preview and import, several jobs per workbook, Excel downloads |
+| `excel_routes.py` | Template registry (draft / active / retired), upload preview and import (one test per upload), Excel downloads |
 | `notify.py` | In-app notifications (no email) |
 | `tickets.py` | Customer tickets to the administrators: thread (append-only), status open / answered / closed, notifications |
 | `portal.py` | Partial reports, approved values with logsheet labels, customers' test requests (send, check, correct, the laboratory's inbox) |

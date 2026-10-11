@@ -10,7 +10,7 @@ so a new route cannot ship unprotected; tests/test_auth.py walks every route to 
 Sessions are Flask's signed cookie (HttpOnly, SameSite=Lax). The key is generated on first run and kept in a file next to
 the database, outside git. State-changing requests need the X-CSRF-Token header that /api/me hands out.
 """
-import datetime as dt, functools, os, re, secrets
+import datetime as dt, os, re, secrets
 from flask import Blueprint, current_app, g, jsonify, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 

@@ -154,20 +154,6 @@ class Drift(Base):
 
 
 class ManyReports(Base):
-    def test_one_workbook_for_two_jobs_is_routed_by_series(self):
-        a = self.job("CPRIBLRSCL25T1654"); b = self.job("CPRIBLRSCL25T1777")
-        ids_b = {k: ["CPRIBLRSCL25T1777", "HVD25S0999"] for k in DEMO["ids"]}
-        wb = X.workbook([(S.layout("sc"), DEMO["sc"], DEMO["ids"]), (S.layout("temp"), DEMO["temp"], DEMO["ids"]),
-                         (S.layout("sc"), DEMO["sc"], ids_b), (S.layout("noload"), DEMO["noload"], {"noload": ["25T9999", "x"]})])
-        p = self.c.post("/api/excel/preview", json=up("bay3_today.xlsx", wb)).json
-        route = {s["sheet"]: (s["job"] or {}).get("id") for s in p["sheets"]}
-        self.assertEqual(sorted(x for x in route.values() if x), sorted([a, a, b]))
-        self.assertIn("no open job", next(s for s in p["sheets"] if s["section"] == "noload")["route"])
-        r = self.c.post("/api/excel/import", json=dict(up("bay3_today.xlsx", wb), route={k: v for k, v in route.items() if v}))
-        self.assertEqual(r.status_code, 200, r.json); self.assertEqual({v["status"] for v in r.json["results"].values()}, {200})
-        self.assertEqual(sorted(k for k in self.get(a)["data"] if k != "request"), ["ids", "sc", "temp"])
-        self.assertEqual(sorted(k for k in self.get(b)["data"] if k != "request"), ["ids", "sc"])
-
     def test_records_workbook_covers_many_reports(self):
         for s in ("CPRIBLRSCL25T1654", "CPRIBLRSCL25T1655", "CPRIBLRSCL25T1656"):
             i = self.job(s); self.c.post(f"/api/jobs/{i}/import", json=up("all.xlsx", filled(["proforma", "temp"])))

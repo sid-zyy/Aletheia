@@ -1,5 +1,4 @@
-/* Excel in the page: upload preview with source cells, workbooks that cover several jobs, the customer's request form,
-   and the administrator's template tools (versions, click-to-bind on a sample sheet, live test, past uploads, diff). */
+/* Excel in the page: upload preview with source cells, and the administrator's template tools (versions, click-to-bind on a sample sheet, live test, past uploads, diff). */
 (()=>{const s=document.createElement('style');s.textContent=`
 .xs{border:1px solid var(--ln);border-radius:12px;margin:10px 0;overflow:hidden}.xs>summary{padding:10px 14px;cursor:pointer;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;background:var(--cd2)}
 .xs table{width:100%;border-collapse:collapse;font-size:13px}.xs td{padding:5px 10px;border-top:1px solid var(--ln);vertical-align:top}
@@ -33,18 +32,6 @@ function xlPreview(id,f,sec){return new Promise(async done=>{let b;try{b={filena
   wide();$('#xc').onclick=()=>{closeModal();done(true)};
   $('#xi').onclick=async()=>{try{const x=await api(`/api/jobs/${id}/excel/import`,b);closeModal();toast(`Imported ${x.sections.length} section${x.sections.length==1?'':'s'} from ${f.name}`)}catch(e){toast(e,1)}done(true)};
  }catch(e){toast(e,1);done(true)}})}
-
-/* ---------------------------------------------------------------- one workbook, several jobs */
-function bayWorkbook(){pick('.xlsx',async f=>{if(!f)return;try{const b={filename:f.name,b64:await b64(f)},r=await api('/api/excel/preview',b),l=(await api('/api/jobs')).filter(j=>!j.archived&&j.stage<4);
- if(!r.sheets.length)return toast('No sheet of this workbook matches a logsheet template',1);
- modal(`<h2>Sheets in ${esc(f.name)}</h2><p class="note">Each sheet goes to the job whose series number is written on it. Check the routing, change it where needed, then import. Every job keeps its own copy of the file and audit entry.</p>
-  <div style="max-height:56vh;overflow:auto"><table class="ut"><thead><tr><th>Sheet</th><th>Test</th><th>Series on sheet</th><th>Job</th></tr></thead><tbody>${r.sheets.map((s,i)=>`<tr><td>${esc(s.sheet)}${s.errors.length?`<div class="note" style="color:var(--er);margin:0">${esc(s.errors[0])}</div>`:''}</td><td>${esc(SECN[s.section]||s.section)}</td><td>${esc(s.series_on_sheet||'-')}<div class="note" style="margin:0">${esc(s.route)}</div></td>
-  <td><select id="rt_${i}" style="width:auto;padding:6px 10px"><option value="">Do not import</option>${l.map(j=>`<option value="${j.id}" ${s.job&&s.job.id==j.id?'selected':''}>${esc(j.series)}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div>
-  ${r.unmatched.length?`<p class="note">Not recognised: ${r.unmatched.map(esc).join(', ')}</p>`:''}<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn g" onclick="closeModal()">Cancel</button><button class="btn" id="bwi">Import</button></div>`);wide();
- $('#bwi').onclick=async()=>{const route={};r.sheets.forEach((s,i)=>{const v=$('#rt_'+i).value;if(v)route[s.sheet]=+v});
-  try{const x=await api('/api/excel/import',{...b,route});closeModal();const bad=Object.entries(x.results).filter(([,v])=>v.status!=200);
-   toast(bad.length?bad.map(([k,v])=>`${k}: ${[].concat(v.error).join(' ')}`):`Imported into ${Object.keys(x.results).length} job${Object.keys(x.results).length==1?'':'s'}`,bad.length?1:0);route()}catch(e){toast(e,1)}}}catch(e){toast(e,1)}})}
-
 
 /* ---------------------------------------------------------------- Admin: templates */
 async function templatesPage(id){if(id)return templateView(+id);const t=await api('/api/templates'),by={};t.forEach(x=>(by[x.key]=by[x.key]||[]).push(x));

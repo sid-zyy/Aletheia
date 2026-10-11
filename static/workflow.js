@@ -25,7 +25,6 @@ body.no-report-generate [onclick^="act('generate'"],body.no-report-approve [oncl
 `;document.head.append(s)})();
 /* hide what the role cannot use: one class per missing permission (the server refuses these calls anyway) */
 function roleClasses(){for(const p of['data.write','job.delete','job.edit','data.check','report.generate','report.approve','job.create','request.receive','job.signoff'])document.body.classList.toggle('no-'+p.replace('.','-'),!!ME&&!can(p))}
-const bay=()=>null;  /* test bays were removed */
 
 /* ---------------------------------------------------------------- job page: tests and verification */
 async function wfCard(j){if(isCust())return;const id=j.id,nx=$('.card.next');if(!nx)return;
@@ -95,7 +94,6 @@ async function wfReview(id,k){const j=await api('/api/jobs/'+id),m=j.meta[k],row
   <div style="max-height:46vh;overflow:auto;border:1px solid var(--ln);border-radius:10px"><table class="vt">${rows.map(([p,v])=>`<tr><td>${esc(p)}</td><td>${v==null||v===''?'<i style="color:var(--wn)">NA</i>':esc(v)}</td></tr>`).join('')}</table></div>
   <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap"><button class="btn g" onclick="closeModal()">Cancel</button><button class="btn g" style="color:var(--er)" onclick="wfReason(${id},'${k}','ret')">Return with a reason</button><button class="btn" id="wvok">Values match the source: verify</button></div>`);
  $('#wvok').onclick=()=>wfDo(id,k,'verify',{revision:m.revision},'Verified')}
-async function wfAssign(id,k,uid){try{await api(`/api/jobs/${id}/assign`,{key:k,user_id:uid?+uid:null});toast(uid?'Assigned':'Assignment removed')}catch(e){toast(e,1)}job(id)}
 async function wfSignoff(id){try{await api(`/api/jobs/${id}/signoff`,{});toast('Job approved: the report can now be generated');job(id)}catch(e){toast(e,1)}}
 async function wfChecked(id){try{await api(`/api/jobs/${id}/intake/checked`,{});toast('Intake confirmed against the original form');job(id)}catch(e){toast(e,1)}}
 async function wfHistory(id){const h=await api(`/api/jobs/${id}/history`);

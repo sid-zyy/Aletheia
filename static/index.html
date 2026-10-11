@@ -195,7 +195,7 @@ const toForm=(id,k)=>{const h=`#/job/${id}/form/${k}`;if(location.hash==h)route(
 function editSec(id,k,prop){PEND=prop?{k,prop}:null;toForm(id,k)}
 const SEC_HINT=[['sc',/short.?circuit/i],['temp',/temp/i],['pressure',/leak|pressure|vacuum/i],['routine',/routine/i],['losses',/datasheet|calculation/i],
  ['resistance',/loss(es)? measurement/i],['noload',/loss(es)? measurement|no.?load/i],['proforma',/proforma/i],['work',/work.?instruction/i],['request',/request/i]];
-const fits=(fn,k)=>SEC_HINT.some(([x,re])=>x==k&&re.test(fn)),guessSec=fn=>(SEC_HINT.find(([,re])=>re.test(fn))||[])[0];
+const guessSec=fn=>(SEC_HINT.find(([,re])=>re.test(fn))||[])[0];
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 /* "Other log sheet": an editor whose fields and tables come from the sheet itself */
 function oclean(o){o=o&&typeof o=='object'?o:{};const fl=Array.isArray(o.fields)?o.fields.filter(f=>f&&typeof f=='object'):[],tb=Array.isArray(o.tables)?o.tables.filter(t=>t&&typeof t=='object'):[];
@@ -435,8 +435,6 @@ function historyCard(j){const ev=j.audit.filter(a=>a.kind!='notify'),grp=HSTAGE.
   <details class="hst" ontoggle="if(this.open&&!this.dataset.l){this.dataset.l=1;revisions(${j.id},this.querySelector('.hrv'))}"><summary><b>Revisions of each test</b><span class="note" style="margin:0">show</span></summary><div class="hrv"><p class="note">Loading&hellip;</p></div></details></div>`}
 async function revisions(id,el){try{const h=await api(`/api/jobs/${id}/history`),by={};h.forEach(x=>(by[x.key]=by[x.key]||[]).push(x));
  el.innerHTML=Object.entries(by).filter(([k])=>k!='request').map(([k,l])=>`<details class="hrt"><summary>${esc(SECN[k]||k)} <span class="note" style="margin:0">revision ${l[l.length-1].revision}</span></summary>${l.slice().reverse().map(x=>`<div class="hrr"><b>Revision ${x.revision}</b> by ${esc(x.by||'-')}, ${esc(x.at.replace('T',' ').slice(0,16))} &middot; ${esc(WSTATE[x.state]||x.state||'')}${x.event?`<div class="note" style="margin:0">${esc(x.event)}</div>`:''}</div>`).join('')}</details>`).join('')||'<p class="note">No test data yet.</p>'}catch(e){el.innerHTML=`<p class="note">${esc([].concat(e).join(' '))}</p>`}}
-/* uploader, file and revision under a section name; the full trail is in the section history */
-const secBy=(j,k)=>{const m=(j.meta||{})[k];if(!m||k=='request')return'';return `<small class="sby" title="${esc(m.file_sha256?'File SHA-256 '+m.file_sha256:'Data SHA-256 '+(m.data_sha256||''))}">${esc(m.uploaded_by||'migrated record')}${m.file?' &middot; '+esc(m.file):''} &middot; rev ${m.revision}${m.verified_by?' &middot; verified by '+esc(m.verified_by):''}</small>`};
 async function act(a,m){const id=+location.hash.split('/')[2];try{await api(`/api/jobs/${id}/${a}`,{});toast(m)}catch(e){toast(e,1)}job(id)}
 
 async function preview(id){const l=(await api('/api/jobs')).filter(j=>j.stage>=3);id=+id||(l[0]&&l[0].id);
@@ -470,7 +468,7 @@ function arch(){
  <g class="api"><rect x="490" y="66" width="430" height="44" rx="6"/><text class="st" x="506" y="86">REST API behind the permission gate</text><text class="sd" x="506" y="102">sessions, CSRF, three roles, separation of duties</text><text class="sf" x="904" y="93" text-anchor="end">auth.py</text></g>
  <path class="spine" d="M705 110V556"/>${[130,236,342,448].map(y=>`<path class="spine" d="M695 ${y+46}H715"/>`).join('')}
  ${SV(490,130,205,92,'Intake and workflow','workflow.py',['Strict request fields, PIN check','Assign / take tests','Verify, return, sign-off'])}
- ${SV(715,130,205,92,'Excel templates','xltemplates.py',['Name, label, cell, table','Every value with its cell','Versioned, several jobs per file'])}
+ ${SV(715,130,205,92,'Excel templates','xltemplates.py',['Name, label, cell, table','Every value with its cell','Versioned, paper layout'])}
  ${SV(490,236,205,92,'Checks','app.py · rules.py',['Values taken as logged','Limits from the proforma','Recomputation advisory only'])}
  ${SV(715,236,205,92,'Report engine','ReportLab',['Manifest + QR on every version','Partial reports for customers','Amendments supersede'])}
  ${SV(490,342,205,92,'Integrity','integrity.py',['Section revisions + history','Hash-chained audit log','Triggers lock released data'])}
@@ -494,7 +492,7 @@ function arch(){
  const MODS=[['Accounts and permissions','auth.py','Users, customer organisations, sessions with timeouts and lock-out, CSRF; every route names its permission and the gate refuses the rest','Flask, werkzeug'],
   ['Integrity','integrity.py','One row per test with revisions and full history, stored files, atomic numbering, hash-chained audit log, database triggers, migrations with backup','SQLite'],
   ['Request form and workflow','workflow.py','Customer Request Form CPRI/QAF/01A (sheets 1-3) and its rules (PIN-code table, choices, declarations), test plan, assignment, verify / return / sign-off rules','Python'],
-  ['Excel templates','xltemplates.py, excel_routes.py','Reads logsheets by name, label, cell or table and draws the blank sheets; versioned templates managed by the administrator; workbooks for several jobs; Excel exports','openpyxl'],
+  ['Excel templates','xltemplates.py, excel_routes.py','Reads logsheets by name, label, cell or table and draws the blank sheets; versioned templates managed by the administrator, laid out as the paper logsheets; Excel exports','openpyxl'],
   ['Checks and report','app.py, report.py, rules.py','Checks on the values as logged; report in the lab’s Transformer Test report format with manifest and QR code; partial reports; approval and amendments','ReportLab'],
   ['Notifications','notify.py','In-app notifications: grouped by day, needs-action first, each opening the job, test or request it is about','Python'],
   ['Customer portal','portal.py, tickets.py','Approved values only, versioned partial reports, customers’ test requests (send, return, correct), tickets to the administrators','Python'],

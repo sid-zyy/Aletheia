@@ -192,7 +192,7 @@ _TOK = re.compile(r"\[(\d+)\]|([^.\[\]]+)")
 
 def tokens(path):
     t = [int(i) if i != "" else k for i, k in _TOK.findall(str(path))]
-    if not t: raise TemplateError(f"Empty field path in the template")
+    if not t: raise TemplateError("Empty field path in the template")
     return t
 
 
@@ -239,13 +239,19 @@ def matches(sheet, fp):
     return bool(fp.get("sheet"))
 
 
+def specificity(fp):
+    return len(norm((fp or {}).get("contains") or (fp or {}).get("equals") or ""))
+
+
 def detect(book, templates):
-    """[(worksheet, template)] for every visible sheet that one of the templates recognises (first match wins)."""
+    """[(worksheet, template)] for every visible sheet that one of the templates recognises. When several do, the most
+    specific fingerprint wins ("Aletheia template noload v2" over "Aletheia template noload", which it contains), then
+    the order given (the active version before retired ones)."""
     out = []
     for ws in book.sheets():
         sh = Sheet(book, ws)
-        t = next((t for t in templates if matches(sh, t["mapping"].get("fingerprint"))), None)
-        if t: out.append((ws, t))
+        hits = [(n, t) for n, t in enumerate(templates) if matches(sh, t["mapping"].get("fingerprint"))]
+        if hits: out.append((ws, max(hits, key=lambda h: (specificity(h[1]["mapping"].get("fingerprint")), -h[0]))[1]))
     return out
 
 
@@ -663,7 +669,7 @@ def validate_cells(ws, ref, spec, typ):
         dv.errorStyle = "warning" if spec.get("other") else "stop"
     elif typ == "number":
         dv = DataValidation(type="decimal", operator="between", formula1=str(spec.get("min", -1e9)), formula2=str(spec.get("max", 1e9)), allow_blank=True)
-        dv.error = f"Enter a number" + (f" between {spec['min']} and {spec['max']}" if "min" in spec and "max" in spec else "") + (f" ({title})" if title else "")
+        dv.error = "Enter a number" + (f" between {spec['min']} and {spec['max']}" if "min" in spec and "max" in spec else "") + (f" ({title})" if title else "")
     elif typ == "date":
         dv = DataValidation(type="date", operator="greaterThanOrEqual", formula1=str(DATE_MIN), allow_blank=True)
         dv.error = "Enter a date (dd-mm-yyyy)"

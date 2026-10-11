@@ -1,8 +1,23 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+venv/
+
+# Runtime data: never committed (records, keys, caches, backups, logs)
 aletheia.db
-.env
+aletheia.db-*
 ai_cache.db
 .aletheia_secret
 backups/
 *.bak
+*.log
+
+# Local settings
+.env
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

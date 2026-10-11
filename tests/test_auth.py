@@ -164,7 +164,7 @@ class Features(Base):
         aletheia.app.config["FEATURE_SCAN"] = False
         try:
             self.assertFalse(self.c.get("/api/me").json["features"]["scan"])
-            r = self.c.post("/api/read-scan", json=dict(section="request", filename="x.png", b64="aGk="))
+            r = self.c.post("/api/sources/999999/extract", json=dict(section="temp"))
             self.assertEqual(r.status_code, 404); self.assertIn("turned off", r.json["error"][0])
         finally:
             aletheia.app.config.pop("FEATURE_SCAN")

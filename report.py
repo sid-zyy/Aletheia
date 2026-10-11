@@ -17,7 +17,7 @@ from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.platypus import Flowable, Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Flowable, Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGO, ACCREDITATION = os.path.join(HERE, "static", "cpri-logo.png"), os.path.join(HERE, "static", "accreditation.png")

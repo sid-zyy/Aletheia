@@ -23,6 +23,7 @@ Main focus of this plan: **the workflow, the roles, and login.**
 | D11 | **The customer is notified only when the final report is released** (plus *request received* and *request returned*). | No progress or per-test notices to customers; one release notice per released version, linking to the report. Every notification stores the page it opens and whether it needs action. |
 | D12 | **Formal test names from one list** (`NAMES` in `app.py`). | Display names only; stored keys unchanged. |
 | D13 | **Excel templates mirror the scanned logsheets** (11 Oct 2026). | Version 2 of every logsheet template (`paper_templates.py`): paper order and labels, locked printed and calculated cells, dropdowns, number and date limits, hidden fingerprint; version 1 retired and still importable. |
+| D14 | **Code clean-up (11 Oct 2026).** | Removed what nothing used any more: the workbook routed to several jobs (`/api/excel/preview|import`), a job opened from a data file (`/api/jobs/from-file`), the AI pre-filling of a request before the job exists (`/api/read-scan`; only customers raise requests), the test-bay plumbing and unused page functions. Waitress serves the app; settings may come from `.env`. |
 
 Still assumed (flag if wrong): the customer sees **values only for approved sections**; sections that are uploaded but not yet verified show as *Pending verification* with no numbers, so a customer never sees data that may later be corrected.
 

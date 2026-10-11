@@ -18,10 +18,16 @@ The plan this build follows, with the status of every phase, is in [docs/NEXT_ST
 
 ## Install and run
 
+    python -m venv .venv && .venv\Scriptsctivate     # Windows (Linux / macOS: source .venv/bin/activate)
     pip install -r requirements.txt
-    python app.py                 # open http://localhost:5000 on the server PC
+    copy .env.example .env                              # optional: change the settings (see Configuration)
+    python app.py                                       # open http://localhost:5000 on the server PC
 
-Python 3.10 or newer. Records are kept in `aletheia.db` next to `app.py`; backups go to `backups/` beside it.
+Python 3.10 or newer. `python app.py` serves the app with **Waitress**, a production WSGI server that runs on Windows (Flask's
+own development server is used only if Waitress is missing, with a warning). By default it listens on this computer only;
+set `ALETHEIA_HOST=0.0.0.0` to open it to the lab network, and put it behind a reverse proxy with a certificate (then set
+`ALETHEIA_HTTPS=1`) if it is reached over HTTPS. Before real use set `ALETHEIA_PASSWORDS=1`; the server warns at start-up
+while passwords are off. Records are kept in `aletheia.db` next to `app.py`; backups go to `backups/` beside it.
 Browsers re-check the page and its scripts on every load and never cache API answers, so an update shows at once
 (no need to clear the browser cache).
 
@@ -183,16 +189,20 @@ logsheet) are optional template fields; when a logsheet does not carry them the 
 
 ## Configuration
 
-Environment variables, read when the app starts.
+Environment variables, read when the app starts; they may also be written in a `.env` file next to `app.py` (start from
+`.env.example`, which lists every setting with its default). A variable set in the environment wins over the file.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `ALETHEIA_HOST`, `PORT` | `127.0.0.1`, `5000` | Address and port the server listens on (`0.0.0.0`: the lab network) |
+| `ALETHEIA_THREADS`, `ALETHEIA_LOG_LEVEL` | `8`, `INFO` | Waitress worker threads; logging level |
+| `ALETHEIA_HTTPS` | `0` | `1` when served over HTTPS: the session cookie is sent encrypted only |
 | `ALETHEIA_DB` | `aletheia.db` next to `app.py` | Records database (`ai_cache.db`, `.aletheia_secret` and `backups/` go in the same folder) |
-| `PORT` | `5000` | Port of the web app |
 | `ALETHEIA_TEMPLATE` | `report_template.json` | Report wording and laboratory details (ULR prefix, address, clause numbers, notes) |
 | `ALETHEIA_BACKUP_DIR`, `ALETHEIA_BACKUP_KEEP` | `backups/`, `30` | Backup folder; how many daily backups to keep (the first of each month is always kept) |
 | `ALETHEIA_AUTO_BACKUP` | `1` | Daily backup (`0` turns off) |
-| `ALETHEIA_PASSWORDS` | `0` | `1` turns passwords on (off while testing: sign in with the username) |
+| `ALETHEIA_PASSWORDS` | `0` | `1` turns passwords on: the real system (off: the dummy version, no sign-in) |
+| `ALETHEIA_ROLE_SWITCH` | `1` | `0` turns the *View as* menu off even while passwords are off |
 | `ALETHEIA_DEMO` | `0` | `1` enables `/api/demo` (loads the demo job; used by the tests). A real job always starts from a customer's request |
 | `ALETHEIA_FEATURE_SCAN` | `0` | `1` turns on the optional AI reading of scanned sheets (below) |
 | `GEMINI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`, `AI_API_KEY`, `AI_*` | unset | AI reader for scans (only with `ALETHEIA_FEATURE_SCAN=1`) |
@@ -213,19 +223,20 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 
 | Area | Endpoints |
 |---|---|
-| Accounts | `/api/setup`, `/api/login`, `/api/logout`, `/api/me`, `/api/password`, `/api/users[...]`, `/api/customers`, `/api/orgs` |
+| Accounts | `/api/setup`, `/api/login`, `/api/logout`, `/api/me`, `/api/switch` (dummy version only), `/api/password`, `/api/users[...]`, `/api/customers`, `/api/orgs` |
 | Intake | `/api/intake/check`, `/api/intake`, `/api/jobs/<id>/intake`, `/api/jobs/<id>/intake/checked`, `/api/request-forms[...]`, `/api/request-forms/<id>/return`, `/api/customer/requests[/check|/<id>]` |
-| Data | `/api/jobs/<id>/import`, `/api/jobs/<id>/excel/preview|import`, `/api/excel/preview|import` (several jobs), `/api/jobs/<id>/section`, `/api/jobs/<id>/history`, `/api/files/<id>` |
+| Data | `/api/jobs/<id>/import`, `/api/jobs/<id>/excel/preview|import`, `/api/jobs/<id>/section`, `/api/jobs/<id>/history`, `/api/files/<id>`, `/api/files/<id>/preview` |
 | Verification | `/api/jobs/<id>/sections/<test>/verify|return|reopen|na`, `/api/jobs/<id>/assign`, `/api/jobs/<id>/signoff` |
 | Reports | `/api/jobs/<id>/validate|review|generate|approve|amend`, `/api/jobs/<id>/report.pdf`, `/api/verify/<code>` |
 | Tickets | `/api/tickets[?status=]`, `/api/tickets/<id>`, `/api/tickets/<id>/messages|close|reopen` |
 | Customer | `/api/jobs/<id>/approved-values`, `/api/jobs/<id>/partials`, `/api/jobs/<id>/partial.pdf`, `/api/customer/request-forms` |
-| Excel | `/api/templates[...]`, `/api/logsheets/<test|all>.xlsx`, `/api/request-form.xlsx`, `/api/jobs/<id>/logsheets.xlsx`, `/api/records.xlsx` |
+| Excel | `/api/templates[...]`, `/api/logsheets/<test|all>.xlsx`, `/api/jobs/<id>/logsheets/<test>.xlsx`, `/api/request-form.xlsx`, `/api/jobs/<id>/logsheets.xlsx`, `/api/records.xlsx` |
 | Operations | `/api/my-work`, `/api/notifications`, `/api/audit[/verify|/tip]`, `/api/admin/backups[...]`, `/api/jobs/<id>/package.zip` |
 
 ## Tests
 
     python -m unittest discover -s tests
+    pip install -r requirements-dev.txt && python -m pyflakes *.py     # lint
 
 | File | Covers |
 |---|---|
@@ -234,7 +245,8 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `test_auth.py` | every route x every role, CSRF, lock-out, timeouts, first run, customers, separation of duties |
 | `test_integrity.py` | concurrent uploads, revisions, atomic numbering, audit chain, release locks, schema migration |
 | `test_workflow.py` | request form and sheet 3 rules, verify / return / reopen, ownership, sign-off, assignment notifications, My work |
-| `test_excel.py` | template round trips, preview, layout drift, formulas, refused files, several jobs per workbook, template versions |
+| `test_excel.py` | template round trips, preview, layout drift, formulas, refused files, template versions |
+| `test_paper.py` | the paper-layout templates (version 2): round trips, protection and validation, calculated cells, rollout, version 1 still importable, blank sheets per job, file preview |
 | `test_amend.py` | manifest, amendments, record packages, backups and tamper detection |
 | `test_portal.py` | approved values only, partial reports, notifications (in-app only, no email), customer-only requests, return and correction, no same-day board |
 | `test_tickets.py` | customers raise tickets, administrators answer and close them; who sees what |
@@ -244,7 +256,9 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 
 | Path | Contents |
 |---|---|
-| `app.py` | API, database, the checks (`validate`), workflow routes, release and amendment |
+| `app.py` | API, database, the checks (`validate`), workflow routes, release and amendment; `serve()` starts the server |
+| `config.py`, `.env.example` | settings from the environment or a `.env` file; every setting with its default |
+| `requirements.txt`, `requirements-dev.txt` | pinned runtime packages; plus the linter for development |
 | `report.py` | the test report PDF in the lab's *Transformer Test report format* (and the customer's partial report) |
 | `auth.py` | accounts, sessions, CSRF, roles and the permission gate |
 | `integrity.py` | sections and history, files, numbering, audit hash chain, database triggers, migrations |

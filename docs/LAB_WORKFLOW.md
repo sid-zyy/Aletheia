@@ -6,7 +6,7 @@ supports it. Purpose: reports that are complete and correct (D4), with fewer man
 ## 1. One job card per product
 Print the series and sample number once at intake (Aletheia allocates them only when the request form is complete) and
 attach the card to the product. Every bay copies the number into its logsheet header. *Aletheia:* the series written on each
-sheet is compared with the job's on upload, and a workbook holding sheets of several jobs is routed by that number.
+sheet is compared with the job's on upload, and a mismatch is flagged in the preview.
 
 ## 2. Standard Excel logsheets
 Use the blank logsheets downloaded from Aletheia (Templates, or *Excel logsheets* on any job): input cells are marked, every

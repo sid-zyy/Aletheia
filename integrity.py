@@ -126,17 +126,17 @@ def assignments(c, jid):
                       "LEFT JOIN bays b ON b.id=a.bay_id WHERE a.job_id=?", (jid,))}
 
 
-def write_section(c, jid, key, data, user_id, event, expect=None, file_id=None, import_id=None, state="uploaded", bay=None, template_id=None):
+def write_section(c, jid, key, data, user_id, event, expect=None, file_id=None, import_id=None, state="uploaded", template_id=None):
     """Create, replace or (data=None) remove one section, inside the caller's transaction.
     expect: the revision the caller last read; if the row has moved on since, Conflict is raised and nothing is written.
     A verified section raises Locked, except the merged ones (identifiers, request, additional sheets), which many files
-    add to: new content simply needs verifying again. bay: (id, name) of the test bay the data was recorded in."""
+    add to: new content simply needs verifying again. (Test bays were removed: the bay columns keep what older records were recorded with.)"""
     row = c.execute("SELECT * FROM sections WHERE job_id=? AND key=?", (jid, key)).fetchone()
     if expect is not None and (row["revision"] if row else 0) != expect: raise Conflict(key, row)
     if row and row["state"] == "verified":
         if key not in MERGED: raise Locked(key, row)
         c.execute("UPDATE sections SET state='uploaded' WHERE id=?", (row["id"],))  # unlock first (the trigger checks the old state)
-    t = now(); bay_id, bay_name = bay or (None, None)
+    t = now(); bay_id, bay_name = None, None
     if data is None:
         if not row: return None
         rev = row["revision"] + 1

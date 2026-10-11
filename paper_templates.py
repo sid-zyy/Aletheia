@@ -505,7 +505,7 @@ def pressure():
     p.row("Remarks / observations (oil leakage)", "leak.obs")
     p.instruments(["Digital Barometer", "RH / Temp Indicator", "Timer", "Pressure gauge", "Digital Vernier caliper"])
     p.signatures([("Tested by", "sig.tested_by"), ("Test Engineer", "sig.engineer")])
-    p.footer(f"APPROVED BY          DOCUMENT: FORMS & FORMATS   SECTION : 58   PAGE NO: 1 of 1   ISSUE NO.: 3   REVISION NO.:   DATE : 11.07.16")
+    p.footer("APPROVED BY          DOCUMENT: FORMS & FORMATS   SECTION : 58   PAGE NO: 1 of 1   ISSUE NO.: 3   REVISION NO.:   DATE : 11.07.16")
     return p.mapping()
 
 
