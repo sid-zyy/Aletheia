@@ -249,6 +249,15 @@ class ImportFormats(Base):
         self.assertTrue(f and all(x["level"] == "warn" for x in f))  # sheets agree with each other but not with the job's series
         self.assertTrue(any("25T1999" in x["expected"] for x in f))
 
+    def test_sheet_ids_saved_with_values(self):
+        i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
+        g = self.get(i); others = {k: v for k, v in g["data"]["ids"].items() if k != "sc"}
+        r = self.c.post(f"/api/jobs/{i}/section", json=dict(section="sc", data=g["data"]["sc"], ids=["CPRIBLRSCL25T1656", " "], revision=g["meta"]["sc"]["revision"]))
+        self.assertEqual(r.status_code, 200, r.json); ids = self.get(i)["data"]["ids"]
+        self.assertEqual(ids["sc"], ["CPRIBLRSCL25T1656", None]); self.assertEqual({k: v for k, v in ids.items() if k != "sc"}, others)  # other sheets kept
+        f = self.c.post(f"/api/jobs/{i}/validate").json["findings"]
+        self.assertTrue([x for x in f if x["check"] == "Identifier consistency" and x["level"] == "warn" and "25T1656" in x["detail"]])
+
     def test_other_log_sheet(self):
         i = self.job(); self.c.post(f"/api/jobs/{i}/import", json=up("d.json", raw("AP_Transformers_25T1654.json")))
         sheet = {"title": "Noise level test", "fields": [{"label": "Test series no.", "value": "25T1656"}, {"label": "Ambient", "value": 31.2},

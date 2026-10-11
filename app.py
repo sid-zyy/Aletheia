@@ -851,6 +851,12 @@ def section(i):
             why = write_check(c, i, [k])
             if why: return refuse(c, i, *why)
             integrity.write_section(c, i, k, b["data"], me(), f"{name(k)} {how}", expect=expected(c, i, k, b))
+            sid = b.get("ids")  # [series, sample] as written on this sheet, edited alongside its values
+            if k in NAMES and k != "request" and isinstance(sid, list) and len(sid) == 2:
+                sid = [str(x).strip() or None if x is not None else None for x in sid]
+                cur = integrity.read_section(c, i, "ids") or {}
+                if list(cur.get(k) or [None, None]) != sid:
+                    integrity.write_section(c, i, "ids", {**cur, k: sid}, me(), f"{name('ids')}: {name(k)} identifiers {how}")
             after_change(c, i, f"{name(k)} {how}")
             notify.on_uploaded(c, i, [k])
     except Conflict as e: return conflict(e)
