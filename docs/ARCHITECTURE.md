@@ -71,7 +71,7 @@ previous one by hash.
 | `importers.py` | Flat-layout readers and exporters (CSV, Excel, SQLite, JSON), legacy registers |
 | `vision.py` | Optional AI reading of scanned sheets (off unless `ALETHEIA_FEATURE_SCAN=1`) |
 | `rules.py` | Engineering thresholds with source and status |
-| `static/` | Single-page UI: `index.html` (pages, job page, report), `auth.js` (sign-in, roles, the *View as* switch, Admin and customer pages), `workflow.js` (verification card, intake, My work, amendments), `excel.js` (upload preview, templates), `portal.js` (notifications, customer additions), `request.js` (Customer Request Form laid out as the printed form, customer requests, intake inbox and receiving a request), `tickets.js` (tickets for customers and administrators), `ui.js` (user menu, dashboard tasks, take / assign tests, dashboard emblem), `assistant.js` (rule-based assistant for every role, no AI model) |
+| `static/` | Single-page UI: `index.html` (pages, job page, report), `auth.js` (sign-in, roles, the *View as* switch, Admin and customer pages), `workflow.js` (verification card, intake, My work, amendments), `excel.js` (upload preview, templates), `portal.js` (notifications, customer additions), `request.js` (Customer Request Form laid out as the printed form, customer requests, intake inbox and receiving a request), `tickets.js` (tickets for customers and administrators), `ui.js` (user menu, dashboard tasks, take / assign tests, dashboard emblem), `assistant.js` (rule-based assistant for every role, no AI model), `i18n.js` (customer screens and assistant in English, Hindi and Kannada; switch in the top bar) |
 
 ## Data model (`aletheia.db`, schema version 2)
 

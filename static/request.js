@@ -18,26 +18,26 @@
 @media(max-width:680px){.qr{grid-template-columns:1fr}.qr .qc{display:none}.qf{padding:16px}}`;document.head.append(s)})();
 
 const QS={received:['uploaded','Waiting for the laboratory'],returned:['returned','Returned to you for correction'],used:['verified','Received by the laboratory'],replaced:['na','Replaced by a corrected request']};
-const qHead=(F,sheet,lab)=>`<div class="qh"><div class="qt">${esc(F.form.org)}</div><div class="qu">${esc(F.form.unit)}</div><div>Format No: ${esc(F.form.format_no)}</div>
- <div style="text-align:right">${esc(F.form.issue)}<br>${esc(F.form.issue_date)}</div><div class="qn2">${lab?'(To be filled by the laboratory)':esc(F.form.title)}</div><div></div><div style="text-align:right">Sheet ${sheet} of 3</div></div>`;
-const req=f=>f.optional||f.ro?'':'<span class="qreq" title="Required" aria-label="required"> *</span>';
+const qHead=(F,sheet,lab)=>`<div class="qh"><div class="qt">${esc(T(F.form.org))}</div><div class="qu">${esc(T(F.form.unit))}</div><div>${T('Format No:')} ${esc(F.form.format_no)}</div>
+ <div style="text-align:right">${esc(T(F.form.issue))}<br>${esc(T(F.form.issue_date))}</div><div class="qn2">${lab?T('(To be filled by the laboratory)'):esc(T(F.form.title))}</div><div></div><div style="text-align:right">${T('Sheet {n} of 3',{n:sheet})}</div></div>`;
+const req=f=>f.optional||f.ro?'':`<span class="qreq" title="${T('Required')}" aria-label="${T('Required')}"> *</span>`;
 const qShow=v=>v===''||v==null?'<span class="qv na">-</span>':`<div class="qv">${esc(v)}</div>`;
 
 /* one field of the form; p = id prefix; ro = show the value only */
-function qField(f,v,p,ro,F){if(ro)f={...f,ro:1};const id=p+f.key,note=f.note?`<div class="qnote">${esc(f.note)}</div>`:'';v=v==null?'':v;
- if(f.kind=='agree')return `<div class="qagree" data-k="${f.key}">${ro?(v?'&#9745;':'&#9744;'):`<input type="checkbox" id="${id}" ${v?'checked':''}>`}<label for="${id}" style="margin:0;font-weight:500">${esc(f.label)}${req(f)}${note}</label></div>`;
+function qField(f,v,p,ro,F){if(ro)f={...f,ro:1};const id=p+f.key,note=f.note?`<div class="qnote">${esc(T(f.note))}</div>`:'';v=v==null?'':v;
+ if(f.kind=='agree')return `<div class="qagree" data-k="${f.key}">${ro?(v?'&#9745;':'&#9744;'):`<input type="checkbox" id="${id}" ${v?'checked':''}>`}<label for="${id}" style="margin:0;font-weight:500">${esc(T(f.label))}${req(f)}${note}</label></div>`;
  let inp;
  if(ro)inp=qShow(v);
- else if(f.kind=='state')inp=`<select id="${id}"><option value="">Choose...</option>${F.states.map(s=>`<option ${s==v?'selected':''}>${esc(s)}</option>`).join('')}</select>`;
- else if(f.kind=='yesno')inp=`<div class="qopt row">${['Yes','No'].map(o=>`<label><input type="radio" name="${id}" value="${o}" ${v==o?'checked':''}> ${o}</label>`).join('')}</div>`;
- else if(f.kind=='choice')inp=`<div class="qopt${f.options.length<3?' row':''}">${f.options.map(o=>`<label><input type="radio" name="${id}" value="${esc(o)}" ${v==o?'checked':''}> ${esc(o)}</label>`).join('')}</div>`;
+ else if(f.kind=='state')inp=`<select id="${id}"><option value="">${T('Choose...')}</option>${F.states.map(s=>`<option value="${esc(s)}" ${s==v?'selected':''}>${esc(T(s))}</option>`).join('')}</select>`;
+ else if(f.kind=='yesno')inp=`<div class="qopt row">${['Yes','No'].map(o=>`<label><input type="radio" name="${id}" value="${o}" ${v==o?'checked':''}> ${T(o)}</label>`).join('')}</div>`;
+ else if(f.kind=='choice')inp=`<div class="qopt${f.options.length<3?' row':''}">${f.options.map(o=>`<label><input type="radio" name="${id}" value="${esc(o)}" ${v==o?'checked':''}> ${esc(T(o))}</label>`).join('')}</div>`;
  else if(f.wide)inp=`<textarea id="${id}">${esc(v)}</textarea>`;
  else inp=`<input class="in" id="${id}" value="${esc(v)}" ${f.kind=='pin'?'inputmode="numeric" maxlength="6"':f.kind=='email'?'type="email"':f.kind=='phone'?'type="tel"':f.kind=='count'?'type="number" min="1"':''}>`;
- const na=f.na_ok&&!ro?`<label style="display:flex;gap:6px;align-items:center;margin:6px 0 0;font-weight:500;font-size:13px"><input type="checkbox" id="${id}_na" ${String(v).startsWith('Not applicable:')?'checked':''} onchange="$('#${id}_nr').style.display=this.checked?'':'none'"> Not applicable</label><input class="in" id="${id}_nr" placeholder="Reason it does not apply" style="margin-top:6px;${String(v).startsWith('Not applicable:')?'':'display:none'}" value="${esc(String(v).replace(/^Not applicable: ?/,''))}">`:'';
- return `<div class="qr" data-k="${f.key}"><div class="ql">${esc(f.label)}${req(f)}</div><div class="qc">:</div><div>${inp}${na}${note}</div></div>`}
+ const na=f.na_ok&&!ro?`<label style="display:flex;gap:6px;align-items:center;margin:6px 0 0;font-weight:500;font-size:13px"><input type="checkbox" id="${id}_na" ${String(v).startsWith('Not applicable:')?'checked':''} onchange="$('#${id}_nr').style.display=this.checked?'':'none'"> ${T('Not applicable')}</label><input class="in" id="${id}_nr" placeholder="${T('Reason it does not apply')}" style="margin-top:6px;${String(v).startsWith('Not applicable:')?'':'display:none'}" value="${esc(String(v).replace(/^Not applicable: ?/,''))}">`:'';
+ return `<div class="qr" data-k="${f.key}"><div class="ql">${esc(T(f.label))}${req(f)}</div><div class="qc">:</div><div>${inp}${na}${note}</div></div>`}
 
 function qFields(fields,vals,p,ro,F,after={}){let g=null,h='';
- for(const f of fields){if(f.group!==g){g=f.group;if(g)h+=`<div class="qg">${esc(g)}</div>`}h+=qField(f,vals[f.key],p,ro,F)+(after[f.key]||'')}return h}
+ for(const f of fields){if(f.group!==g){g=f.group;if(g)h+=`<div class="qg">${esc(T(g))}</div>`}h+=qField(f,vals[f.key],p,ro,F)+(after[f.key]||'')}return h}
 function qCollect(fields,p){const b={na:{}};for(const f of fields){const id=p+f.key;
   if(f.kind=='agree'){const e=$('#'+id);b[f.key]=!!(e&&e.checked);continue}
   if(f.kind=='yesno'||f.kind=='choice'){const e=document.querySelector(`[name="${id}"]:checked`);b[f.key]=e?e.value:'';continue}
@@ -46,34 +46,34 @@ function qCollect(fields,p){const b={na:{}};for(const f of fields){const id=p+f.
 /* rows that only apply after a certain answer (e.g. the decision rule when a statement of conformity is wanted) */
 function qWhen(fields,p,root){const upd=()=>{for(const f of fields){if(!f.when)continue;const e=document.querySelector(`[name="${p+f.when[0]}"]:checked`),r=root.querySelector(`[data-k="${f.key}"]`);if(r)r.style.display=e&&e.value==f.when[1]?'':'none'}};
  root.addEventListener('change',upd);upd()}
-const qProblems=(e,w,okText)=>(e.length?`<div class="errs" role="alert"><b>${e.length} thing${e.length==1?'':'s'} to correct</b><ul>${e.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:`<div class="okb">${okText}</div>`)+(w.length?`<div class="warns"><b>Please check</b><ul>${w.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:'');
+const qProblems=(e,w,okText)=>(e.length?`<div class="errs" role="alert"><b>${e.length==1?T('1 thing to correct'):T('{n} things to correct',{n:e.length})}</b><ul>${e.map(x=>`<li>${esc(TF(x))}</li>`).join('')}</ul></div>`:`<div class="okb">${T(okText)}</div>`)+(w.length?`<div class="warns"><b>${T('Please check')}</b><ul>${w.map(x=>`<li>${esc(TF(x))}</li>`).join('')}</ul></div>`:'');
 
 /* ---------------------------------------------------------------- customer: raise (or correct) a request */
 async function custRequestPage(fid){const [F,old]=await Promise.all([api('/api/intake/fields'),fid?api('/api/customer/requests/'+fid):null]);
  const v=old?{...old.values}:{customer:ME.org||'',email:ME.email||'',contact:ME.full_name||'',signed_name:ME.full_name||''},plan=old?old.plan:[];
  const s1=F.fields.filter(f=>f.sheet==1),s2=F.fields.filter(f=>f.sheet==2);
- const ticks=`<div class="qr"><div class="ql">Tests to be carried out<div class="qnote" style="font-weight:400">Tick each test you need; the laboratory plans the job from these.</div></div><div class="qc">:</div><div class="qtests">${Object.entries(F.tests).map(([k,l])=>`<label><input type="checkbox" name="cp" value="${k}" ${plan.includes(k)?'checked':''}> ${esc(l)}</label>`).join('')}</div></div>`;
- $('#app').innerHTML=`<button class="back" onclick="go('my')">&larr; Open requests</button>`+head(old?'Correct and send again':'New test request',
-  old&&old.note?`Returned by the laboratory: <b>${esc(old.note)}</b>`:`Customer Request Form ${esc(F.form.format_no)}, filled in online for ${esc(ME.org||'your organisation')}. Every value is checked as you type; the laboratory receives it and records the rest when the sample arrives.`)+
+ const ticks=`<div class="qr"><div class="ql">${T('Tests to be carried out')}<div class="qnote" style="font-weight:400">${T('Tick each test you need; the laboratory plans the job from these.')}</div></div><div class="qc">:</div><div class="qtests">${Object.entries(F.tests).map(([k,l])=>`<label><input type="checkbox" name="cp" value="${k}" ${plan.includes(k)?'checked':''}> ${esc(T(l))}</label>`).join('')}</div></div>`;
+ $('#app').innerHTML=`<button class="back" onclick="go('my')">&larr; ${T('Open requests')}</button>`+head(T(old?'Correct and send again':'New test request'),
+  old&&old.note?`${T('Returned by the laboratory:')} <b>${esc(old.note)}</b>`:T('Customer Request Form {fmt}, filled in online for {org}. Every value is checked as you type; the laboratory receives it and records the rest when the sample arrives.',{fmt:esc(F.form.format_no),org:esc(ME.org||T('your organisation'))}))+
  `<div class="qf" id="qs1">${qHead(F,1)}${qFields(s1,v,'c_',false,F,{tests:ticks})}</div>
-  <div class="qf" id="qs2">${qHead(F,2)}${qFields(s2,v,'c_',false,F)}<div class="qsig"><div></div><div style="text-align:right">Customers Name &amp; Signature with Date<br><b id="qsn">${esc(v.signed_name||'')}</b> &middot; ${new Date().toLocaleDateString('en-GB')}</div></div></div>
-  <div class="qf" style="opacity:.75">${qHead(F,3,1)}<p class="note" style="margin:0">Physical condition of the sample on receipt, the laboratory's capability and the acceptance of the job are recorded by the laboratory when your sample arrives.</p></div>
-  <div id="cv"></div><div class="card" style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap"><button class="btn g" id="cck">Check for problems</button><button class="btn lg" id="csd">${old?'Send the corrected request':'Send the request'}</button></div>`;
+  <div class="qf" id="qs2">${qHead(F,2)}${qFields(s2,v,'c_',false,F)}<div class="qsig"><div></div><div style="text-align:right">${T('Customers Name & Signature with Date')}<br><b id="qsn">${esc(v.signed_name||'')}</b> &middot; ${new Date().toLocaleDateString(LOC())}</div></div></div>
+  <div class="qf" style="opacity:.75">${qHead(F,3,1)}<p class="note" style="margin:0">${T("Physical condition of the sample on receipt, the laboratory's capability and the acceptance of the job are recorded by the laboratory when your sample arrives.")}</p></div>
+  <div id="cv"></div><div class="card" style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap"><button class="btn g" id="cck">${T('Check for problems')}</button><button class="btn lg" id="csd">${T(old?'Send the corrected request':'Send the request')}</button></div>`;
  qWhen(F.fields,'c_',$('#app'));
  const collect=()=>({...qCollect(F.fields,'c_'),plan:[...document.querySelectorAll('[name=cp]:checked')].map(x=>x.value),...(old?{replaces:old.id}:{})});
  const show=r=>{const e=r.errors||r.error||[];$('#cv').innerHTML=qProblems(e,r.warnings||[],'Everything is filled in correctly.');
   document.querySelectorAll('.qr,.qagree').forEach(x=>{const f=F.fields.find(f=>f.key==x.dataset.k);x.classList.toggle('qbad',!!f&&e.some(m=>m.startsWith(f.label)||m.includes(f.label)))})};
  let tm;$('#app').addEventListener('input',()=>{const n=$('#c_signed_name');if(n)$('#qsn').textContent=n.value;clearTimeout(tm);tm=setTimeout(()=>api('/api/customer/requests/check',collect()).then(show).catch(()=>{}),700)});
  $('#cck').onclick=async()=>{try{show(await api('/api/customer/requests/check',collect()))}catch(e){toast(e,1)}};
- $('#csd').onclick=async()=>{const b=collect();try{await api('/api/customer/requests',b);toast('Request sent to the laboratory');go('my')}
+ $('#csd').onclick=async()=>{const b=collect();try{await api('/api/customer/requests',b);toast(T('Request sent to the laboratory'));go('my')}
   catch(e){try{show(await api('/api/customer/requests/check',b))}catch(x){toast(e,1)}scrollTo(0,$('#cv').offsetTop-80)}}}
 
 /* the customer's requests, on their "Open requests" page */
 async function custForms(){const l=await api('/api/customer/request-forms'),el=document.createElement('div');
- el.innerHTML=`<div class="card"><div class="wh"><h2 style="margin:0">Test requests</h2></div>
-  <p class="note">Fill in the Customer Request Form online; the laboratory receives it and opens the job when your sample arrives.</p>${l.length?l.map(f=>{const [c,t]=QS[f.status]||['uploaded',f.status];
-   return `<div class="ps"><span>Request ${f.id} <small class="sby">sent ${esc(f.at.replace('T',' ').slice(0,16))}</small>${f.status=='returned'&&f.note?`<div class="note" style="margin:2px 0 0;color:var(--er)">Reason: ${esc(f.note)}</div>`:''}</span>
-    <span style="display:flex;gap:8px;align-items:center"><span class="pst ${c}">${f.status=='used'&&f.series?'Job '+esc(f.series):esc(t)}</span>${f.status=='returned'?`<a class="btn g s" href="#/my/request/${f.id}">Correct and send again</a>`:''}</span></div>`}).join(''):'<div class="empty">No requests yet.</div>'}</div>`;
+ el.innerHTML=`<div class="card"><div class="wh"><h2 style="margin:0">${T('Test requests')}</h2></div>
+  <p class="note">${T('Fill in the Customer Request Form online; the laboratory receives it and opens the job when your sample arrives.')}</p>${l.length?l.map(f=>{const [c,t]=QS[f.status]||['uploaded',f.status];
+   return `<div class="ps"><span>${T('Request {id}',{id:f.id})} <small class="sby">${T('sent {at}',{at:esc(f.at.replace('T',' ').slice(0,16))})}</small>${f.status=='returned'&&f.note?`<div class="note" style="margin:2px 0 0;color:var(--er)">${T('Reason:')} ${esc(f.note)}</div>`:''}</span>
+    <span style="display:flex;gap:8px;align-items:center"><span class="pst ${c}">${f.status=='used'&&f.series?T('Job {s}',{s:esc(f.series)}):esc(T(t))}</span>${f.status=='returned'?`<a class="btn g s" href="#/my/request/${f.id}">${T('Correct and send again')}</a>`:''}</span></div>`}).join(''):`<div class="empty">${T('No requests yet.')}</div>`}</div>`;
  $('#app').append(el)}
 
 /* ---------------------------------------------------------------- laboratory: the intake inbox and receiving a request */

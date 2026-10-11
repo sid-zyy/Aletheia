@@ -125,6 +125,18 @@ a scan is attached to that test. Nothing is assigned to a test by itself (no gen
 Pages for customers: **Open requests** (their jobs and their test requests, *New test request*), **Tickets**, **Notifications**.
 Required fields on every form are marked with a red asterisk.
 
+### Languages for customers
+
+Customers can read their screens in **English, हिन्दी (Hindi) or ಕನ್ನಡ (Kannada)**: the globe menu in the top bar switches
+at once and the choice is remembered in that browser. It covers every customer page (open requests, the job page, the
+Customer Request Form with its fields, notes, options, states and declarations, tickets, notifications, the user menu)
+and the **assistant**, which answers in the chosen language and also understands common Hindi and Kannada words
+(e.g. *नया अनुरोध*, *रिपोर्ट*, *ಟಿಕೆಟ್*, *ಹೇಗೆ*). Validation messages and notifications written by the server are
+translated by pattern. What is stored never changes language: form answers, ticket categories and states are sent in
+English, and the PDF report, the logsheet values and their field names stay in English, as issued. Staff pages are
+English only. The strings live in `static/i18n.js` (`T()` for fixed text, `TF()` for server messages); a string
+without a translation shows in English.
+
 ### Demo
 
 | Show | Steps |
@@ -298,7 +310,7 @@ JSON API; uploads are `{filename, b64}`. Every route names its permission (`auth
 | `notify.py`, `portal.py` | in-app notifications; partial reports, approved values, customers' test requests |
 | `rules.py` | every engineering threshold with its source and status |
 | `importers.py`, `vision.py` | flat-layout readers and exporters, registers; optional AI scan reader |
-| `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `tickets.js`, `assistant.js` |
+| `static/` | web UI: `index.html` plus `auth.js`, `workflow.js`, `excel.js`, `portal.js`, `request.js` (customer request form, intake inbox), `tickets.js`, `assistant.js`, `i18n.js` (customer screens in English, Hindi, Kannada) |
 | `docs/` | [the presentation](docs/Aletheia_CyberSiege_Deck_Track3_polished.pptx), [ARCHITECTURE.md](docs/ARCHITECTURE.md) (diagram, data model, job lifecycle), [LAB_WORKFLOW.md](docs/LAB_WORKFLOW.md) (recommendations for the lab), [NOTES.md](docs/NOTES.md) (structure and scan-reader notes) |
 | `sample_data/tests/` | the demo job's data per test, as a CSV and as a filled Excel logsheet (paper layout, version 2, read by the upload preview) (proforma, work instruction, losses, resistance, no-load, routine, short circuit, temperature rise, pressure), to upload test by test |
 | `sample_data/`, `test-files/` | demo job in every format with its scans (including the scanned CPRI/QAF/01A request form), the sample report, legacy registers; three CSV demo jobs |

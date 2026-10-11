@@ -14,7 +14,8 @@ the data model and the job lifecycle; the README's *Validity* section says what 
 | `importers.py` | CSV / Excel / SQLite / JSON in and out, using rows of `section, field, value`; register import |
 | `vision.py` | Scan reader: Gemini, Ollama, or any OpenAI-compatible service; page clean-up, part-by-part reading, saved scans |
 | `static/index.html` + `static/*.js` | The web UI (single page; see the README's file list) |
-| `static/assistant.js` | Rule-based chat assistant for every role (staff: customer requests, record search, status, how-to; customers: their jobs, a new request, a ticket); keyword matching, no AI model |
+| `static/assistant.js` | Rule-based chat assistant for every role (staff: customer requests, record search, status, how-to; customers: their jobs, a new request, a ticket); keyword matching, no AI model; for customers it answers in English, Hindi or Kannada and matches Hindi / Kannada keywords too |
+| `static/i18n.js` | Customer-screen translations (English, Hindi, Kannada): `T()` for fixed strings, `TF()` for server messages by pattern, the language switch in the top bar. Staff pages and stored values stay English |
 | `tests/` | 157 tests: `python -m unittest discover -s tests` (the README lists what each file covers) |
 | `report_template.json` | Wording and laboratory details of the report (headings, ULR, address, clauses, notes) |
 | `sample_data/` | The A.P. Transformers sample job in every format, its 9 scans, plus two legacy registers (the CSV one has test dates and results); `sample_data/tests/` has each test's logsheet filled in, as Excel (paper layout, version 2) and as a flat CSV generated from it |
